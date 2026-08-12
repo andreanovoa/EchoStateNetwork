@@ -1,0 +1,257 @@
+"""Tests for the parametric EchoStateNetwork (src/esn_core.py)."""
+import warnings
+
+import numpy as np
+
+from echostatenetwork import EchoStateNetwork
+
+
+def test_parametric_esn_trains_and_shapes():
+    rng = np.random.default_rng(0)
+    N_dim, Nt, L = 4, 80, 2
+    data = rng.normal(size=(L, Nt, N_dim))
+    params = np.array([[0.0, 1.0]])  # (N_param=1, L=2), e.g. cluster id per segment
+
+    esn = EchoStateNetwork(data[0].T, dt=1, N_units=20, upsample=1,
+                            t_train=40, t_val=10, t_test=10, N_wash=5,
+                            hyperparameters_to_optimize=[],
+                            input_parameters=params)
+    esn.train(data, plot_training=False)
+
+    assert esn.N_dim_in == N_dim + 1
+    assert esn.Wout.shape == (esn.N_units + 1, N_dim)
+    # An un-normalized parameter column would swamp the reservoir through Win's dense
+    # parameter connections, so the constructor auto-enables optimize_parameter_normalization
+    # for any parametric ESN unless the caller opts out (see esn_core.py's class docstring) --
+    # the parameter column is tuned to O(1) via the same BHO loop as rho/sigma_in/tikh, not
+    # left at the identity (norm=1, shift=0).
+    assert esn.optimize_parameter_normalization is True
+    assert esn.param_norm_range[0] <= esn.norm[-1] <= esn.param_norm_range[1]
+
+
+def test_parametric_esn_closed_loop_hyperparameter_search():
+    # Exercises _RVC_Noise's closed-loop run (outputs_to_inputs) with input_parameters set.
+    rng = np.random.default_rng(1)
+    N_dim, Nt, L = 3, 80, 2
+    data = rng.normal(size=(L, Nt, N_dim))
+    params = np.array([[0.0, 1.0]])
+
+    esn = EchoStateNetwork(data[0].T, dt=1, N_units=15, upsample=1,
+                            t_train=40, t_val=10, t_test=10, N_wash=5,
+                            N_folds=2, N_grid=2, N_func_evals=2,
+                            hyperparameters_to_optimize=['rho'],
+                            input_parameters=params)
+    esn.train(data, plot_training=False)
+
+    assert esn.trained
+
+
+def test_parametric_esn_ragged_segments():
+    # Segments (e.g. cluster-dwell chunks) may have different lengths; train_data can
+    # be a list of (Nt_l, N_dim) arrays instead of a regular (L, Nt, N_dim) array.
+    rng = np.random.default_rng(2)
+    N_dim = 4
+    lengths = [60, 90, 45, 120, 75]
+    segments = [rng.normal(size=(nt, N_dim)) for nt in lengths]
+    params = np.array([[0.0, 1.0, 2.0, 0.0, 1.0]])  # (1, L=5) cluster id per segment
+
+    esn = EchoStateNetwork(segments[0].T, dt=1, N_units=20, upsample=1,
+                            t_train=30, t_val=10, N_wash=5,
+                            hyperparameters_to_optimize=[],
+                            input_parameters=params)
+    esn.train(segments, plot_training=False)
+
+    assert esn.N_dim_in == N_dim + 1
+    assert esn.Wout.shape == (esn.N_units + 1, N_dim)
+    assert esn.optimize_parameter_normalization is True
+    assert esn.param_norm_range[0] <= esn.norm[-1] <= esn.param_norm_range[1]
+
+
+def test_parametric_esn_per_timestep_varying_parameter():
+    # input_parameters can be a list of (Nt_l, N_param) arrays instead of a constant
+    # (N_param, L) array, for segments where the parameter itself varies within the
+    # segment (e.g. a window straddling a cluster transition).
+    rng = np.random.default_rng(3)
+    N_dim = 2
+    lengths = [60, 90, 45]
+    segments = [rng.normal(size=(nt, N_dim)) for nt in lengths]
+
+    per_step = []
+    for i, nt in enumerate(lengths):
+        label = np.full((nt, 1), float(i))
+        if i == 1:
+            label[nt // 2:] = 5.0  # flips mid-segment
+        per_step.append(label)
+
+    esn = EchoStateNetwork(segments[0].T, dt=1, N_units=20, upsample=1,
+                            t_train=30, t_val=10, N_wash=5,
+                            hyperparameters_to_optimize=[],
+                            input_parameters=per_step)
+    esn.train(segments, plot_training=False)
+
+    assert esn.N_dim_in == N_dim + 1
+    assert esn.optimize_parameter_normalization is True
+    assert esn.param_norm_range[0] <= esn.norm[-1] <= esn.param_norm_range[1]
+
+
+def test_parametric_esn_per_timestep_varying_parameter_with_bho():
+    # _RVC_Noise and run_test's predict_Y both read input_parameters.shape[0] to slice
+    # off the parameter columns for their own closed-loop runs; this must also work
+    # when input_parameters is a per-timestep list rather than a constant ndarray.
+    rng = np.random.default_rng(4)
+    N_dim = 2
+    lengths = [60, 90, 45]
+    segments = [rng.normal(size=(nt, N_dim)) for nt in lengths]
+    per_step = [np.full((nt, 1), float(i)) for i, nt in enumerate(lengths)]
+
+    esn = EchoStateNetwork(segments[0].T, dt=1, N_units=15, upsample=1,
+                            t_train=30, t_val=10, N_wash=5,
+                            N_folds=2, N_grid=2, N_func_evals=2,
+                            hyperparameters_to_optimize=['rho'],
+                            input_parameters=per_step)
+    esn.train(segments, plot_training=False)
+
+    assert esn.trained
+
+
+def test_ragged_segments_respect_t_train_budget_proportionally():
+    # Short segments must survive as long as they yield one trainable pair past
+    # their own washout (N_wash + 2 raw points -- t_val must NOT gate training
+    # inclusion). t_train is a TOTAL budget: when the corpus holds more trainable
+    # pairs than N_train + N_val, every segment is shrunk by the same fraction
+    # (preserving the corpus composition, e.g. per-cluster balance for qlSRC)
+    # instead of being kept in full (the old, t_train-ignoring behavior) or
+    # whole late segments being dropped.
+    rng = np.random.default_rng(5)
+    N_dim = 2
+    lengths = [15, 20, 500, 30, 18]
+    segments = [rng.normal(size=(nt, N_dim)) for nt in lengths]
+    params = np.array([[float(i) for i in range(len(lengths))]])
+
+    esn = EchoStateNetwork(segments[0].T, dt=1, N_units=15, upsample=1,
+                            t_train=100, t_val=10, N_wash=3,
+                            hyperparameters_to_optimize=[],
+                            input_parameters=params)
+    U_wtv, Y_wtv, _, _ = esn._split_and_format_data(segments)
+
+    assert len(U_wtv) == len(lengths)  # none dropped, even those far below N_val
+    budget = esn.N_train + esn.N_val
+    total_pairs = sum(nt - 1 - esn.N_wash for nt in lengths)
+    kept_pairs = [u.shape[0] - esn.N_wash for u in U_wtv]
+    assert abs(sum(kept_pairs) - budget) <= len(lengths)  # budget met (rounding slack)
+    frac = budget / total_pairs
+    for nt, kp in zip(lengths, kept_pairs):
+        assert abs(kp - frac * (nt - 1 - esn.N_wash)) <= 1  # proportional shrink
+    for u, y in zip(U_wtv, Y_wtv):
+        assert u.shape[0] == y.shape[0]  # washout+train windows stay aligned
+
+    # a budget covering everything keeps every segment in full (old behavior)
+    esn_all = EchoStateNetwork(segments[0].T, dt=1, N_units=15, upsample=1,
+                                t_train=1000, t_val=10, N_wash=3,
+                                hyperparameters_to_optimize=[],
+                                input_parameters=params)
+    U_full, _, _, _ = esn_all._split_and_format_data(segments)
+    assert [u.shape[0] for u in U_full] == [nt - 1 for nt in lengths]
+
+    esn.train(segments, plot_training=False)
+    assert esn.trained
+
+
+def test_rvc_fold_placement_adapts_to_each_segments_own_length():
+    # _RVC_Noise's fold spacing/count used to be derived once from the nominal
+    # N_train, as if every segment were that long. With segments now genuinely
+    # variable-length (some far shorter than N_train), that silently sliced out of
+    # bounds for later folds on short segments -- an empty U_wash/Y_val, NaN in
+    # compute_nRMSE, and a NaN-catch that *reset* the whole accumulated score to a
+    # constant, making every hyperparameter combination look identical. Fold
+    # placement must instead be computed per segment.
+    rng = np.random.default_rng(6)
+    N_dim = 2
+    # most segments far shorter than N_train=500 (below), a couple long enough for
+    # all N_folds folds at the old, nominal spacing
+    lengths = list(rng.integers(50, 200, size=20)) + [900, 950]
+    segments = [rng.normal(size=(nt, N_dim)).cumsum(axis=0) * 0.1 for nt in lengths]
+    params = np.array([[float(i % 2) for i in range(len(lengths))]])
+
+    esn = EchoStateNetwork(segments[0].T, dt=1, N_units=15, upsample=1,
+                            t_train=500, t_val=50, N_wash=5, N_folds=4,
+                            hyperparameters_to_optimize=['rho', 'sigma_in'],
+                            N_grid=2, N_func_evals=4,
+                            input_parameters=params, seed=0)
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", RuntimeWarning)  # "Mean of empty slice" -> fail
+        esn.train(segments, plot_training=False)
+
+    assert esn.trained
+
+
+def test_omitted_t_train_uses_all_data_and_infers_t_val():
+    """No t_train -> ALL the data is used with an 80/20 train-val/test split of the
+    segments; no t_val -> inferred from the median segment (dwell) length. The
+    inferred values are written back so N_train/N_val are defined afterwards."""
+    rng = np.random.default_rng(7)
+    N_dim = 2
+    lengths = [40, 45, 50, 55, 60, 42, 48, 52, 58, 44]
+    segments = [rng.normal(size=(nt, N_dim)) for nt in lengths]
+    params = np.array([[float(i) for i in range(len(lengths))]])
+
+    esn = EchoStateNetwork(segments[0].T, dt=1, N_units=15, upsample=1,
+                            N_wash=5, hyperparameters_to_optimize=[],
+                            input_parameters=params)   # t_train/t_val omitted
+    assert esn.t_train is None and esn.t_val is None
+
+    U_wtv, Y_wtv, U_test, Y_test = esn._split_and_format_data(segments)
+
+    # 80/20 segment split: 8 train/val segments kept whole, 2 held out for test
+    assert len(U_wtv) == 8
+    assert len(U_test) == 2
+    assert [u.shape[0] for u in U_wtv] == [nt - 1 for nt in lengths[:8]]
+
+    # t_val inferred from the median segment length's post-washout tail
+    assert esn.t_val is not None and esn.t_train is not None
+    assert esn.N_val == int(np.median(lengths)) - esn.N_wash - 1
+
+    esn.train(segments, plot_training=False)
+    assert esn.trained
+
+
+def test_omitted_t_train_single_trajectory_80_20():
+    """Single unsegmented trajectory, nothing provided: 80% train/val, 20% test,
+    t_val = 20% of the train/val window."""
+    rng = np.random.default_rng(8)
+    data = rng.normal(size=(200, 2)).cumsum(axis=0) * 0.1
+
+    esn = EchoStateNetwork(data.T, dt=1, N_units=15, upsample=1, N_wash=5,
+                            hyperparameters_to_optimize=[])
+    U_wtv, Y_wtv, U_test, Y_test = esn._split_and_format_data(data)
+
+    n_wtv = esn.N_train + esn.N_val
+    assert n_wtv == 160                      # 80% of 200
+    assert esn.N_val == round(0.2 * 160)     # 20% of the train/val window
+    assert U_wtv.shape[1] == n_wtv - 1
+    assert U_test.shape[1] == data.shape[0] - n_wtv - 1
+
+
+def test_rr_terms_invariant_to_n_split():
+    """With reservoir continuity across contiguous chunks, the ridge system must be
+    EXACTLY the same whatever N_split is -- it is pure computation batching."""
+    rng = np.random.default_rng(3)
+    Nt, N_dim = 400, 3
+    y = np.stack([np.sin(0.07 * np.arange(Nt) + 2 * k) for k in range(N_dim)], axis=1)
+    y += 0.01 * rng.standard_normal(y.shape)
+
+    def rr(n_split):
+        esn = EchoStateNetwork(y.T, dt=1, N_units=40, upsample=1, N_wash=20,
+                               t_train=300, t_val=50, seed=0,
+                               hyperparameters_to_optimize=[])
+        esn.N_split = n_split
+        esn._generate_W_Win(seed=0)
+        esn.Wout = np.zeros((esn.N_units + 1, esn.N_dim))
+        esn.norm, esn.shift = np.ones(esn.N_dim), np.zeros(esn.N_dim)
+        U_wtv, Y_wtv = esn._UY_from_raw_data(y[np.newaxis], add_noise=False)[:2]
+        return esn._compute_RR_terms(U_wtv, Y_wtv)[:2]
+
+    LHS1, RHS1 = rr(1)
+    LHS4, RHS4 = rr(4)
+    assert np.allclose(LHS1, LHS4, atol=1e-12)
+    assert np.allclose(RHS1, RHS4, atol=1e-12)
