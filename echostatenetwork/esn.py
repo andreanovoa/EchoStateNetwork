@@ -21,6 +21,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 from scipy.sparse import csr_matrix, issparse, lil_matrix
 from scipy.sparse.linalg import eigs as sparse_eigs
+from scipy.sparse.linalg import ArpackNoConvergence
 
 
 def add_pdf_page(pdf, fig):
@@ -691,7 +692,12 @@ class EchoStateNetwork:
             W = csr_matrix(rng0.uniform(low=-1, high=1, size=(self.N_units, self.N_units)) *
                         (rng0.random(size=(self.N_units, self.N_units)) < (1 - self.sparsity)))
             # scale W by the spectral radius to have unitary spectral radius
-            spectral_radius = np.abs(sparse_eigs(W, k=1, which='LM', return_eigenvectors=False))[0]
+            try:
+                spectral_radius = np.abs(sparse_eigs(W, k=1, which='LM', return_eigenvectors=False))[0]
+            except ArpackNoConvergence:
+                # seed-dependent ARPACK stagnation on small reservoirs; dense
+                # eigenvalues are exact and cheap at typical N_units
+                spectral_radius = np.abs(np.linalg.eigvals(W.toarray())).max()
             self.W = (1. / spectral_radius) * W
 
 

@@ -255,3 +255,17 @@ def test_rr_terms_invariant_to_n_split():
     LHS4, RHS4 = rr(4)
     assert np.allclose(LHS1, LHS4, atol=1e-12)
     assert np.allclose(RHS1, RHS4, atol=1e-12)
+
+
+def test_spectral_radius_arpack_fallback():
+    # N_units=150, seed=0 stagnates ARPACK (0/1 eigenvectors at 1501 iterations);
+    # the dense fallback must still deliver a unit-spectral-radius reservoir
+    import numpy as np
+    from echostatenetwork import EchoStateNetwork
+
+    y = np.random.default_rng(0).standard_normal((200, 3))
+    esn = EchoStateNetwork(y, dt=0.1, N_units=150, N_wash=10, seed=0)
+    esn._generate_W_Win(seed=esn.seed)
+    W = esn.W.toarray() if hasattr(esn.W, "toarray") else np.asarray(esn.W)
+    rho = np.abs(np.linalg.eigvals(W)).max()
+    assert np.isclose(rho, 1.0, atol=1e-8)

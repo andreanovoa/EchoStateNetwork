@@ -8,6 +8,6 @@ Shared by the qlrom (qlESN families) and romda (ESN_model, ESN_bias) packages.
 
 from .esn import EchoStateNetwork
 
-__version__ = "0.1.0"
+__version__ = "0.1.1"
 
 __all__ = ["EchoStateNetwork"]
