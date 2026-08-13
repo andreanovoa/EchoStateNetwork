@@ -43,6 +43,11 @@ class EchoStateNetwork:
         - Training, validation, and test configuration (e.g., t_train, t_val, t_test, N_wash, etc.)
         - Optimization settings for Bayesian hyperparameter search (e.g., hyperparameters_to_optimize, rho_range, etc.)
         - Input and output weight matrices (Win, Wout) and reservoir state matrix (W)
+
+    References:
+        Based on https://github.com/alberacca/Echo-State-Networks, which implements
+        Racca & Magri (2021). Robust optimization and validation of echo state
+        networks for learning chaotic dynamics. Neural Networks, 142, 252-268.
     """
 
     bias_in = np.array([0.1])  #
