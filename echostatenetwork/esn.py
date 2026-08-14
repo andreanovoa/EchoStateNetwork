@@ -21,8 +21,8 @@ import matplotlib.backends.backend_pdf as plt_pdf
 import matplotlib.pyplot as plt
 import numpy as np
 from scipy.sparse import csr_matrix, issparse, lil_matrix
-from scipy.sparse.linalg import eigs as sparse_eigs
 from scipy.sparse.linalg import ArpackNoConvergence
+from scipy.sparse.linalg import eigs as sparse_eigs
 
 
 def add_pdf_page(pdf, fig):
@@ -121,18 +121,24 @@ class EchoStateNetwork:
     param_norm_range = (0.1, 10.0)
 
     def __init__(self, y, dt=1., **kwargs):
-        """
-        Initializes the EchoStateNetwork class with input data, time step, and optional hyperparameters.
-        Validates the input dimensions and initializes reservoir states, time steps, and flags.
+        """Initialize the reservoir dimensions and time step; matrices are built at
+        training time (see `train` / `_generate_W_Win`), not here.
 
-        Args:
-            y (np.ndarray): Initial state of the physical system (dimensions: N_dim x N_samples).
-            dt (float): time step of the input data, such that dt_ESN = dt * upsample.
-            **kwargs: Optional keyword arguments to override default class attributes.
+        Parameters
+        ----------
+        y : np.ndarray
+            Sample physical state used only to infer `N_dim`, shape ``(N_dim, N_samples)``
+            (or 1D, treated as ``N_samples=1``).
+        dt : float
+            Time step of the input data, such that ``dt_ESN = dt * upsample``.
+        **kwargs
+            Any `EchoStateNetwork` class attribute to override (e.g. ``N_units``,
+            ``rho``, ``observed_idx``, ``input_parameters``, ``optimize_parameter_normalization``).
 
-        Raises:
-            AssertionError: If y has more than two dimensions or invalid values in kwargs.
-
+        Raises
+        ------
+        AssertionError
+            If `y` has more than two dimensions.
         """
 
         if y.ndim == 1:
@@ -152,7 +158,7 @@ class EchoStateNetwork:
         # Parametric ESN: default to tuning the parameter's normalization (see class docstring
         # above) unless the caller explicitly opted out. An un-normalized parameter fed through
         # Win's dense parameter columns swamps the reservoir (verified in
-        # dev/tutorial_esn_win_parameter_normalization.ipynb), so this is not a safe thing to
+        # tutorials/02_parametric_esn.ipynb), so this is not a safe thing to
         # leave off by default. param_shift_range/param_norm_range are sized from the observed
         # parameter values in _split_and_format_data instead of here: callers that construct
         # the ESN with a placeholder input_parameters and set the real per-segment values later
@@ -175,8 +181,9 @@ class EchoStateNetwork:
 
     @property
     def W(self) -> csr_matrix:
-        """
-        Returns the reservoir state matrix (W) in CSR format.
+        """The reservoir (recurrent) connectivity matrix, shape ``(N_units, N_units)``,
+        stored in CSR format. Rescaled to unit spectral radius when generated (see
+        `_generate_W_Win`), so `rho` is the *effective* spectral radius used in `step`.
         """
         return self._W
 
@@ -216,8 +223,11 @@ class EchoStateNetwork:
 
     @property
     def Win(self) -> np.ndarray | csr_matrix:
-        """
-        Returns the input matrix (Win).
+        """The input matrix, shape ``(N_units, N_dim_in + 1)`` (the last column
+        multiplies the input bias `bias_in`). Sparse (``Win_type='sparse'``, one
+        random connection per neuron to a state or bias column, but densely
+        connected to any `input_parameters` columns) or dense
+        (``Win_type='dense'``); see `_generate_W_Win`.
         """
         return self._Win
 
@@ -251,8 +261,9 @@ class EchoStateNetwork:
 
     @property
     def Wout(self) -> np.ndarray:
-        """
-        Returns the output matrix (Wout).
+        """The trained (ridge-regression) read-out matrix, shape
+        ``(N_units + 1, N_dim)`` -- the last row multiplies the output bias
+        `bias_out`. Used in `reservoir_to_physical`.
         """
         return self._Wout
 
@@ -269,8 +280,8 @@ class EchoStateNetwork:
 
     @property
     def val_k(self):
-        """
-        Returns the current validation counter.
+        """int: Number of Bayesian-optimization validation evaluations performed so
+        far (reset to 0 at the start of each `train` call). Defaults to 0.
         """
         if not hasattr(self, '_val_k'):
             return 0
@@ -287,15 +298,15 @@ class EchoStateNetwork:
 
     @property
     def dt_physical(self):
-        """
-        Computes the physical time step based on the ESN time step and upsample factor.
-        """
+        """float: Time step of the underlying physical data, ``dt_ESN / upsample``."""
         return self.dt_ESN / self.upsample
 
     @property
     def N_train(self):
-        """
-        Computes the number of training steps based on training time (t_train) and ESN time step (dt_ESN).
+        """int: Number of training steps, ``round(t_train / dt_ESN)``.
+
+        Raises ValueError if `t_train` is not yet set (when omitted it is
+        inferred from the data at `train` time -- see `_split_and_format_data`).
         """
         if self.t_train is None:
             raise ValueError("t_train is not set; it is inferred from the data at train() "
@@ -304,8 +315,10 @@ class EchoStateNetwork:
 
     @property
     def N_val(self):
-        """
-        Computes the number of validation steps based on validation time (t_val) and ESN time step (dt_ESN).
+        """int: Number of validation steps, ``round(t_val / dt_ESN)``.
+
+        Raises ValueError if `t_val` is not yet set (when omitted it is
+        inferred from the data at `train` time -- see `_split_and_format_data`).
         """
         if self.t_val is None:
             raise ValueError("t_val is not set; it is inferred from the data at train() "
@@ -314,16 +327,16 @@ class EchoStateNetwork:
 
     @property
     def N_test(self):
-        """
-        Computes the number of testing steps based on testing time (t_val) and ESN time step (dt_ESN).
-        """
+        """int: Number of test steps, ``round(t_test / dt_ESN)``."""
         return int(round(self.t_test / self.dt_ESN))
 
     @property
     def WCout(self):
-        """
-        Lazily computes the closed-loop reservoir weight matrix (W Cout) if it has not been precomputed.
-        This matrix is only computed if the Jacobian in closed loop is needed.
+        r"""Least-squares fit of `W` from `Wout`'s state block,
+        $\arg\min_{\mathbf{X}} \lVert \mathbf{W}_\mathrm{out}[:N_\mathrm{units}]\,\mathbf{X}
+        - \mathbf{W} \rVert_F$, shape ``(N_dim, N_units)``. Sketched (commented-out) in
+        `Jacobian` as a building block for a closed-loop Jacobian; not currently used
+        anywhere, since the closed-loop Jacobian is unimplemented.
         """
         # if not hasattr(self, '_WCout'):
         #     return None
@@ -343,10 +356,9 @@ class EchoStateNetwork:
 
     @property
     def sparsity(self):
-        """
-        Computes the sparsity level of the reservoir connectivity matrix (W). This is, the
-        fraction of connections between neurons in the reservoir that are set to zero.
-            sparsity = 1 - #Active connections / Total possible connections
+        r"""float: Fraction of possible reservoir connections that are zero,
+        $1 - \texttt{connect}/(N_\mathrm{units}-1)$ (each neuron connects, on
+        average, to `connect` others out of the $N_\mathrm{units}-1$ possible).
         """
         return 1. - self.connect / (self.N_units - 1)
 
@@ -367,8 +379,10 @@ class EchoStateNetwork:
 
     @property
     def N_dim_in(self):
-        """
-        Computes the number of input dimensions.
+        """int: Number of ESN input dimensions -- the observed state components
+        (``len(observed_idx)``) plus, for a parametric ESN, the parameter count of `input_parameters`
+        (rows of the ``(N_param, L)`` array, or columns of each per-timestep
+        ``(Nt_l, N_param)`` segment).
         """
         if self.input_parameters is None:
             return len(self.observed_idx)
@@ -377,8 +391,9 @@ class EchoStateNetwork:
 
     @property
     def norm(self):
-        """
-        Returns the normalization factor for the input data.
+        """np.ndarray: Per-component scale factor used by `normalize_input`, shape
+        ``(N_dim_in,)``. Defaults to ones (no scaling) until set by
+        `_split_and_format_data`/`_set_norm`.
         """
         if not hasattr(self, '_norm'):
             return np.ones((self.N_dim_in,))
@@ -397,22 +412,31 @@ class EchoStateNetwork:
 
     @cached_property
     def dr_di(self) -> csr_matrix | np.ndarray:
-        """Open-loop reservoir Jacobian term d(r)/d(i), shape (N_units, N_dim_in)."""
+        r"""Linear (pre-activation) part of the input-to-reservoir Jacobian,
+        $\sigma_\mathrm{in}\,\mathbf{W}_\mathrm{in,1}\,\mathrm{diag}(1/\texttt{norm})$,
+        shape ``(N_units, N_dim_in)``, where $\mathbf{W}_\mathrm{in,1}$ is `Win` with
+        the bias column dropped. This is *not* the full $\partial\mathbf{r}/\partial\mathbf{u}$:
+        `Jacobian` additionally applies the $\mathrm{diag}(1-\mathbf{r}^2)$ factor from
+        differentiating $\tanh$. Cached via `functools.cached_property` and
+        invalidated whenever `Win` is reassigned.
+        """
         norm = self.norm.copy()
 
         Win_1 = self.Win[:, :self.N_dim_in]  # type: Union[csr_matrix, np.ndarray]
         g = self.sigma_in * 1.0 / norm
 
         if issparse(Win_1):
-            return Win_1.multiply(g[np.newaxis, :])
+            # .multiply returns a COO matrix: convert back to CSR for efficient products
+            return csr_matrix(Win_1.multiply(g[np.newaxis, :]))
         else:
             return Win_1 * g[np.newaxis, :]
 
 
     @property
     def shift(self):
-        """
-        Returns the shift factor for the input data.
+        """np.ndarray: Per-component offset used by `normalize_input`, shape
+        ``(N_dim_in,)``. Defaults to zeros (no shift) until set by
+        `_split_and_format_data`/`_set_norm`.
         """
         if not hasattr(self, '_shift'):
             return np.zeros((self.N_dim_in,))
@@ -432,15 +456,24 @@ class EchoStateNetwork:
 
     # _______________________________________________________________________________________________________ STEP & JACOBIAN
     def step(self, u, r):
-        """
-        Advances the reservoir by one time step and updates its internal state.
+        r"""Advance the reservoir by one open-loop time step,
+        $\mathbf{r}_{n+1} = \tanh(\sigma_\mathrm{in}\mathbf{W}_\mathrm{in}[\mathbf{u}_n; b_\mathrm{in}]
+        + \rho\mathbf{W}\mathbf{r}_n)$, and read out the corresponding physical state
+        (see the class docstring for the full formulation).
 
-        Args:
-            u (np.ndarray): Input physical state at the current time step. Shape = (N_dim x N_ens)
-            r (np.ndarray): Reservoir state at the current time step. Shape = (N_units x N_ens)
+        Parameters
+        ----------
+        u : np.ndarray
+            Input state at the current time step, shape ``(N_dim_in, N_ens)``.
+        r : np.ndarray
+            Reservoir state at the current time step, shape ``(N_units, N_ens)``.
 
-        Returns:
-            tuple: (u_out, r_out) where u_out is the output state and r_out is the updated reservoir state.
+        Returns
+        -------
+        u_out : np.ndarray
+            Physical output at the next time step, shape ``(N_dim, N_ens)``.
+        r_out : np.ndarray
+            Updated reservoir state, shape ``(N_units, N_ens)``.
         """
         # Normalise input data and augment with input bias (ESN symmetry parameter)
 
@@ -474,10 +507,18 @@ class EchoStateNetwork:
 
 
     def reservoir_to_physical(self, r):
-        """ Converts the reservoir state to the physical state using the output weight matrix (Wout).
-        Note: I change this in ESN_model
-        Args:
-            r_aug (np.ndarray): Augmented reservoir state including output bias.
+        """Convert the reservoir state to the physical state via the output matrix.
+
+        Parameters
+        ----------
+        r : np.ndarray
+            Reservoir state, shape ``(N_units, N_ens)`` (the output bias row is
+            appended internally).
+
+        Returns
+        -------
+        np.ndarray
+            Physical state, shape ``(N_dim, N_ens)``.
         """
 
         # output bias added
@@ -487,27 +528,36 @@ class EchoStateNetwork:
         return np.dot(self.Wout.T, r_aug)
 
     def normalize_input(self, data):
-        """
-        Normalizes the input data based on the specified normalization method.
+        r"""Shift-and-scale the input, $(\mathbf{u} - \texttt{shift}) / \texttt{norm}$
+        (see `shift`, `norm` and `_set_norm`), before it is fed to `Win`.
 
-        Args:
-            data (np.ndarray): Input data to be normalized.
+        Parameters
+        ----------
+        data : np.ndarray
+            Input data to be normalized, shape ``(N_dim_in, N_ens)``.
 
-        Returns:
-            np.ndarray: Normalized input data.
+        Returns
+        -------
+        np.ndarray
+            Normalized input data, same shape as `data`.
         """
         return (data - self.shift[:, np.newaxis]) / self.norm[:, np.newaxis]
 
 
     def outputs_to_inputs(self, full_state):
-        """
-        Maps the full state (predicted or reconstructed) to input states for the ESN.
+        """Map a full physical state (e.g. a closed-loop prediction) back to the
+        ESN's input space: selects the observed components (`observed_idx`) and, for
+        a parametric ESN, appends `input_parameters`.
 
-        Args:
-            full_state (np.ndarray): Full physical state vector.
+        Parameters
+        ----------
+        full_state : np.ndarray
+            Full physical state vector, shape ``(N_dim, N_ens)``.
 
-        Returns:
-            np.ndarray: Input state vector mapped from the full state.
+        Returns
+        -------
+        np.ndarray
+            Input state vector, shape ``(N_dim_in, N_ens)``.
         """
         assert full_state.shape[0] == self.N_dim, f'full_state has shape {full_state.shape}, expected first dim to be {self.N_dim}'
 
@@ -522,18 +572,42 @@ class EchoStateNetwork:
 
 
     def Jacobian(self, u_in, r_in, open_loop_J=True):
-        """
-        Computes the Jacobian matrix for the reservoir, either in open-loop or closed-loop mode.
+        r"""Analytical Jacobian of the one-step map, $\mathbf{J} = \partial\mathbf{u}_{n+1}/\partial\mathbf{u}_n$,
+        obtained by differentiating `step` through $\tanh$:
 
-        Args:
-            open_loop_J (bool): If True (default), compute the open-loop Jacobian.
-            u_in (np.ndarray): Input state. shape = (N_dim_in x N_ens)
-            r_in (np.ndarray): Reservoir state. shape = (N_units x N_ens)
+        $$
+        \mathbf{J} = \mathbf{W}_\mathrm{out,1}^\mathrm{T}\,
+        \mathrm{diag}\!\left(1-\mathbf{r}_{n+1}^{\,2}\right)\,
+        \sigma_\mathrm{in}\,\mathbf{W}_\mathrm{in,1}\,\mathrm{diag}(1/\texttt{norm}),
+        $$
 
-        Returns:
-            np.ndarray: Jacobian matrix d(u_out)/d(u_in).
-                - If N_ens == 1: shape (N_dim, N_dim_in)
-                - If N_ens > 1: shape (N_dim, N_dim_in, N_ens)
+        where $\mathbf{W}_\mathrm{out,1}$ and $\mathbf{W}_\mathrm{in,1}$ are `Wout`/`Win`
+        with the bias row/column dropped, and $\mathbf{r}_{n+1}$ is the reservoir state
+        obtained by stepping from (`u_in`, `r_in`). The $1/\texttt{norm}$ factor comes
+        from the chain rule through `normalize_input`.
+
+        Parameters
+        ----------
+        u_in : np.ndarray
+            Input state, shape ``(N_dim_in, N_ens)``.
+        r_in : np.ndarray
+            Reservoir state, shape ``(N_units, N_ens)``.
+        open_loop_J : bool
+            If True (default), compute the open-loop Jacobian above. The closed-loop
+            variant (linearizing through the feedback of `u_out` back into the next
+            input) is not implemented -- see Raises.
+
+        Returns
+        -------
+        np.ndarray
+            Jacobian $\partial\mathbf{u}_\mathrm{out}/\partial\mathbf{u}_\mathrm{in}$,
+            shape ``(N_dim, N_dim_in)`` if ``N_ens == 1``, else ``(N_dim, N_dim_in, N_ens)``.
+
+        Raises
+        ------
+        NotImplementedError
+            If `open_loop_J` is False (the closed-loop Jacobian is unimplemented; a
+            numerical check of the sketched derivation did not pass).
         """
         assert self.trained, 'ESN must be trained before computing the Jacobian. Call ESN.train() first.'
 
@@ -585,16 +659,37 @@ class EchoStateNetwork:
               seed=None,
               **kwargs
               ):
-        """
-        Trains the ESN using ridge regression and Bayesian hyperparameter optimization.
+        """Train the ESN: format the data into washout/train/validation/test sets,
+        (re)generate `Win`/`W` if not already set, select hyperparameters via
+        Bayesian optimization (unless `hyperparameters_to_optimize` is empty), and
+        fit `Wout` by ridge regression on the resulting hyperparameters.
 
-        Args:
-            train_data (np.ndarray): Training data with dimensions [L x Nt x N_dim].
-            add_noise (bool): If True, adds noise to the input during training.
-            plot_training (bool): If True, visualizes the training process.
-            save_ESN_training (bool): If True, saves training plots to a file.
-            folder (str): Directory to save training plots (if save_ESN_training=True).
-            validation_strategy (function): Custom validation function for hyperparameter tuning.
+        Parameters
+        ----------
+        train_data : np.ndarray
+            Training data, shape ``(L, Nt, N_dim)``, or a ragged list of L
+            segments of shape ``(Nt_l, N_dim)``.
+        add_noise : bool
+            If True, add Gaussian noise (scaled by `noise`) to the training input.
+        plot_training : bool
+            If True, visualize the training process (BO convergence, `Wout`, and
+            post-training test forecasts).
+        save_ESN_training : bool
+            If True, save the training plots to a PDF (in `folder`).
+        folder : str, optional
+            Directory to save training plots to. Defaults to `figs_folder`.
+        validation_strategy : callable, optional
+            Validation function for hyperparameter tuning. Defaults to `_RVC_Noise`.
+        seed : int, optional
+            Random seed for generating `Win`/`W` if they don't already exist.
+            Defaults to `seed`/`rng`.
+        **kwargs
+            Any existing attribute to override before training (e.g. `N_units`).
+
+        Returns
+        -------
+        None
+            Sets `Wout` (and, if not already present, `Win`/`W`) in place.
         """
         if self.trained:
             print("ESN is already trained. Skipping training.")
@@ -645,6 +740,13 @@ class EchoStateNetwork:
 
 
     def copy(self):
+        """Return a deep copy of this `EchoStateNetwork`.
+
+        Returns
+        -------
+        EchoStateNetwork
+            A new, independent instance with the same state and matrices.
+        """
         return deepcopy(self)
 
     # _______________________________________________________________________________________ HELPER METHODS FOR ESN INITIALIZATION & TRAINING
@@ -652,17 +754,23 @@ class EchoStateNetwork:
 
 
     def _generate_W_Win(self, seed=None):
-        """
-        Generates the input weight matrix (Win) and reservoir weight matrix (W) with sparsity constraints.
+        """Generate `Win` (random, sparse or dense) and `W` (Erdős–Rényi, rescaled to
+        unit spectral radius), if not already set.
 
-        Args:
-            seed (int): Random seed for reproducibility.
+        Parameters
+        ----------
+        seed : int, optional
+            Random seed for reproducibility. Defaults to `seed`/`rng`.
 
-        Raises:
-            ValueError: If the specified self.Win_type is unsupported. Allowed values: 'sparse' or 'dense'.
+        Raises
+        ------
+        ValueError
+            If `Win_type` is not ``'sparse'`` or ``'dense'``.
 
-        Outputs:
-            None. Updates internal matrices Win and W with appropriate values.
+        Returns
+        -------
+        None
+            Sets `Win` and `W` in place.
         """
         if seed is None:
             rng0 = self.rng
@@ -712,11 +820,15 @@ class EchoStateNetwork:
         Computes the Ridge Regression (RR) terms, including left-hand side (LHS) and right-hand side (RHS)
         matrices, for training the output weights.
 
-        Args:
-            U_wtv (np.ndarray): Wash-train-validation input data.
-            Y_wtv (np.ndarray): Corresponding output labels for input data.
+        Parameters
+        ----------
+        U_wtv : np.ndarray (L x Nt x N_dim)
+            Wash-train-validation input data. L segments, each with Nt time steps and N_dim dimensions.
+        Y_wtv : np.ndarray (L x Nt x N_dim)
+            Corresponding output labels for input data.
 
-        Returns:
+        Returns
+        -------
             tuple:
                 - LHS (np.ndarray): Left-hand side matrix for ridge regression.
                 - RHS (np.ndarray): Right-hand side matrix for ridge regression.
@@ -789,11 +901,15 @@ class EchoStateNetwork:
         """
         Solves the ridge regression problem to compute the output weight matrix (Wout).
 
-        Args:
-            U_wtv (np.ndarray): Input data for ridge regression (train/valiladion).
-            Y_wtv (np.ndarray): Target labels for ridge regression.
+        Parameters
+        ----------
+        U_wtv : np.ndarray (L x Nt x N_dim)
+            Input data for ridge regression (train/valiladion). L segments, each with Nt time steps and N_dim dimensions.
+        Y_wtv : np.ndarray (L x Nt x N_dim)
+            Target labels for ridge regression. L segments, each with Nt time steps and N_dim dimensions.
 
-        Returns:
+        Returns
+        -------
             np.ndarray: Computed output weight matrix (Wout).
         """
         LHS, RHS = self._compute_RR_terms(U_wtv, Y_wtv)[:2]
@@ -897,20 +1013,34 @@ class EchoStateNetwork:
         return U, Y
 
     def _split_and_format_data(self, data=None, add_noise=True):
-        """
-        Formats the input data into washout, train/val, and test sets. Optionally adds noise to the input.
+        """Format raw data into washout/train/validation and test sets, adding noise
+        and computing/storing `norm`/`shift` (and, for a parametric ESN, tuning the
+        parameter normalization -- see the class docstring).
 
-        Args:
-            - data (np.ndarray): Input time series data with dimensions [(L) x Nt x N_dim].
-            - add_noise (bool): Whether to add noise to the training input data (default: True).
-            - observed_idx (list, optional): indices which are observed
-        Returns:
-            - U_wtv (np.ndarray): Wash-train-validation input data.
-            - Y_wtv (np.ndarray): Corresponding labels for train/validation data.
-            - U_test (np.ndarray): Test input data.
-            - Y_test (np.ndarray): Test labels.
-        Raises:
-            ValueError: If the input data length is insufficient for training.
+        Parameters
+        ----------
+        data : np.ndarray
+            Input time series data, shape ``(L, Nt, N_dim)`` (or ``(Nt, N_dim)``), or a
+            ragged list of L segments of shape ``(Nt_l, N_dim)`` -- see
+            `_UY_from_ragged_data` for the segmented-corpus rules.
+        add_noise : bool
+            Whether to add noise to the training input data. Default True.
+
+        Returns
+        -------
+        U_wtv : np.ndarray
+            Wash-train-validation input data.
+        Y_wtv : np.ndarray
+            Corresponding labels for train/validation data.
+        U_test : np.ndarray
+            Test input data.
+        Y_test : np.ndarray
+            Test labels.
+
+        Raises
+        ------
+        ValueError
+            If `data` is None, or shorter than `N_train + N_val` steps.
         """
         if data is None:
             raise ValueError('No training data provided to format_training_data method.')
@@ -1077,10 +1207,14 @@ class EchoStateNetwork:
         """
         Updates specific hyperparameters with new values.
 
-        Args:
-            params (list): List of hyperparameter values to set.
-            names (list): Names of the hyperparameters to update.
-            tikhonov (float, optional): Value to set for the Tikhonov regularization parameter.
+        Parameters
+        ----------
+        params : list
+            List of hyperparameter values to set.
+        names : list
+            Names of the hyperparameters to update.
+        tikhonov : float, optional
+            Value to set for the Tikhonov regularization parameter.
 
         Outputs:
             None. Updates internal hyperparameter values.
@@ -1128,13 +1262,18 @@ class EchoStateNetwork:
         """
         Performs Bayesian hyperparameter optimization to minimize the validation loss.
 
-        Args:
-            U_wtv (np.ndarray): Wash-train-validation input data.
-            Y_wtv (np.ndarray): Corresponding labels for train-validation data.
-            validation_strategy (function, optional): Validation function for hyperparameter tuning.
-                Defaults to `_RVC_Noise`.
+        Parameters
+        ----------
+        U_wtv : np.ndarray
+            Wash-train-validation input data.
+        Y_wtv : np.ndarray
+            Corresponding labels for train-validation data.
+        validation_strategy : function, optional
+            Validation function for hyperparameter tuning.
+            Defaults to `_RVC_Noise`.
 
-        Returns:
+        Returns
+        -------
             OptimizeResult: Results of the Bayesian optimization process.
         """
         from skopt import gp_minimize
@@ -1201,7 +1340,8 @@ class EchoStateNetwork:
         Prepares the search grid and search space for Bayesian hyperparameter optimization.
         TODO: add noise to the optional input_parameters to optimize.
 
-        Returns:
+        Returns
+        -------
             tuple:
                 - search_grid (list): List of initial grid points for optimization.
                 - search_space (list): Search space objects for each hyperparameter.
@@ -1251,9 +1391,12 @@ class EchoStateNetwork:
     def _set_norm(train_data, method=None):
         """
         Computes the normalization factor for the input data.
-        Args:
-            train_data (np.ndarray): Wash-train-validation training input data. (Nens x Nt x Ndim).
-        Returns:
+        Parameters
+        ----------
+        train_data : np.ndarray
+            Wash-train-validation training input data. (Nens x Nt x Ndim).
+        Returns
+        -------
             float: Normalization factor based on the range of the input data.
         """
         # assert train_data.ndim in [3, 4], f'U_wtv must be a 3D array, got {train_data.ndim}D: ({train_data.shape})'
@@ -1311,15 +1454,23 @@ class EchoStateNetwork:
         """
         Implements Chaotic Recycle Validation for hyperparameter optimization.
 
-        Args:
-            x (list): Hyperparameter values to evaluate.
-            case (EchoStateNetwork): Instance of the ESN being validated.
-            U_wtv (np.ndarray): Wash-train-validation input data.
-            Y_wtv (np.ndarray): Corresponding labels for train/validation data.
-            tikh_opt (np.ndarray): Array to store optimal Tikhonov regularization values.
-            hp_names (list): Names of the hyperparameters being optimized.
+        Parameters
+        ----------
+        x : list
+            Hyperparameter values to evaluate.
+        case : EchoStateNetwork
+            Instance of the ESN being validated.
+        U_wtv : np.ndarray
+            Wash-train-validation input data.
+        Y_wtv : np.ndarray
+            Corresponding labels for train/validation data.
+        tikh_opt : np.ndarray
+            Array to store optimal Tikhonov regularization values.
+        hp_names : list
+            Names of the hyperparameters being optimized.
 
-        Returns:
+        Returns
+        -------
             float: Normalized mean squared error (MSE) for the validation set.
         """
         # Re-set hyperparams as the optimization goes on
@@ -1544,14 +1695,24 @@ class EchoStateNetwork:
 
 
     def compute_nRMSE(self, Y_true, Y_pred, norm=1.0):
-        """
-        Computes the normalized Root Mean Square Error (nRMSE) between true and predicted values.
+        r"""Error metric used throughout training/validation/testing,
+        $\mathrm{mean}(|\mathbf{Y}_\mathrm{true} - \mathbf{Y}_\mathrm{pred}|) /
+        \mathrm{mean}(|\texttt{norm}|)$ -- despite the name, this is a normalized
+        mean absolute error, not a root-mean-square error.
 
-        Args:
-            Y_true (np.ndarray): Ground truth values.
-            Y_pred (np.ndarray): Predicted values.
-        Returns:
-            float: nMSE value.
+        Parameters
+        ----------
+        Y_true : np.ndarray
+            Ground-truth values.
+        Y_pred : np.ndarray
+            Predicted values, same shape as `Y_true`.
+        norm : float or np.ndarray
+            Normalization factor (e.g. the data range per component). Default 1.0.
+
+        Returns
+        -------
+        float
+            Normalized error.
         """
         return np.mean(np.sqrt((Y_true - Y_pred) ** 2)) / np.mean(np.sqrt(norm**2))
 
@@ -1569,22 +1730,39 @@ class EchoStateNetwork:
                 long_term=True,
                 short_term=True,
                  ):
-        """
-        Evaluates the trained ESN on test data.
+        """Evaluate the trained ESN on test data with closed-loop forecasts, printing
+        error metrics and building diagnostic figures.
 
-        Args:
-            U_test (np.ndarray): Test input data [L x Nt x N_dim].
-            Y_test (np.ndarray): Ground truth labels for test data.
-            pdf_file (PdfPages, optional): File to save test plots
-                - default: None.
-            max_L_tests (int): Maximum number of L test cases to evaluate
-                - default: 10.
-            seed (int): Random seed for reproducibility.
-            plot_pdf: choose to plot or not the pdf of the prediction
-            nbins:
-            Nt_test: length of the individual tests
-        Returns:
-            None. Prints error metrics and optionally saves plots.
+        Parameters
+        ----------
+        U_test : np.ndarray
+            Test input data, shape ``(L, Nt, N_dim)``.
+        Y_test : np.ndarray
+            Ground-truth outputs for the test data, same leading shape as `U_test`.
+        pdf_file : PdfPages, optional
+            Currently unused by this method (present for API compatibility).
+        Nt_test : int, optional
+            Length of each short-term test, in ESN steps. Defaults to `N_val`.
+        max_L_tests : int
+            Maximum number of segments (of the `L` available) to evaluate. Default 5.
+        nbins : int
+            Number of bins for the prediction PDFs (long-term test only). Default 20.
+        max_short_tests : int
+            Maximum number of short-term test figures to draw, across all segments.
+            Default 10.
+        long_term : bool
+            If True, run one long-term (full-length) closed-loop forecast per tested
+            segment and plot it. Default True.
+        short_term : bool
+            If True, run repeated short-term (`Nt_test`-long) closed-loop forecasts
+            per tested segment and plot up to `max_short_tests` of them. Default True.
+
+        Returns
+        -------
+        list
+            ``[fig_long] + figures_short``: the long-term test figure (or None if
+            `long_term` is False or there is more than one segment) followed by the
+            short-term test figures (each possibly None if `short_term` is False).
         """
 
         if max_L_tests is None and hasattr(self, 'max_L_tests'):
@@ -1835,11 +2013,16 @@ class EchoStateNetwork:
         # Plot Wout matrix
         all_figs.append(self.plot_Wout())
         # Plot test results if applicable (run_test itself skips gracefully if no
-        # segment has enough test-tail length)
+        # segment has enough test-tail length). Capped by max_L_tests/max_short_tests:
+        # run_test makes one long-term figure per tested segment plus one per
+        # short-term test, so a multi-segment (e.g. parametric) network otherwise
+        # emits dozens of figures.
         max_test_len = max(len(u) for u in U_test) if isinstance(U_test, list) else U_test.shape[1]
         if self.perform_test and max_test_len >= self.N_val:
             test_figs = self.run_test(U_test, Y_test,
-                                       long_term=True, short_term=True, max_short_tests=5)
+                                      long_term=True, short_term=True,
+                                      max_L_tests=self.max_L_tests,
+                                      max_short_tests=self.max_short_tests)
             all_figs = all_figs + test_figs
 
         if save_ESN_training:
@@ -1853,17 +2036,24 @@ class EchoStateNetwork:
 
 
     def _plot_BO(self, results_bayesian_optimization):
-        """
-        # Plot Gaussian Process reconstruction for each network in the ensemble after n_tot evaluations.
-        # The GP reconstruction is based on the n_tot function evaluations decided in the search
-        Args:
-            results_bayesian_optimization: dictionary containing
-                - hp_names: label of the optimized hyperparameters
-                - res: result of the GP reconstruction
-            pdf: file to save the figures
+        """Visualize the Bayesian-optimization Gaussian-process reconstruction as one
+        subplot per consecutive hyperparameter pair, all pairs sharing a single figure
+        (parametric ESNs can optimize a dozen hyperparameters -- one figure each is
+        unreadable).
 
-        Returns:
+        Parameters
+        ----------
+        results_bayesian_optimization : dict
+            Dictionary with ``hp_names`` (labels of the optimized hyperparameters),
+            ``res`` (the `skopt` result carrying the GP reconstruction) and
+            ``n_grid_points`` (initial grid evaluations, marked differently from the
+            BO-acquired points).
 
+        Returns
+        -------
+        list
+            ``[fig]`` with the shared figure, or ``[]`` when fewer than two
+            hyperparameters were optimized (nothing to contour).
         """
 
         hp_names = results_bayesian_optimization['hp_names']
@@ -1872,57 +2062,65 @@ class EchoStateNetwork:
 
         f_iters = np.array(res.func_vals)
 
-        figs_bo = []
-        if len(hp_names) >= 2:  # plot GP reconstruction
-            gp = res.models[-1]
-            res_x = np.array(res.x_iters)
-            best_x = res.x  # best-found point in the full (possibly >2D) hyperparameter space
+        if len(hp_names) < 2:  # nothing to contour
+            return []
 
-            for hpi in range(len(hp_names) - 1):
-                range_1 = getattr(self, self._hp_range_attr(hp_names[hpi]))  # type: tuple[float, float]
-                range_2 = getattr(self, self._hp_range_attr(hp_names[hpi + 1]))  # type: tuple[float, float]
+        gp = res.models[-1]
+        res_x = np.array(res.x_iters)
+        best_x = res.x  # best-found point in the full (possibly >2D) hyperparameter space
+        best_idx = np.argmin(f_iters)
+        amin = np.amin([10, np.max(f_iters)])
+        n_len = 100  # points to evaluate the GP at
 
-                n_len = 100  # points to evaluate the GP at
-                xx, yy = np.meshgrid(np.linspace(*range_1, n_len), np.linspace(*range_2, n_len))
+        # All consecutive hyperparameter pairs share one figure (parametric ESNs can
+        # optimize a dozen hyperparameters -- one figure each is unreadable).
+        n_pairs = len(hp_names) - 1
+        ncols = min(3, n_pairs)
+        nrows = int(np.ceil(n_pairs / ncols))
+        fig, axs = plt.subplots(nrows, ncols, figsize=(5 * ncols, 4 * nrows), layout='constrained')
+        axs = np.atleast_1d(axs).ravel()
 
-                # res.space is the full len(hp_names)-D search space, so every evaluated point
-                # needs one value per hyperparameter, not just the 2 being plotted here -- hold
-                # every other dimension fixed at its best-found value (a partial-dependence slice)
-                x_x = np.tile(best_x, (xx.size, 1)).astype(float)
-                x_x[:, hpi] = xx.ravel()
-                x_x[:, hpi + 1] = yy.ravel()
-                x_gp = res.space.transform(x_x.tolist())  # gp prediction needs norm. format
+        for hpi, ax in enumerate(axs[:n_pairs]):
+            range_1 = getattr(self, self._hp_range_attr(hp_names[hpi]))  # type: tuple[float, float]
+            range_2 = getattr(self, self._hp_range_attr(hp_names[hpi + 1]))  # type: tuple[float, float]
 
-                # Plot GP Mean
-                fig = plt.figure(figsize=(10, 5), tight_layout=True)
-                plt.xlabel(hp_names[hpi])
-                plt.ylabel(hp_names[hpi + 1])
+            xx, yy = np.meshgrid(np.linspace(*range_1, n_len), np.linspace(*range_2, n_len))
 
-                # retrieve the gp reconstruction
-                amin = np.amin([10, np.max(f_iters)])
+            # res.space is the full len(hp_names)-D search space, so every evaluated point
+            # needs one value per hyperparameter, not just the 2 being plotted here -- hold
+            # every other dimension fixed at its best-found value (a partial-dependence slice)
+            x_x = np.tile(best_x, (xx.size, 1)).astype(float)
+            x_x[:, hpi] = xx.ravel()
+            x_x[:, hpi + 1] = yy.ravel()
+            x_gp = res.space.transform(x_x.tolist())  # gp prediction needs norm. format
 
-                # Final GP reconstruction for each realization at the evaluation points
-                y_pred = np.clip(-gp.predict(x_gp), a_min=-amin, a_max=-np.min(f_iters)).reshape(n_len, n_len)
+            # Final GP reconstruction for each realization at the evaluation points
+            y_pred = np.clip(-gp.predict(x_gp), a_min=-amin, a_max=-np.min(f_iters)).reshape(n_len, n_len)
 
-                plt.contourf(xx, yy, y_pred, levels=20, cmap='Blues')
-                cbar = plt.colorbar()
-                cbar.set_label(label='-$\\log_{10}$(MSE)', labelpad=15)
-                plt.contour(xx, yy, y_pred, levels=20, colors='black', linewidths=1, linestyles='solid',
-                            alpha=0.3)
-                #   Plot the n_tot search points (columns hpi/hpi+1 -- the pair being
-                #   visualized in *this* subplot, not always the first two hyperparameters)
-                for rx, mk in zip([res_x[:n_grid_points], res_x[n_grid_points:]], ['v', 's']):
-                    plt.plot(rx[:, hpi], rx[:, hpi + 1], mk, c='w', alpha=.8, mec='k', ms=8)
-                # Plot best point
-                best_idx = np.argmin(f_iters)
-                plt.plot(res_x[best_idx, hpi], res_x[best_idx, hpi + 1], '*r', alpha=.8, mec='r', ms=8)
-                figs_bo.append(fig)
+            cf = ax.contourf(xx, yy, y_pred, levels=20, cmap='Blues')
+            ax.contour(xx, yy, y_pred, levels=20, colors='black', linewidths=1, linestyles='solid', alpha=0.3)
+            fig.colorbar(cf, ax=ax, label='-$\\log_{10}$(MSE)')
+            #   Plot the n_tot search points (columns hpi/hpi+1 -- the pair being
+            #   visualized in *this* subplot, not always the first two hyperparameters)
+            for rx, mk in zip([res_x[:n_grid_points], res_x[n_grid_points:]], ['v', 's']):
+                ax.plot(rx[:, hpi], rx[:, hpi + 1], mk, c='w', alpha=.8, mec='k', ms=8)
+            ax.plot(res_x[best_idx, hpi], res_x[best_idx, hpi + 1], '*r', alpha=.8, mec='r', ms=8)
+            ax.set(xlabel=hp_names[hpi], ylabel=hp_names[hpi + 1])
 
-        return figs_bo
+        for ax in axs[n_pairs:]:
+            ax.axis('off')
+
+        return [fig]
 
 
     def plot_Wout(self):
-        # Visualize the output matrix
+        """Visualize the trained read-out matrix `Wout`.
+
+        Returns
+        -------
+        matplotlib.figure.Figure
+            Figure with a single heat-map axis of ``Wout.T``.
+        """
         fig, ax = plt.subplots()
         im = ax.matshow(self.Wout.T, cmap="PRGn", aspect=4., vmin=-np.max(self.Wout), vmax=np.max(self.Wout))
         ax.tick_params(axis="x", bottom=True, top=False, labelbottom=True, labeltop=False)
