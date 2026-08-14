@@ -11,6 +11,16 @@ This is the single shared reservoir core behind
 [`romda`](https://github.com/andreanovoa/romda) (real-time ESN forecasting and
 bias-aware data assimilation).
 
+Documentation: <https://andreanovoa.github.io/EchoStateNetwork/>
+
+## Tutorials
+
+- [`tutorials/01_echo_state_network.ipynb`](tutorials/01_echo_state_network.ipynb)
+  — train an ESN on the Lorenz 63 system, with full and partial observability.
+- [`tutorials/02_parametric_esn.ipynb`](tutorials/02_parametric_esn.ipynb)
+  — one reservoir conditioned on a physical parameter, forecasting at unseen
+  parameter values.
+
 ## Install
 
 ```bash
