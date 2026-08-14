@@ -43,6 +43,7 @@ class EchoStateNetwork:
         - Reservoir and network hyperparameters (e.g., N_units, rho, sigma_in, tikh, etc.)
         - Training, validation, and test configuration (e.g., t_train, t_val, t_test, N_wash, etc.)
         - Optimization settings for Bayesian hyperparameter search (e.g., hyperparameters_to_optimize, rho_range, etc.)
+        - Bayesian optimization output of the last train() call (bo_results; None when no BHO ran)
         - Input and output weight matrices (Win, Wout) and reservoir state matrix (W)
 
     References:
@@ -53,6 +54,21 @@ class EchoStateNetwork:
 
     bias_in = np.array([0.1])  #
     bias_out = np.array([1.0])  # For symmetry breaking
+
+    # Bayesian hyperparameter optimization output of the last train() call, kept for
+    # post-training inspection (e.g. plotting convergence traces downstream):
+    # dict(func_vals=<per-evaluation loss trace>, x_iters=<evaluated points>,
+    #      x=<selected point>, fun=<its loss>, hp_names=<optimized names>,
+    #      n_grid_points=<initial grid size>) -- a slimmed copy of the skopt result
+    # (the raw OptimizeResult retains the training corpus + GP models, bloating and
+    # sometimes breaking pickles of trained ESNs);
+    # None before training and when hyperparameters_to_optimize is empty (no BHO ran).
+    bo_results: dict | None = None
+
+    # Data-split facts of the last train() call (see _split_and_format_data), the
+    # source of training_summary(); None before training.
+    split_summary: dict | None = None
+
     connect = 3  # Connectivity between neurons
     figs_folder = './figs_ESN/'
     filename = 'my_ESN'  # Default ESN file name
@@ -689,7 +705,14 @@ class EchoStateNetwork:
         Returns
         -------
         None
-            Sets `Wout` (and, if not already present, `Win`/`W`) in place.
+            Sets `Wout` (and, if not already present, `Win`/`W`) in place. Also sets
+            `bo_results`: a dict with keys ``'func_vals'`` (the per-evaluation
+            validation-loss trace), ``'x_iters'`` (evaluated points), ``'x'``/``'fun'``
+            (the selected point and its loss), ``'hp_names'``, and ``'n_grid_points'``
+            — or None when `hyperparameters_to_optimize` is empty (no BHO ran). This
+            is a slimmed copy of the `skopt` result: the raw ``OptimizeResult``
+            retains the training corpus and the fitted GP models, which would bloat
+            every pickle/deepcopy of a trained ESN.
         """
         if self.trained:
             print("ESN is already trained. Skipping training.")
@@ -727,16 +750,55 @@ class EchoStateNetwork:
                                                            print_convergence=plot_training)
             else:
                 bo_results = None
+            # Expose the BHO output for post-training inspection (convergence traces
+            # etc.) as a slimmed copy: the raw skopt OptimizeResult retains the whole
+            # training corpus, the fitted GP models and a reference to self, which
+            # would bloat (or, with closure validation strategies, break) every
+            # pickle/deepcopy of a trained ESN.
+            if bo_results is None:
+                self.bo_results = None
+            else:
+                res = bo_results['res']
+                self.bo_results = dict(
+                    func_vals=np.asarray(res.func_vals), x_iters=list(res.x_iters),
+                    x=res.x, fun=res.fun,
+                    hp_names=bo_results['hp_names'],
+                    n_grid_points=bo_results['n_grid_points'])
             # ====================== STEP 3: RIDGE REGRESSION TRAINING =====================
             # Compute the output weight matrix Wout
             self.Wout = self._solve_ridge_regression(U_wtv, Y_wtv)
 
+            print(self.training_summary())
 
             # ========================== STEP 4: TEST AND PLOTTING ======================
             if plot_training:
                 self._plot_training_results(U_test, Y_test, bo_results, save_ESN_training, folder)
         finally:
             self.input_parameters = original_input_parameters
+
+    def training_summary(self) -> str:
+        """One-line summary of the last `train` call: the data split (from
+        `_split_and_format_data`, stored in `split_summary`), the resulting
+        train/validation windows, and the selected hyperparameters (with the number
+        of Bayesian-optimization evaluations when a search ran)."""
+        s = self.split_summary
+        if s is None:
+            raise RuntimeError('no training summary yet: call train() first.')
+        if s['ragged']:
+            data = (f"{s['segments_train']}/{s['segments_in']} segments -> {s['pairs']} pairs, "
+                    f"{s['segments_test']} held out")
+            if s['segments_dropped']:
+                data += f", {s['segments_dropped']} dropped (< N_wash+2)"
+            if s['t_train_given'] is not None:
+                data += " (given t_train ignored: a segmented corpus is never capped)"
+        else:
+            data = f"{self.N_train}+{self.N_val} train+val steps, {s['n_test']} test"
+        hps = ', '.join(f'{name}={self._get_hyperparam(name):.3g}'
+                        for name in ('rho', 'sigma_in', 'tikh'))
+        bo = (f" | BHO: {len(self.bo_results['func_vals'])} evals over "
+              f"{self.bo_results['hp_names']}" if self.bo_results is not None else '')
+        return (f"trained: {data} | t_train={self.t_train:.3g}, t_val={self.t_val:.3g}"
+                + (' (inferred)' if s['t_val_inferred'] else '') + f" | {hps}{bo}")
 
 
     def copy(self):
@@ -1074,10 +1136,8 @@ class EchoStateNetwork:
             usable = [(U_l, Y_l) for U_l, Y_l in zip(U, Y) if U_l.shape[0] >= min_len]
             if not usable:
                 raise ValueError(f'No segment has >= N_wash+2={min_len} steps; reduce N_wash.')
-            if len(usable) < len(U):
-                print(f'_split_and_format_data: dropped {len(U) - len(usable)}/{len(U)} '
-                      f'segment(s) shorter than N_wash+2={min_len} steps.')
 
+            t_val_inferred = self.t_val is None
             if self.t_val is None:
                 # infer the validation window from the dwell (segment) lengths: the
                 # median usable segment's closed-loop tail past its own washout
@@ -1092,10 +1152,6 @@ class EchoStateNetwork:
                         f'Closed-loop validation over so few steps is meaningless; '
                         f'provide longer segments or set t_val explicitly.',
                         stacklevel=2)
-                else:
-                    print(f'_split_and_format_data: t_val not set; inferred from the median '
-                          f'segment (dwell) length: N_val={self.N_val} steps '
-                          f'(t_val={self.t_val:.3g}).')
 
             # Use ALL the input data -- the first 80% of the segments (they arrive in
             # time order) train/validate, the last 20% are held out as the run_test
@@ -1111,28 +1167,29 @@ class EchoStateNetwork:
             Y_test = [Y_l[1:] for _, Y_l in test] or Y_wtv
             kept_pairs = sum(u.shape[0] - self.N_wash for u in U_wtv)
             self.t_train = max(kept_pairs - self.N_val, 1) * self.dt_ESN
-            print(f'_split_and_format_data: segmented data -> using all of it: '
-                  f'{len(wtv)}/{len(usable)} segment(s) train/val ({kept_pairs} pairs, '
-                  f't_train={self.t_train:.3g}), {len(test)} held out for testing.'
-                  + (f' (t_train={t_train_given:.3g} was given; it does not cap a '
-                     f'segmented corpus -- drop segments to train on less.)'
-                     if t_train_given is not None else ''))
+            # quiet by design: train() prints one compact summary line from this
+            self.split_summary = dict(
+                ragged=True, segments_in=len(U), segments_dropped=len(U) - len(usable),
+                segments_train=len(wtv), segments_test=len(test), pairs=kept_pairs,
+                t_val_inferred=t_val_inferred, t_train_given=t_train_given)
         else:
             # a single unsegmented trajectory has no dwell lengths to infer t_val
             # from; when omitted it defaults to 20% of the train/val window, and an
             # omitted t_train consumes all the data (80% train/val, 20% test).
+            t_val_inferred = self.t_val is None
             if self.t_train is None:
                 n_wtv = max(self.N_wash + 2, int(round(0.8 * U.shape[1])))
                 if self.t_val is None:
                     self.t_val = max(1, int(round(0.2 * n_wtv))) * self.dt_ESN
                 self.t_train = max(1, n_wtv - self.N_val) * self.dt_ESN
-                print(f'_split_and_format_data: t_train not set; using all data: '
-                      f'{n_wtv} steps train/val (t_train={self.t_train:.3g}, '
-                      f't_val={self.t_val:.3g}), {U.shape[1] - n_wtv} steps test.')
             elif self.t_val is None:
                 self.t_val = max(1, int(round(0.2 * self.N_train))) * self.dt_ESN
-                print(f'_split_and_format_data: t_val not set; defaulting to 20% of the '
-                      f'training window (t_val={self.t_val:.3g}).')
+            # n_test counts usable test PAIRS: U_test = U[:, N_wtv:-1] drops the
+            # final step (no successor), hence the -1
+            self.split_summary = dict(
+                ragged=False, n_steps=U.shape[1],
+                n_test=max(U.shape[1] - self.N_train - self.N_val - 1, 0),
+                t_val_inferred=t_val_inferred)
             N_wtv = self.N_train + self.N_val
             if U.shape[1] < N_wtv:
                 raise ValueError(f'Increase the length of the training data signal. {U.shape} < {N_wtv}')

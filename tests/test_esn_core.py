@@ -46,6 +46,42 @@ def test_parametric_esn_closed_loop_hyperparameter_search():
     assert esn.trained
 
 
+def test_bo_results_exposed_after_training():
+    # Downstream code (e.g. qlrom's per-chart ESNs) plots BHO convergence traces from
+    # esn.bo_results['func_vals'] -- the per-evaluation validation-loss trace -- so
+    # train() must keep the optimization output instead of discarding it. It is a
+    # SLIMMED copy: the raw skopt OptimizeResult retains the training corpus and GP
+    # models, which would bloat (or, with closure validation strategies, break)
+    # every pickle of a trained ESN.
+    import pickle
+
+    rng = np.random.default_rng(9)
+    data = rng.normal(size=(2, 80, 3))
+    n_func_evals = 3
+
+    esn = EchoStateNetwork(data[0].T, dt=1, N_units=15, upsample=1,
+                            t_train=40, t_val=10, t_test=10, N_wash=5,
+                            N_folds=2, N_grid=2, N_func_evals=n_func_evals,
+                            hyperparameters_to_optimize=['rho'])
+    assert esn.bo_results is None  # nothing to inspect before training
+
+    def local_strategy(*args, **kwargs):  # unpicklable closure, the regression case
+        return EchoStateNetwork._RVC_Noise(*args, **kwargs)
+
+    esn.train(data, plot_training=False, validation_strategy=local_strategy)
+
+    assert isinstance(esn.bo_results, dict)
+    assert len(esn.bo_results['func_vals']) == n_func_evals
+    assert esn.bo_results['hp_names'] == ['rho']
+    pickle.dumps(esn)  # must not choke on (or retain) the BHO internals
+
+    esn_no_bho = EchoStateNetwork(data[0].T, dt=1, N_units=15, upsample=1,
+                                   t_train=40, t_val=10, t_test=10, N_wash=5,
+                                   hyperparameters_to_optimize=[])
+    esn_no_bho.train(data, plot_training=False)
+    assert esn_no_bho.bo_results is None
+
+
 def test_parametric_esn_ragged_segments():
     # Segments (e.g. cluster-dwell chunks) may have different lengths; train_data can
     # be a list of (Nt_l, N_dim) arrays instead of a regular (L, Nt, N_dim) array.
