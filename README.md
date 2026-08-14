@@ -1,5 +1,7 @@
 # EchoStateNetwork
 
+[![PyPI](https://img.shields.io/pypi/v/echostatenetwork)](https://pypi.org/project/echostatenetwork/)
+
 Echo state networks / reservoir computing in pure numpy. One class,
 `EchoStateNetwork`: ridge-regression training with chaotic recycle validation
 (contiguous runs or ragged dwell segments), parametric inputs, optional Bayesian
