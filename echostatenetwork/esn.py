@@ -10,6 +10,7 @@ hyperparameter search (install the [opt] extra).
 """
 
 import os
+import warnings
 from copy import deepcopy
 
 # Validation methods
@@ -950,12 +951,21 @@ class EchoStateNetwork:
             if self.t_val is None:
                 # infer the validation window from the dwell (segment) lengths: the
                 # median usable segment's closed-loop tail past its own washout
-                n_val = max(1, int(np.median([U_l.shape[0] for U_l, _ in usable]))
-                            - self.N_wash - 1)
+                median_len = int(np.median([U_l.shape[0] for U_l, _ in usable]))
+                n_val = max(1, median_len - self.N_wash - 1)
                 self.t_val = n_val * self.dt_ESN
-                print(f'_split_and_format_data: t_val not set; inferred from the median '
-                      f'segment (dwell) length: N_val={self.N_val} steps '
-                      f'(t_val={self.t_val:.3g}).')
+                if n_val < 10:
+                    warnings.warn(
+                        f'inferred validation window is degenerate: N_val={n_val} '
+                        f'step(s), because the median segment ({median_len} steps) '
+                        f'barely exceeds the washout (N_wash={self.N_wash}). '
+                        f'Closed-loop validation over so few steps is meaningless; '
+                        f'provide longer segments or set t_val explicitly.',
+                        stacklevel=2)
+                else:
+                    print(f'_split_and_format_data: t_val not set; inferred from the median '
+                          f'segment (dwell) length: N_val={self.N_val} steps '
+                          f'(t_val={self.t_val:.3g}).')
 
             # Use ALL the input data -- the first 80% of the segments (they arrive in
             # time order) train/validate, the last 20% are held out as the run_test
