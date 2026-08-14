@@ -114,44 +114,40 @@ def test_parametric_esn_per_timestep_varying_parameter_with_bho():
     assert esn.trained
 
 
-def test_ragged_segments_respect_t_train_budget_proportionally():
+def test_ragged_segments_ignore_t_train_budget():
     # Short segments must survive as long as they yield one trainable pair past
     # their own washout (N_wash + 2 raw points -- t_val must NOT gate training
-    # inclusion). t_train is a TOTAL budget: when the corpus holds more trainable
-    # pairs than N_train + N_val, every segment is shrunk by the same fraction
-    # (preserving the corpus composition, e.g. per-cluster balance for qlSRC)
-    # instead of being kept in full (the old, t_train-ignoring behavior) or
-    # whole late segments being dropped.
+    # inclusion). t_train must NOT cap a segmented corpus: read as a total pair
+    # budget it shrank every segment to a couple of steps. Every usable segment is
+    # kept in full whether or not t_train is given, and t_train is written back
+    # from what was kept.
     rng = np.random.default_rng(5)
     N_dim = 2
     lengths = [15, 20, 500, 30, 18]
     segments = [rng.normal(size=(nt, N_dim)) for nt in lengths]
     params = np.array([[float(i) for i in range(len(lengths))]])
 
+    # t_train=100 is far below the corpus (~550 trainable pairs): ignored, not a cap
     esn = EchoStateNetwork(segments[0].T, dt=1, N_units=15, upsample=1,
                             t_train=100, t_val=10, N_wash=3,
                             hyperparameters_to_optimize=[],
                             input_parameters=params)
-    U_wtv, Y_wtv, _, _ = esn._split_and_format_data(segments)
+    U_wtv, Y_wtv, U_test, _ = esn._split_and_format_data(segments)
 
-    assert len(U_wtv) == len(lengths)  # none dropped, even those far below N_val
-    budget = esn.N_train + esn.N_val
-    total_pairs = sum(nt - 1 - esn.N_wash for nt in lengths)
-    kept_pairs = [u.shape[0] - esn.N_wash for u in U_wtv]
-    assert abs(sum(kept_pairs) - budget) <= len(lengths)  # budget met (rounding slack)
-    frac = budget / total_pairs
-    for nt, kp in zip(lengths, kept_pairs):
-        assert abs(kp - frac * (nt - 1 - esn.N_wash)) <= 1  # proportional shrink
+    assert len(U_wtv) == 4 and len(U_test) == 1     # 80/20 segment split, none dropped
+    assert [u.shape[0] for u in U_wtv] == [nt - 1 for nt in lengths[:4]]  # kept in full
+    kept_pairs = sum(u.shape[0] - esn.N_wash for u in U_wtv)
+    assert esn.N_train == max(kept_pairs - esn.N_val, 1)   # written back from the data
     for u, y in zip(U_wtv, Y_wtv):
         assert u.shape[0] == y.shape[0]  # washout+train windows stay aligned
 
-    # a budget covering everything keeps every segment in full (old behavior)
+    # a generous t_train gives exactly the same split -- it is informational here
     esn_all = EchoStateNetwork(segments[0].T, dt=1, N_units=15, upsample=1,
                                 t_train=1000, t_val=10, N_wash=3,
                                 hyperparameters_to_optimize=[],
                                 input_parameters=params)
     U_full, _, _, _ = esn_all._split_and_format_data(segments)
-    assert [u.shape[0] for u in U_full] == [nt - 1 for nt in lengths]
+    assert [u.shape[0] for u in U_full] == [u.shape[0] for u in U_wtv]
 
     esn.train(segments, plot_training=False)
     assert esn.trained

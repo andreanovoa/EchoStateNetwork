@@ -928,16 +928,14 @@ class EchoStateNetwork:
             #      training inclusion -- the probing strategies use whatever tail a
             #      segment has (_SegmentRVC_Noise), so tying the drop rule to N_val
             #      (as before) silently wasted training data whenever t_val was long.
-            #   2. t_train is a TOTAL budget across segments, the ragged counterpart
-            #      of the single-trajectory path's N_train + N_val window. When the
-            #      corpus holds more trainable pairs than the budget, every segment
-            #      is shrunk by the SAME fraction (from its end) rather than
-            #      dropping whole late segments: the ESN cannot know what the
-            #      caller's segments represent (e.g. one per cluster for a shared
-            #      qlSRC reservoir), so proportional shrinkage is the only cap that
-            #      preserves the corpus composition. Before this, t_train was
-            #      silently ignored on every ragged path (a list input always used
-            #      ALL the data, however t_train was set).
+            #   2. t_train does NOT cap a segmented corpus. A caller who cut a
+            #      trajectory into segments already chose how much data to train on;
+            #      t_train is a *window length* for one long trajectory and has no
+            #      sensible reading across many short ones -- read as a total pair
+            #      budget it silently shrank every segment to a couple of steps
+            #      (a per-dwell-sized t_train over hundreds of dwells -> ~2% of each,
+            #      i.e. an ESN trained on almost nothing). So every usable segment is
+            #      kept in full and t_train is written back from what was kept.
             # U_test/Y_test just reuse the kept segments -- run_test is a visual
             # diagnostic, not the metric BHO optimizes, so an in-sample check is an
             # acceptable trade for not fragmenting already-scarce data further.
@@ -959,39 +957,26 @@ class EchoStateNetwork:
                       f'segment (dwell) length: N_val={self.N_val} steps '
                       f'(t_val={self.t_val:.3g}).')
 
-            if self.t_train is None:
-                # no budget given: use ALL the input data -- the first 80% of the
-                # segments (they arrive in time order) train/validate, the last 20%
-                # are held out as the run_test diagnostic window (with a single
-                # segment, test falls back to the in-sample reuse).
-                n_wtv = max(1, int(round(0.8 * len(usable))))
-                wtv, test = usable[:n_wtv], usable[n_wtv:]
-                U_wtv = [U_l[:-1] for U_l, _ in wtv]
-                Y_wtv = [Y_l[1:] for _, Y_l in wtv]
-                U_test = [U_l[:-1] for U_l, _ in test] or U_wtv
-                Y_test = [Y_l[1:] for _, Y_l in test] or Y_wtv
-                kept_pairs = sum(u.shape[0] - self.N_wash for u in U_wtv)
-                self.t_train = max(kept_pairs - self.N_val, 1) * self.dt_ESN
-                print(f'_split_and_format_data: t_train not set; using all data: '
-                      f'{len(wtv)}/{len(usable)} segment(s) train/val ({kept_pairs} pairs, '
-                      f't_train={self.t_train:.3g}), {len(test)} held out for testing.')
-            else:
-                budget = self.N_train + self.N_val          # trainable-pair budget
-                total_pairs = sum(U_l.shape[0] - 1 - self.N_wash for U_l, _ in usable)
-                frac = min(1.0, budget / total_pairs)
-                U_wtv, Y_wtv = [], []
-                for U_l, Y_l in usable:
-                    pairs_l = max(1, int(round(frac * (U_l.shape[0] - 1 - self.N_wash))))
-                    keep = self.N_wash + pairs_l            # washout + trainable inputs;
-                    U_wtv.append(U_l[:keep])                # frac=1 -> keep = Nt_l - 1,
-                    Y_wtv.append(Y_l[1:keep + 1])           # exactly the old U_l[:-1]
-                if frac < 1.0:
-                    kept_pairs = sum(u.shape[0] - self.N_wash for u in U_wtv)
-                    print(f'_split_and_format_data: t_train={self.t_train:.3g} caps the '
-                          f'training data: each of the {len(usable)} segment(s) shrunk to '
-                          f'{100 * frac:.0f}% ({kept_pairs}/{total_pairs} trainable pairs, '
-                          f'budget N_train+N_val={budget}); increase t_train to use more.')
-                U_test, Y_test = U_wtv, Y_wtv
+            # Use ALL the input data -- the first 80% of the segments (they arrive in
+            # time order) train/validate, the last 20% are held out as the run_test
+            # diagnostic window (with a single segment, test falls back to in-sample
+            # reuse). t_train is written back from what was kept, so N_train is
+            # defined afterwards even though nothing was capped by it.
+            t_train_given = self.t_train
+            n_wtv = max(1, int(round(0.8 * len(usable))))
+            wtv, test = usable[:n_wtv], usable[n_wtv:]
+            U_wtv = [U_l[:-1] for U_l, _ in wtv]
+            Y_wtv = [Y_l[1:] for _, Y_l in wtv]
+            U_test = [U_l[:-1] for U_l, _ in test] or U_wtv
+            Y_test = [Y_l[1:] for _, Y_l in test] or Y_wtv
+            kept_pairs = sum(u.shape[0] - self.N_wash for u in U_wtv)
+            self.t_train = max(kept_pairs - self.N_val, 1) * self.dt_ESN
+            print(f'_split_and_format_data: segmented data -> using all of it: '
+                  f'{len(wtv)}/{len(usable)} segment(s) train/val ({kept_pairs} pairs, '
+                  f't_train={self.t_train:.3g}), {len(test)} held out for testing.'
+                  + (f' (t_train={t_train_given:.3g} was given; it does not cap a '
+                     f'segmented corpus -- drop segments to train on less.)'
+                     if t_train_given is not None else ''))
         else:
             # a single unsegmented trajectory has no dwell lengths to infer t_val
             # from; when omitted it defaults to 20% of the train/val window, and an
