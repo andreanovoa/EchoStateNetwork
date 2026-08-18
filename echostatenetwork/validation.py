@@ -14,6 +14,7 @@ Pass one as ``train(validation_strategy=...)``; the class aliases
 
 import numpy as np
 
+
 def RVC_Noise(x, case, U_wtv, Y_wtv, tikh_opt, hp_names, print_convergence=True):
     """
     Implements Chaotic Recycle Validation for hyperparameter optimization.

@@ -4,7 +4,6 @@ Shared ESN implementation for qlrom, romda and related projects.
 """
 
 import os
-from typing import Union
 import warnings
 from copy import deepcopy
 
@@ -392,7 +391,7 @@ class EchoStateNetwork:
 
 
     @cached_property
-    def dr_di(self) -> Union[csr_matrix, np.ndarray]:
+    def dr_di(self) -> csr_matrix | np.ndarray:
         r"""Linear (pre-activation) part of the input-to-reservoir Jacobian,
         $\sigma_\mathrm{in}\,\mathbf{W}_\mathrm{in,1}\,\mathrm{diag}(1/\texttt{norm})$,
         shape ``(N_units, N_dim_in)``, where $\mathbf{W}_\mathrm{in,1}$ is `Win` with
@@ -408,7 +407,7 @@ class EchoStateNetwork:
 
         if issparse(Win_1):
             # .multiply returns a COO matrix: convert back to CSR for efficient products
-            return csr_matrix(Win_1.multiply(g[np.newaxis, :])) 
+            return csr_matrix(Win_1.multiply(g[np.newaxis, :]))
         else:
             return Win_1 * g[np.newaxis, :]
 
@@ -615,7 +614,7 @@ class EchoStateNetwork:
                 (r_in[0] if r_in.ndim == 3 else r_in)
             x_tanh = (rout - (1. - self.leak_rate) * r_prev) / self.leak_rate
             tt = self.leak_rate * (1. - x_tanh ** 2)
-        dr_di = self.dr_di 
+        dr_di = self.dr_di
         if not open_loop_J:
             # u_aug = np.concatenate((u_in / self.norm, self.bias_in))
             # rout = np.tanh(self.sigma_in * self.Win.dot(u_aug) + self.rho * np.dot(self.WCout.T, u_in))
@@ -727,7 +726,7 @@ class EchoStateNetwork:
                                                            print_convergence=plot_training)
             else:
                 bo_results = None
-            # Expose the BHO output for post-training inspection 
+            # Expose the BHO output for post-training inspection
             if bo_results is None:
                 self.bo_results = None
             else:
