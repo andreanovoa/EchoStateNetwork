@@ -1,15 +1,10 @@
 """EchoStateNetwork: a pure-numpy echo state network / reservoir computer.
 
-The single shared core behind the qlrom qlESN families and (eventually) romda's
-ESN_model/ESN_bias. Merged from the two forks that used to live in those repos:
-ragged dwell-segment training (_UY_from_ragged_data), segment-aware validation
-(_SegmentRVC_Noise) and parametric-input helpers from the qlrom side; reservoir
-continuity across N_split training chunks and per-tikhonov-candidate washout in
-validation from the romda side. scikit-optimize is only needed for the Bayesian
-hyperparameter search (install the [opt] extra).
+Shared ESN implementation for qlrom, romda and related projects.
 """
 
 import os
+from typing import Union
 import warnings
 from copy import deepcopy
 
@@ -54,70 +49,47 @@ class EchoStateNetwork:
         (arXiv:2103.03174).
     """
 
-    bias_in = np.array([0.1])  #
-    bias_out = np.array([1.0])  # For symmetry breaking
+    bias_in = np.array([0.1])
+    bias_out = np.array([1.0])  # symmetry breaking
 
-    # Bayesian hyperparameter optimization output of the last train() call, kept for
-    # post-training inspection (e.g. plotting convergence traces downstream):
-    # dict(func_vals=<per-evaluation loss trace>, x_iters=<evaluated points>,
-    #      x=<selected point>, fun=<its loss>, hp_names=<optimized names>,
-    #      n_grid_points=<initial grid size>) -- a slimmed copy of the skopt result
-    # (the raw OptimizeResult retains the training corpus + GP models, bloating and
-    # sometimes breaking pickles of trained ESNs);
-    # None before training and when hyperparameters_to_optimize is empty (no BHO ran).
+    # Slim copy of the last skopt result; None before training or when BHO is off.
     bo_results: dict | None = None
 
-    # Data-split facts of the last train() call (see _split_and_format_data), the
-    # source of training_summary(); None before training.
+    # Split summary from the last train() call; source for training_summary().
     split_summary: dict | None = None
 
-    connect = 3  # Connectivity between neurons
+    connect = 3  # neuron connectivity
     figs_folder = './figs_ESN/'
-    filename = 'my_ESN'  # Default ESN file name
+    filename = 'my_ESN'
 
-    # Parametric ESN input, e.g. a cluster id. At training time either:
-    #   - ndarray, shape (N_param, L): one constant vector per segment, tiled over its Nt steps; or
-    #   - list of length L, each element shape (Nt_l, N_param): explicit per-timestep values,
-    #     for segments where the parameter itself varies within the segment (e.g. a segment
-    #     spanning a cluster transition).
-    # At closed-loop run time: shape (N_param, N_ens), one vector per ensemble member,
-    # held fixed for that run.
+    # Parametric input: (N_param, L) for constant per-segment parameters,
+    # or list of (Nt_l, N_param) arrays when the parameter varies within a segment.
     input_parameters: np.ndarray | None = None
 
-    N_folds = 4  # Folds over the training set
-    # Fold-advance in ESN steps between consecutive validation intervals of
-    # _WFV/_KFV; None -> N_val (the regular, non-overlapping versions). Set to
-    # ~one Lyapunov time in steps for the chaotic versions of Racca & Magri
-    # (2021), where overlapping intervals multiply the folds.
+    N_folds = 4
     val_fold_step = None
-    N_func_evals = 20  # Total evals of Bayesian hyperparameter optimization (BHO)
-    N_grid = 4  # BHO grid N_grid x N_grid \geq N_func_evals
-    N_initial_rand = 0  # Initial random evaluations at BYO
-    N_split = 4  # Splits of training data for faster computation
-    N_units = 100  # Number of neurones
-    N_wash = 50  # Number of washout steps
+    N_func_evals = 20
+    N_grid = 4
+    N_initial_rand = 0
+    N_split = 4
+    N_units = 100
+    N_wash = 50
 
     max_L_tests = 10
     max_short_tests = 10
-    perform_test = True  # Run tests during training?
+    perform_test = True
 
-    observed_idx = None  # class-level so vars(EchoStateNetwork) kwargs filters see it
-    #                      (__init__ defaults it to full observability when not given)
+    observed_idx = None
 
-    # t_train/t_val default to None = "infer from the data at train() time"
-    # (_split_and_format_data): no t_train -> ALL the input data is used, split
-    # 80% train/val vs 20% test; no t_val -> inferred from the dwell (segment)
-    # length for segmented corpora, 20% of the training window otherwise. The
-    # inferred values are written back to t_train/t_val, so N_train/N_val (and
-    # run_test's window) are well defined after training.
-    t_val = None  # Validation time (None = infer, see above)
-    t_train = None  # Training time (None = infer, see above)
-    t_test = 0.5  # Testing time
-    upsample = 5  # Upsample x dt_model = dt_ESN
-    Win_type = 'sparse'  # Type of Wim definition [sparse/dense]
-    norm_method = 'range' # Normalization method for input data
+    # t_train/t_val can be inferred from the data inside train().
+    t_val = None
+    t_train = None
+    t_test = 0.5
+    upsample = 5
+    Win_type = 'sparse'
+    norm_method = 'range'
 
-    # Default hyperparameters and optimization ranges -----------------------
+    # Default hyperparameters and optimization ranges.
     noise = 1e-10
     noise_type = 'gauss'
     hyperparameters_to_optimize = ['rho', 'sigma_in', 'tikh']
@@ -127,23 +99,10 @@ class EchoStateNetwork:
     sigma_in_range = (-5, -1)
     tikh = 1e-12
     tikh_range = [1e-8, 1e-10, 1e-12, 1e-16]
-    # Leaky-integrator reservoir, r_{n+1} = (1 - leak_rate) r_n + leak_rate tanh(...):
-    # leak_rate = 1 (the default) is the plain tanh update -- no leak. Add 'leak_rate'
-    # to hyperparameters_to_optimize to tune it in the Bayesian search.
     leak_rate = 1.0
     leak_rate_range = (0.1, 1.0)
 
-    # Parameter columns default to identity normalization (shift=0, norm=1, see _split_and_format_data).
-    # Since Win's parameter columns are dense (every neuron sees every parameter, unlike the
-    # single-connection-per-neuron sparse state columns), an un-normalized parameter swamps the
-    # whole reservoir: e.g. raw rho in [15, 40] fed densely collapses closed-loop forecasts almost
-    # immediately, vs. tracking for ~150 steps once rescaled to O(1) (same order as the state).
-    # Set optimize_parameter_normalization=True to tune shift/norm per parameter via the same
-    # Bayesian hyperparameter search, matching Adjoint-ESN's parameter_normalization_mean/var,
-    # instead of pre-scaling parameters by hand before passing them in as input_parameters.
-    # param_shift_range/param_norm_range MUST be resized to the parameter's actual physical range
-    # (same as rho_range/sigma_in_range already require) -- the defaults below assume the parameter
-    # is already O(1); e.g. for rho in [15, 40] use param_shift_range=(15, 40), param_norm_range=(1, 20).
+    # Dense parameter columns can swamp the reservoir if the raw values are not rescaled.
     optimize_parameter_normalization = False
     param_shift_range = (-1.0, 1.0)
     param_norm_range = (0.1, 10.0)
@@ -183,24 +142,17 @@ class EchoStateNetwork:
         keys = list(kwargs.keys())
         [setattr(self, key, kwargs.pop(key)) for key in keys if hasattr(EchoStateNetwork, key)]
 
-        # Parametric ESN: default to tuning the parameter's normalization (see class docstring
-        # above) unless the caller explicitly opted out. An un-normalized parameter fed through
-        # Win's dense parameter columns swamps the reservoir (verified in
-        # tutorials/02_parametric_esn.ipynb), so this is not a safe thing to
-        # leave off by default. param_shift_range/param_norm_range are sized from the observed
-        # parameter values in _split_and_format_data instead of here: callers that construct
-        # the ESN with a placeholder input_parameters and set the real per-segment values later
-        # (e.g. qlSRC.fit -- "placeholder; set per-segment in fit()") would otherwise lock in a
-        # degenerate (0, 0) range from the placeholder before the real data is ever seen.
+        # Default to rescaling parametric inputs unless the user explicitly disables it.
+        # Dense parameter columns can otherwise dominate the reservoir dynamics.
         if self.input_parameters is not None and 'optimize_parameter_normalization' not in vars(self):
             self.optimize_parameter_normalization = True
 
-        #  Define time steps and time windows -------------------- #
+        # Define time steps and windows.
         self.dt_ESN = dt * self.upsample
 
-        #  Initialize ESN matrices -------------------------- #
-        self.val_k = kwargs.get('val_k', 0)  # Validation counter
-        self.initialised = False  # Flag for washout
+        # Initialize ESN matrices.
+        self.val_k = kwargs.get('val_k', 0)
+        self.initialised = False
 
     @property
     def trained(self):
@@ -439,7 +391,7 @@ class EchoStateNetwork:
 
 
     @cached_property
-    def dr_di(self) -> csr_matrix | np.ndarray:
+    def dr_di(self) -> Union[csr_matrix, np.ndarray]:
         r"""Linear (pre-activation) part of the input-to-reservoir Jacobian,
         $\sigma_\mathrm{in}\,\mathbf{W}_\mathrm{in,1}\,\mathrm{diag}(1/\texttt{norm})$,
         shape ``(N_units, N_dim_in)``, where $\mathbf{W}_\mathrm{in,1}$ is `Win` with
@@ -455,7 +407,7 @@ class EchoStateNetwork:
 
         if issparse(Win_1):
             # .multiply returns a COO matrix: convert back to CSR for efficient products
-            return csr_matrix(Win_1.multiply(g[np.newaxis, :]))
+            return csr_matrix(Win_1.multiply(g[np.newaxis, :])) 
         else:
             return Win_1 * g[np.newaxis, :]
 
@@ -662,8 +614,7 @@ class EchoStateNetwork:
                 (r_in[0] if r_in.ndim == 3 else r_in)
             x_tanh = (rout - (1. - self.leak_rate) * r_prev) / self.leak_rate
             tt = self.leak_rate * (1. - x_tanh ** 2)
-        dr_di = self.dr_di
-
+        dr_di = self.dr_di 
         if not open_loop_J:
             # u_aug = np.concatenate((u_in / self.norm, self.bias_in))
             # rout = np.tanh(self.sigma_in * self.Win.dot(u_aug) + self.rho * np.dot(self.WCout.T, u_in))
@@ -763,10 +714,7 @@ class EchoStateNetwork:
 
         self.Wout = np.zeros((self.N_units + 1, self.N_dim))  # Initialize Wout with zeros
 
-        # Validation/test runs temporarily overwrite self.input_parameters with the
-        # per-segment slice they're conditioning on (see _RVC_Noise/run_test); restore
-        # the original (N_param, L) array afterwards so later calls (e.g. re-formatting
-        # the training data) keep seeing the full parameter set.
+        # Validation/test runs temporarily overwrite self.input_parameters
         original_input_parameters = self.input_parameters
         try:
             # =================== STEP 2: BAYESIAN HYPERPARAMETER OPTIMIZATION ==============
@@ -778,11 +726,7 @@ class EchoStateNetwork:
                                                            print_convergence=plot_training)
             else:
                 bo_results = None
-            # Expose the BHO output for post-training inspection (convergence traces
-            # etc.) as a slimmed copy: the raw skopt OptimizeResult retains the whole
-            # training corpus, the fitted GP models and a reference to self, which
-            # would bloat (or, with closure validation strategies, break) every
-            # pickle/deepcopy of a trained ESN.
+            # Expose the BHO output for post-training inspection 
             if bo_results is None:
                 self.bo_results = None
             else:
