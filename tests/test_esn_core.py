@@ -437,7 +437,7 @@ def test_wfv_rejects_ragged_segments():
                             t_train=30, t_val=10, N_wash=5,
                             N_grid=2, N_func_evals=2,
                             hyperparameters_to_optimize=['rho'])
-    with pytest.raises(ValueError, match='_SegmentRVC_Noise'):
+    with pytest.raises(ValueError, match='SegmentRVC_Noise'):
         esn.train(segments, plot_training=False,
                   validation_strategy=EchoStateNetwork._WFV)
 
