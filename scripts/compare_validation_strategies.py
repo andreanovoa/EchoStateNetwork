@@ -54,16 +54,27 @@ m_Val is an MAE-like and m_Test an MSE-like quantity on different data, but
 the Table-1 metric -- the Spearman rank correlation r_S between {m_Val} and
 {m_Test} over the ensemble -- is invariant to such monotone rescalings.
 
+The ENSEMBLE RUN: per dataset x strategy, the member with the lowest
+validation objective is the network ``train(n_seeds=len(SEEDS))`` would keep
+(same rule: argmin of ``bo_results['fun']``, and m_Val = 10**fun is monotone),
+so the selection is evaluated from the per-member results already computed
+instead of retraining. The selection table reports the kept member's test
+error and prediction horizon against the ensemble median, and how many
+members beat it on the test set (0% = validation picked the true best).
+
 Outputs (written next to this script):
 - stdout: Table-1-style table of r_S per dataset x strategy ('*' marks each
-  row's maximum),
-- ``compare_validation_strategies.npz``: the table + all per-member data,
+  row's maximum), then the ensemble-selection table,
+- ``compare_validation_strategies.npz``: the tables + all per-member data
+  (incl. the selected seed per cell),
 - ``compare_validation_strategies.pdf``: page 1 = the Figure-8 scatter grid
   (2x3, long dataset, -log10(m_Test) vs -log10(m_Val), regression line, r_S
   annotated); page 2 = box plots of test log10(MSE) and prediction horizon
-  per strategy (long dataset, separate axes).
+  per strategy (long dataset, separate axes), the selected member starred;
+  page 3 = the two stdout tables verbatim (r_S + ensemble run).
 
 Run:  conda run -n qlrom python scripts/compare_validation_strategies.py
+      [--report-only]   # reload the npz and regenerate tables/figures only
 """
 import os
 
@@ -72,6 +83,7 @@ for _v in ('OMP_NUM_THREADS', 'OPENBLAS_NUM_THREADS', 'MKL_NUM_THREADS'):
     os.environ.setdefault(_v, '1')
 
 import io  # noqa: E402
+import sys  # noqa: E402
 import time  # noqa: E402
 import warnings  # noqa: E402
 from concurrent.futures import ProcessPoolExecutor  # noqa: E402
@@ -326,6 +338,36 @@ def rs_table(r_s):
     return '\n'.join(lines)
 
 
+def selected_member(results, ds, name):
+    """Index (in SEEDS order) of the member ``train(n_seeds=...)`` would keep for
+    this cell: the lowest validation objective, argmin of ``bo_results['fun']``
+    -- identical to argmin m_Val since 10**x is monotone."""
+    return int(np.argmin([r['m_val'] for r in results[ds][name]]))
+
+
+def selection_table(results):
+    """Ensemble-run report: per dataset x strategy, the test error and prediction
+    horizon of the best-by-validation member vs the ensemble median, and the
+    fraction of members with strictly lower test error ('beaten by')."""
+    lines = [f'Ensemble run: best of {len(SEEDS)} seeds by validation score '
+             '(the member train(n_seeds=...) keeps) vs the ensemble:', '']
+    header = (f'{"dataset":>8} {"strategy":>9} | {"log10 m_test":>13} {"median":>8} '
+              f'{"beaten by":>10} | {"PH [LT]":>8} {"median":>8}')
+    lines += [header, '-' * len(header)]
+    for ds in DATASETS:
+        for name in STRATEGIES:
+            m_test = np.array([r['m_test'] for r in results[ds][name]])
+            ph = np.array([r['horizon_mean'] for r in results[ds][name]])
+            i = selected_member(results, ds, name)
+            pct = 100.0 * np.mean(m_test < m_test[i])
+            lines.append(f'{ds:>8} {name:>9} | {np.log10(m_test[i]):13.2f} '
+                         f'{np.log10(np.median(m_test)):8.2f} {pct:9.0f}% | '
+                         f'{ph[i]:8.2f} {np.median(ph):8.2f}')
+    lines.append("('beaten by' = share of members with lower test error than the "
+                 'selected one; 0% = validation picked the true best)')
+    return '\n'.join(lines)
+
+
 def make_figure8(results, r_s, pdf):
     """Page 1: Figure-8 scatter grid for the long dataset -- one panel per
     strategy, -log10(m_Test) vs -log10(m_Val), regression line, r_S annotated."""
@@ -363,6 +405,7 @@ def make_boxplots(results, pdf):
         'log10_mse': [[np.log10(r['m_test']) for r in results['long'][n]] for n in names],
         'horizon': [[r['horizon_mean'] for r in results['long'][n]] for n in names],
     }
+    sel = {n: selected_member(results, 'long', n) for n in names}
     for ax, key, label in [(axs[0], 'log10_mse', r'test $\log_{10}$(MSE)'),
                            (axs[1], 'horizon', 'prediction horizon [LT]')]:
         vals = per_strategy[key]
@@ -371,10 +414,26 @@ def make_boxplots(results, pdf):
         for k, v in enumerate(vals):  # individual ensemble members
             ax.plot(k + 1 + rng.uniform(-0.12, 0.12, size=len(v)), v,
                     'o', ms=4, color='tab:gray', alpha=0.6)
+        for k, n in enumerate(names):  # the member train(n_seeds=...) keeps
+            ax.plot(k + 1, vals[k][sel[n]], '*', ms=14, color='tab:red', zorder=3,
+                    label='selected by validation' if k == 0 else None)
         ax.set_xlabel('validation strategy')
         ax.set_ylabel(label)
+    axs[0].legend(loc='upper right', frameon=False)
     fig.suptitle(f'Lorenz 63, long dataset, ensemble of {len(SEEDS)} reservoir '
                  f'seeds ({N_TEST_WINDOWS} test windows each)')
+    pdf.savefig(fig)
+    plt.close(fig)
+
+
+def make_table_page(table, sel_table, pdf):
+    """Page 3: the stdout tables (r_S + ensemble run), verbatim, as a monospace
+    text page -- rs_table/selection_table already return column-aligned strings."""
+    import matplotlib.pyplot as plt
+
+    fig = plt.figure(figsize=(11.0, 7.0))
+    fig.text(0.03, 0.97, table + '\n\n' + sel_table,
+             family='monospace', fontsize=8, va='top')
     pdf.savefig(fig)
     plt.close(fig)
 
@@ -413,7 +472,20 @@ def build_tasks():
     return tasks
 
 
-def main():
+def load_results():
+    """Rebuild the per-member results structure from a previous run's npz, for
+    ``--report-only``: regenerate tables and figures without retraining."""
+    z = np.load(OUT_DIR / 'compare_validation_strategies.npz', allow_pickle=False)
+    scalars = ['m_val', 'm_test', 'horizon_mean', 'rho', 'sigma_in', 'tikh', 'wall']
+    return {ds: {name: [
+        dict(dataset=ds, strategy=name, seed=int(s),
+             **{key: float(z[f'{ds}_{name}_{key}'][j]) for key in scalars},
+             log10_mse_windows=z[f'{ds}_{name}_log10_mse_windows'][j],
+             horizon_windows=z[f'{ds}_{name}_horizon_windows'][j])
+        for j, s in enumerate(z['seeds'])] for name in STRATEGIES} for ds in DATASETS}
+
+
+def main(report_only=False):
     matplotlib.use('Agg')
     t_start = time.perf_counter()
 
@@ -426,19 +498,24 @@ def main():
     print('folds realized (short/long): ' + ', '.join(
         f'{name} {counts["short"][name]}/{counts["long"][name]}' for name in STRATEGIES))
 
-    tasks = build_tasks()
-    n_workers = min(len(tasks), os.cpu_count() - 4)
-    print(f'{len(tasks)} member trainings on {n_workers} workers ...', flush=True)
+    if report_only:
+        results = load_results()
+        print('--report-only: reloaded the per-member results from '
+              f'{OUT_DIR / "compare_validation_strategies.npz"}')
+    else:
+        tasks = build_tasks()
+        n_workers = min(len(tasks), os.cpu_count() - 4)
+        print(f'{len(tasks)} member trainings on {n_workers} workers ...', flush=True)
 
-    results = {ds: {name: [None] * len(SEEDS) for name in STRATEGIES} for ds in DATASETS}
-    n_done = 0
-    with ProcessPoolExecutor(max_workers=n_workers, mp_context=get_context('spawn')) as ex:
-        for r in ex.map(member_task, tasks, chunksize=1):
-            results[r['dataset']][r['strategy']][np.flatnonzero(SEEDS == r['seed'])[0]] = r
-            n_done += 1
-            if n_done % 50 == 0 or n_done == len(tasks):
-                print(f'  {n_done}/{len(tasks)} members done '
-                      f'({time.perf_counter() - t_start:.0f} s)', flush=True)
+        results = {ds: {name: [None] * len(SEEDS) for name in STRATEGIES} for ds in DATASETS}
+        n_done = 0
+        with ProcessPoolExecutor(max_workers=n_workers, mp_context=get_context('spawn')) as ex:
+            for r in ex.map(member_task, tasks, chunksize=1):
+                results[r['dataset']][r['strategy']][np.flatnonzero(SEEDS == r['seed'])[0]] = r
+                n_done += 1
+                if n_done % 50 == 0 or n_done == len(tasks):
+                    print(f'  {n_done}/{len(tasks)} members done '
+                          f'({time.perf_counter() - t_start:.0f} s)', flush=True)
 
     # ------------------------------------------------------------ r_S per cell
     r_s, nan_report = {}, []
@@ -453,6 +530,8 @@ def main():
 
     table = rs_table(r_s)
     print('\n' + table)
+    sel_table = selection_table(results)
+    print('\n' + sel_table)
     print('\nNaN check: ' + ('all m_Val/m_Test finite' if not nan_report else
                              f'NON-FINITE values in {nan_report}'))
 
@@ -460,6 +539,7 @@ def main():
     npz = {'seeds': np.asarray(SEEDS), 'dt': DT, 'lyapunov_time': LT,
            'ph_threshold': PH_THRESHOLD, 'datasets': list(DATASETS),
            'strategies': list(STRATEGIES), 'table': table,
+           'selection_table': sel_table,
            'r_s': np.array([[r_s[ds][n] for n in STRATEGIES] for ds in DATASETS])}
     for ds in DATASETS:
         for name in STRATEGIES:
@@ -468,11 +548,14 @@ def main():
                 npz[f'{ds}_{name}_{key}'] = np.array([r[key] for r in results[ds][name]])
             for key in ['log10_mse_windows', 'horizon_windows']:
                 npz[f'{ds}_{name}_{key}'] = np.stack([r[key] for r in results[ds][name]])
+            npz[f'{ds}_{name}_selected_seed'] = int(
+                SEEDS[selected_member(results, ds, name)])
     np.savez(OUT_DIR / 'compare_validation_strategies.npz', **npz)
 
     with PdfPages(OUT_DIR / 'compare_validation_strategies.pdf') as pdf:
         make_figure8(results, r_s, pdf)
         make_boxplots(results, pdf)
+        make_table_page(table, sel_table, pdf)
 
     print(f'\nSaved {OUT_DIR / "compare_validation_strategies.npz"}')
     print(f'Saved {OUT_DIR / "compare_validation_strategies.pdf"}')
@@ -480,4 +563,4 @@ def main():
 
 
 if __name__ == '__main__':
-    main()
+    main(report_only='--report-only' in sys.argv)

@@ -10,3 +10,4 @@ figs/
 
 # mkdocs build output
 site/
+scripts/*.npz
