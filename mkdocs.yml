@@ -48,6 +48,7 @@ plugins:
 nav:
   - Home: index.md
   - Getting started: getting-started.md
+  - Training and forecasting: training.md
   - Validation strategies: validation.md
   - API reference: api/esn.md
   - Tutorial notebooks:
