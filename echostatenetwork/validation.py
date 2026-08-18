@@ -7,7 +7,9 @@ Pass one as ``train(validation_strategy=...)``; the class aliases
 (``EchoStateNetwork._RVC_Noise`` etc.) keep the old spelling working.
 
 - RVC_Noise: chaotic recycle validation, within-segment folds (the default).
-- SegmentRVC_Noise: one probe per segment, for ragged short-segment corpora.
+- SegmentRVC_Noise: one washed probe per segment, for ragged short-segment corpora.
+- RecycledSegmentRVC_Noise: SegmentRVC_Noise with probe seeds recycled from the
+  ridge pass (exact and free) instead of re-washed from zero.
 - SSV / WFV / KFV: the single-series strategies of Racca & Magri (2021), sharing
   the single_series_validation engine (one teacher-forced pass, prefix-sum ridge).
 """
@@ -252,6 +254,95 @@ def SegmentRVC_Noise(x, case, U_wtv, Y_wtv, tikh_opt, hp_names, print_convergenc
     case.n_folds_realized = n_looop   # surfaced by training_summary()
 
     # select and save the optimal tikhonov and noise level in the targets
+    a = nMAE.argmin()
+    tikh_opt[case.val_k] = case.tikh_range[a]
+    case.tikh = case.tikh_range[a]
+    normalized_best_MAE = nMAE[a] / n_looop
+
+    case.val_k += 1
+    if print_convergence:
+        print(case.val_k, end="")
+        for hp in case.hyperparameters_to_optimize:
+            print(f'\t {case._get_hyperparam(hp):.3e}', end="")
+        print(f'\t {normalized_best_MAE:.4f}')
+
+    return normalized_best_MAE
+
+def RecycledSegmentRVC_Noise(x, case, U_wtv, Y_wtv, tikh_opt, hp_names, print_convergence=True):
+    """`SegmentRVC_Noise` with the probe seeds RECYCLED from the ridge pass instead
+    of re-washed from zero: `_compute_RR_terms` has already driven the reservoir
+    open-loop over every segment and returns those trajectories (`R_RR`), so the
+    state at post-washout index 0 is bit-identical to a dedicated washout of the
+    same length -- and free. The candidate-specific closed-loop seed is one matmul
+    (`reservoir_to_physical` of the shared state with this candidate's readout),
+    the same pattern `single_series_validation` uses for `SSV`/`WFV`/`KFV`.
+
+    Why it exists (measured on the rotating-cylinder corpus): with short segments
+    the washed probe's seed sits one step before the synchronisation cliff, so its
+    closed-loop error largely measures the washout transient, not the
+    hyperparameters -- washed losses are inflated and select conservative
+    hyperparameters through a seed artefact. Recycled seeding makes the validation
+    loss interpretable as forecast skill over the probe horizon.
+
+    Caveat, from the same study: the washed transient acted as an accidental
+    stability regulariser, so recycled selection is more aggressive (higher rho,
+    lower tikh) and can test worse on horizons far beyond the probe length.
+    Stability preference must be encoded deliberately -- keep a rho cap and a tikh
+    floor in the search ranges, and prefer a longer `t_val` where segments allow.
+    """
+    if hp_names:
+        case._reset_hyperparams(x, hp_names)
+
+    N_tikh = len(case.tikh_range)
+    nMAE = np.zeros(N_tikh)
+
+    # One ridge pass serves training AND every probe seed.
+    LHS, RHS, _, R_open = case._compute_RR_terms(U_wtv, Y_wtv)
+    Wout_tik = np.empty((N_tikh, case.N_units + 1, case.N_dim))
+    for tik_j in range(N_tikh):
+        LHS_reg = LHS.copy()
+        LHS_reg.ravel()[::LHS.shape[1] + 1] += case.tikh_range[tik_j]
+        Wout_tik[tik_j] = np.linalg.solve(LHS_reg, RHS)
+
+    # R_open[l][i] is the state after consuming U_l[N_wash + i], so a probe seeded
+    # at index 0 forecasts Y_l[N_wash + 1:] -- needs at least one target row.
+    probeable = [l for l in range(len(U_wtv)) if U_wtv[l].shape[0] >= case.N_wash + 2]
+    if not probeable:
+        raise ValueError('No segment is long enough to hold a recycled probe '
+                         f'(need >= N_wash+2={case.N_wash + 2} steps); reduce N_wash.')
+    if len(probeable) > case.N_folds:
+        # deterministic, evenly spaced subset, as SegmentRVC_Noise (a fresh draw per
+        # call would inject noise the BHO's GP mistakes for hyperparameter signal)
+        pick = np.unique(np.linspace(0, len(probeable) - 1, case.N_folds).astype(int))
+        probeable = [probeable[i] for i in pick]
+
+    n_looop = 0
+    with np.errstate(over='ignore', invalid='ignore'):   # diverged probes are penalised, not warned
+        for l in probeable:
+            U_l, Y_l = U_wtv[l], Y_wtv[l]
+            norm_l = np.max(Y_l, axis=0) - np.min(Y_l, axis=0)
+            if case.input_parameters is not None:
+                N_param = case._n_param(case.input_parameters)
+                case.input_parameters = U_l[0, -N_param:].reshape(N_param, 1)
+            n_looop += 1
+            n_val_l = min(case.N_val, U_l.shape[0] - case.N_wash - 1)
+            Y_val = Y_l[case.N_wash + 1: case.N_wash + 1 + n_val_l]
+            r_seed = R_open[l][0][:, np.newaxis]
+
+            for tik_j in range(N_tikh):
+                case.Wout = Wout_tik[tik_j]
+                u_out = case.reservoir_to_physical(r_seed)   # this candidate's own readout
+                r_out = r_seed.copy()
+                Y_closed = np.zeros_like(Y_val)
+                for i in range(Y_closed.shape[0]):
+                    u_input = case.outputs_to_inputs(full_state=u_out)
+                    u_out, r_out = case.step(u_input, r_out)
+                    Y_closed[i] = u_out[:, 0].copy()
+                err = np.log10(case.compute_nMAE(Y_val, Y_closed, norm=norm_l))
+                nMAE[tik_j] += err if np.isfinite(err) else 10.0   # per-probe divergence penalty
+
+    case.n_folds_realized = n_looop   # surfaced by training_summary()
+
     a = nMAE.argmin()
     tikh_opt[case.val_k] = case.tikh_range[a]
     case.tikh = case.tikh_range[a]

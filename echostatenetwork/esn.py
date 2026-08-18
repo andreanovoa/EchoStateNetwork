@@ -1570,6 +1570,7 @@ class EchoStateNetwork:
     # esn_LL/esn_SRC), scripts, tutorials and tests.
     _RVC_Noise = staticmethod(validation.RVC_Noise)
     _SegmentRVC_Noise = staticmethod(validation.SegmentRVC_Noise)
+    _RecycledSegmentRVC_Noise = staticmethod(validation.RecycledSegmentRVC_Noise)
     _single_series_validation = staticmethod(validation.single_series_validation)
     _SSV = staticmethod(validation.SSV)
     _WFV = staticmethod(validation.WFV)
