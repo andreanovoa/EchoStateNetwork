@@ -71,7 +71,6 @@ class EchoStateNetwork:
     N_func_evals = 20
     N_grid = 4
     N_initial_rand = 0
-    N_split = 4
     N_units = 100
     N_wash = 50
 
@@ -879,8 +878,8 @@ class EchoStateNetwork:
 
         LHS = np.zeros((self.N_units + 1, self.N_units + 1))
         RHS = np.zeros((self.N_units + 1, self.N_dim))
-        R_RR = [np.empty([0, self.N_units])] * len(U_wtv)
-        U_RR = [np.empty([0, self.N_dim])] * len(U_wtv)
+        R_RR = [None] * len(U_wtv)
+        U_RR = [None] * len(U_wtv)
 
 
         for ll in range(len(U_wtv)):
@@ -902,38 +901,34 @@ class EchoStateNetwork:
             for u_in in U_wash_l:
                 _, r = self.step(u_in, r)
 
-            # Split training data for faster computations
-            U_train = np.array_split(Uin_l, self.N_split, axis=0)
-            Y_target = np.array_split(Yout_l, self.N_split, axis=0)
+            if Yout_l.ndim == 3:
+                assert Yout_l.shape[-1] == 1, f'Yout_l has shape {Yout_l.shape}, only 1 sample at a time is allowed'
+                Yout_l = Yout_l[..., 0]
 
-            # N_split chunks are contiguous pieces of ONE segment, so the reservoir
-            # state must carry over between them; re-copying r inside the loop would
-            # restart every chunk from the post-washout state at the wrong time.
-            r_out = r.copy()
-            for U_t, Y_t in zip(U_train, Y_target):
-                if Y_t.ndim == 3:
-                    assert Y_t.shape[-1] == 1, f'Y_t has shape {Y_t.shape}, only 1 sample at a time is allowed'
-                    Y_t = Y_t[..., 0]
+            # Open-loop train phase: one pass over the whole segment, states filled
+            # in place. The Gram cost is invariant to batching, so chunking bought
+            # no speed, and its per-chunk appends only added copies and peak RAM.
+            # ponytail: whole-segment buffers; stream fixed-size chunks (and make
+            # the state return opt-in) if RAM on very long single series ever matters.
+            r_out = r
+            r_open = np.zeros((Uin_l.shape[0], self.N_units, N_ens))
+            y_open = np.zeros((Uin_l.shape[0], self.N_dim, N_ens))
+            for ii, u_in in enumerate(Uin_l):
+                u_out, r_out = self.step(u_in, r_out)
+                y_open[ii], r_open[ii] = u_out, r_out
 
-                # Open-loop train phase
-                r_open = np.zeros((U_t.shape[0], self.N_units, N_ens))
-                y_open = np.zeros((U_t.shape[0], self.N_dim, N_ens))
-                for ii, u_in in enumerate(U_t):
-                    u_out, r_out = self.step(u_in, r_out)
-                    y_open[ii], r_open[ii] = u_out, r_out
+            if y_open.ndim > 2:
+                y_open, r_open = y_open.squeeze(axis=-1), r_open.squeeze(axis=-1)
 
-                if y_open.ndim > 2:
-                    y_open, r_open = y_open.squeeze(axis=-1), r_open.squeeze(axis=-1)
+            R_RR[ll] = r_open
+            U_RR[ll] = y_open
 
-                R_RR[ll] = np.append(R_RR[ll], r_open, axis=0)
-                U_RR[ll] = np.append(U_RR[ll], y_open, axis=0)
+            # Compute matrices for linear regression system
+            bias_out = np.ones([r_open.shape[0], 1]) * self.bias_out
+            r_aug = np.hstack((r_open, bias_out))
 
-                # Compute matrices for linear regression system
-                bias_out = np.ones([r_open.shape[0], 1]) * self.bias_out
-                r_aug = np.hstack((r_open, bias_out))
-
-                LHS += np.dot(r_aug.T, r_aug)
-                RHS += np.dot(r_aug.T, Y_t)
+            LHS += np.dot(r_aug.T, r_aug)
+            RHS += np.dot(r_aug.T, Yout_l)
 
         return LHS, RHS, U_RR, R_RR
 
@@ -1802,7 +1797,7 @@ class EchoStateNetwork:
         # zeroed before BHO -- stale, so they are discarded; the total LHS/RHS
         # are rebuilt per fold from interval sums below.
         _, _, _, R_RR = case._compute_RR_terms(U_wtv, Y_wtv)
-        R = R_RR[0]  # (Nt - N_wash, N_units), contiguous across N_split chunks
+        R = R_RR[0]  # (Nt - N_wash, N_units)
         r_aug = np.hstack([R, np.ones((R.shape[0], 1)) * case.bias_out])
         Y_t = Y_l[case.N_wash:]  # row i <-> input U_l[N_wash + i]
         n_post = r_aug.shape[0]

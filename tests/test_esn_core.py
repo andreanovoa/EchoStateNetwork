@@ -266,29 +266,29 @@ def test_omitted_t_train_single_trajectory_80_20():
     assert U_test.shape[1] == data.shape[0] - n_wtv - 1
 
 
-def test_rr_terms_invariant_to_n_split():
-    """With reservoir continuity across contiguous chunks, the ridge system must be
-    EXACTLY the same whatever N_split is -- it is pure computation batching."""
+def test_rr_terms_match_returned_states():
+    """LHS/RHS must be EXACTLY the Gram products of the returned open-loop states:
+    one unchunked pass per segment, full-segment state arrays assigned in place
+    (the chunked N_split path and its per-chunk appends were removed)."""
     rng = np.random.default_rng(3)
     Nt, N_dim = 400, 3
     y = np.stack([np.sin(0.07 * np.arange(Nt) + 2 * k) for k in range(N_dim)], axis=1)
     y += 0.01 * rng.standard_normal(y.shape)
 
-    def rr(n_split):
-        esn = EchoStateNetwork(y.T, dt=1, N_units=40, upsample=1, N_wash=20,
-                               t_train=300, t_val=50, seed=0,
-                               hyperparameters_to_optimize=[])
-        esn.N_split = n_split
-        esn._generate_W_Win(seed=0)
-        esn.Wout = np.zeros((esn.N_units + 1, esn.N_dim))
-        esn.norm, esn.shift = np.ones(esn.N_dim), np.zeros(esn.N_dim)
-        U_wtv, Y_wtv = esn._UY_from_raw_data(y[np.newaxis], add_noise=False)[:2]
-        return esn._compute_RR_terms(U_wtv, Y_wtv)[:2]
+    esn = EchoStateNetwork(y.T, dt=1, N_units=40, upsample=1, N_wash=20,
+                           t_train=300, t_val=50, seed=0,
+                           hyperparameters_to_optimize=[])
+    esn._generate_W_Win(seed=0)
+    esn.Wout = np.zeros((esn.N_units + 1, esn.N_dim))
+    esn.norm, esn.shift = np.ones(esn.N_dim), np.zeros(esn.N_dim)
+    U_wtv, Y_wtv = esn._UY_from_raw_data(y[np.newaxis], add_noise=False)[:2]
+    LHS, RHS, U_RR, R_RR = esn._compute_RR_terms(U_wtv, Y_wtv)
 
-    LHS1, RHS1 = rr(1)
-    LHS4, RHS4 = rr(4)
-    assert np.allclose(LHS1, LHS4, atol=1e-12)
-    assert np.allclose(RHS1, RHS4, atol=1e-12)
+    assert R_RR[0].shape == (U_wtv[0].shape[0] - esn.N_wash, esn.N_units)
+    assert U_RR[0].shape == (U_wtv[0].shape[0] - esn.N_wash, esn.N_dim)
+    r_aug = np.hstack([R_RR[0], np.ones((R_RR[0].shape[0], 1)) * esn.bias_out])
+    assert np.array_equal(LHS, r_aug.T @ r_aug)
+    assert np.array_equal(RHS, r_aug.T @ Y_wtv[0][esn.N_wash:])
 
 
 def test_spectral_radius_arpack_fallback():
