@@ -48,6 +48,7 @@ plugins:
 nav:
   - Home: index.md
   - Getting started: getting-started.md
+  - Validation strategies: validation.md
   - API reference: api/esn.md
   - Tutorial notebooks:
       - EchoStateNetwork class: https://github.com/andreanovoa/EchoStateNetwork/blob/master/tutorials/01_echo_state_network.ipynb

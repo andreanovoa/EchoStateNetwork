@@ -18,6 +18,12 @@ bias-aware data assimilation).
 - [Parametric ESN](https://github.com/andreanovoa/EchoStateNetwork/blob/master/tutorials/02_parametric_esn.ipynb)
   — one reservoir conditioned on a physical parameter, forecasting at unseen
   parameter values.
+- [Leaky-integrator ESN](https://github.com/andreanovoa/EchoStateNetwork/blob/master/tutorials/03_leaky_esn.ipynb)
+  — the leak-rate hyperparameter and when it helps.
+- [Validation strategies](https://github.com/andreanovoa/EchoStateNetwork/blob/master/tutorials/04_validation_strategies.ipynb)
+  — SSV/WFV/KFV/recycle validation compared live on Lorenz 63, including
+  seeded ensembles with `train(n_seeds=...)`; see also
+  [Validation strategies](validation.md).
 
 ## Acknowledgements
 
