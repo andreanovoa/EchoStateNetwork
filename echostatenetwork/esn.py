@@ -40,7 +40,8 @@ class EchoStateNetwork:
     into high-dimensional space. This allows the model to capture complex dynamics with efficient training.
 
     Attributes:
-        - Reservoir and network hyperparameters (e.g., N_units, rho, sigma_in, tikh, etc.)
+        - Reservoir and network hyperparameters (e.g., N_units, rho, sigma_in, tikh,
+          leak_rate -- the leaky-integrator rate, 1.0 = no leak, etc.)
         - Training, validation, and test configuration (e.g., t_train, t_val, t_test, N_wash, etc.)
         - Optimization settings for Bayesian hyperparameter search (e.g., hyperparameters_to_optimize, rho_range, etc.)
         - Bayesian optimization output of the last train() call (bo_results; None when no BHO ran)
@@ -120,6 +121,11 @@ class EchoStateNetwork:
     sigma_in_range = (-5, -1)
     tikh = 1e-12
     tikh_range = [1e-8, 1e-10, 1e-12, 1e-16]
+    # Leaky-integrator reservoir, r_{n+1} = (1 - leak_rate) r_n + leak_rate tanh(...):
+    # leak_rate = 1 (the default) is the plain tanh update -- no leak. Add 'leak_rate'
+    # to hyperparameters_to_optimize to tune it in the Bayesian search.
+    leak_rate = 1.0
+    leak_rate_range = (0.1, 1.0)
 
     # Parameter columns default to identity normalization (shift=0, norm=1, see _split_and_format_data).
     # Since Win's parameter columns are dense (every neuron sees every parameter, unlike the
@@ -473,9 +479,11 @@ class EchoStateNetwork:
     # _______________________________________________________________________________________________________ STEP & JACOBIAN
     def step(self, u, r):
         r"""Advance the reservoir by one open-loop time step,
-        $\mathbf{r}_{n+1} = \tanh(\sigma_\mathrm{in}\mathbf{W}_\mathrm{in}[\mathbf{u}_n; b_\mathrm{in}]
-        + \rho\mathbf{W}\mathbf{r}_n)$, and read out the corresponding physical state
-        (see the class docstring for the full formulation).
+        $\mathbf{r}_{n+1} = (1-\alpha)\,\mathbf{r}_n +
+        \alpha\tanh(\sigma_\mathrm{in}\mathbf{W}_\mathrm{in}[\mathbf{u}_n; b_\mathrm{in}]
+        + \rho\mathbf{W}\mathbf{r}_n)$ with $\alpha$ = `leak_rate` (the default
+        $\alpha=1$ is the plain tanh update, no leak), and read out the corresponding
+        physical state (see the class docstring for the full formulation).
 
         Parameters
         ----------
@@ -513,8 +521,10 @@ class EchoStateNetwork:
         bias_in = self.bias_in * np.ones((1, u.shape[-1]))
         u_aug = np.concatenate((u_norm, bias_in))
 
-        # Forecast the reservoir state
-        r_out = np.tanh(self.sigma_in * self.Win.dot(u_aug) + self.rho * self.W.dot(r))
+        # Forecast the reservoir state (leaky-integrator; leak_rate=1 -> plain tanh)
+        x_tanh = np.tanh(self.sigma_in * self.Win.dot(u_aug) + self.rho * self.W.dot(r))
+        r_out = x_tanh if self.leak_rate == 1.0 else \
+            (1.0 - self.leak_rate) * r + self.leak_rate * x_tanh
 
         # compute output from ESN if not during training
         u_out = self.reservoir_to_physical(r_out)
@@ -600,7 +610,11 @@ class EchoStateNetwork:
         where $\mathbf{W}_\mathrm{out,1}$ and $\mathbf{W}_\mathrm{in,1}$ are `Wout`/`Win`
         with the bias row/column dropped, and $\mathbf{r}_{n+1}$ is the reservoir state
         obtained by stepping from (`u_in`, `r_in`). The $1/\texttt{norm}$ factor comes
-        from the chain rule through `normalize_input`.
+        from the chain rule through `normalize_input`. With a leaky reservoir
+        (`leak_rate` $\alpha<1$) the middle factor becomes
+        $\alpha\,\mathrm{diag}(1-\tilde{\mathbf{x}}^{\,2})$ with $\tilde{\mathbf{x}}$
+        the tanh pre-leak value, recovered from the step as
+        $(\mathbf{r}_{n+1} - (1-\alpha)\mathbf{r}_n)/\alpha$.
 
         Parameters
         ----------
@@ -633,7 +647,15 @@ class EchoStateNetwork:
         # # Option(i) rin function of bin:
         rout = self.step(u_in, r_in)[1]
 
-        tt = 1. - rout ** 2
+        if self.leak_rate == 1.0:
+            tt = 1. - rout ** 2
+        else:
+            # d(r_out)/d(pre-activation) = leak_rate * (1 - x_tanh^2), with the
+            # tanh pre-leak value recovered from the leaky update
+            r_prev = r_in[:, np.newaxis] if r_in.ndim == 1 else \
+                (r_in[0] if r_in.ndim == 3 else r_in)
+            x_tanh = (rout - (1. - self.leak_rate) * r_prev) / self.leak_rate
+            tt = self.leak_rate * (1. - x_tanh ** 2)
         dr_di = self.dr_di
 
         if not open_loop_J:
@@ -793,8 +815,9 @@ class EchoStateNetwork:
                 data += " (given t_train ignored: a segmented corpus is never capped)"
         else:
             data = f"{self.N_train}+{self.N_val} train+val steps, {s['n_test']} test"
-        hps = ', '.join(f'{name}={self._get_hyperparam(name):.3g}'
-                        for name in ('rho', 'sigma_in', 'tikh'))
+        hp_names = ('rho', 'sigma_in', 'tikh') + \
+            (('leak_rate',) if self.leak_rate != 1.0 else ())
+        hps = ', '.join(f'{name}={self._get_hyperparam(name):.3g}' for name in hp_names)
         bo = (f" | BHO: {len(self.bo_results['func_vals'])} evals over "
               f"{self.bo_results['hp_names']}" if self.bo_results is not None else '')
         return (f"trained: {data} | t_train={self.t_train:.3g}, t_val={self.t_val:.3g}"

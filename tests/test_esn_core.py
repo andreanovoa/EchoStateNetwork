@@ -293,6 +293,7 @@ def test_spectral_radius_arpack_fallback():
     # N_units=150, seed=0 stagnates ARPACK (0/1 eigenvectors at 1501 iterations);
     # the dense fallback must still deliver a unit-spectral-radius reservoir
     import numpy as np
+
     from echostatenetwork import EchoStateNetwork
 
     y = np.random.default_rng(0).standard_normal((200, 3))
@@ -301,3 +302,67 @@ def test_spectral_radius_arpack_fallback():
     W = esn.W.toarray() if hasattr(esn.W, "toarray") else np.asarray(esn.W)
     rho = np.abs(np.linalg.eigvals(W)).max()
     assert np.isclose(rho, 1.0, atol=1e-8)
+
+
+def test_leak_rate_default_is_plain_tanh_step():
+    # leak_rate defaults to 1.0 (no leak): the update IS the plain tanh map
+    rng = np.random.default_rng(11)
+    data = rng.normal(size=(60, 3))
+    esn = EchoStateNetwork(data.T, dt=1, N_units=12, upsample=1, t_train=30,
+                           t_val=10, t_test=10, N_wash=5,
+                           hyperparameters_to_optimize=[])
+    esn.train(data, plot_training=False)
+    assert esn.leak_rate == 1.0
+    u, r = data[:1].T, rng.normal(size=(esn.N_units, 1))
+    u_aug = np.concatenate((esn.normalize_input(u), esn.bias_in * np.ones((1, 1))))
+    expected = np.tanh(esn.sigma_in * esn.Win.dot(u_aug) + esn.rho * esn.W.dot(r))
+    np.testing.assert_allclose(esn.step(u, r)[1], expected)
+
+
+def test_leaky_step_matches_leaky_integrator_formula():
+    rng = np.random.default_rng(12)
+    data = rng.normal(size=(60, 3))
+    alpha = 0.35
+    esn = EchoStateNetwork(data.T, dt=1, N_units=12, upsample=1, t_train=30,
+                           t_val=10, t_test=10, N_wash=5, leak_rate=alpha,
+                           hyperparameters_to_optimize=[])
+    esn.train(data, plot_training=False)
+    u, r = data[:1].T, rng.normal(size=(esn.N_units, 1))
+    u_aug = np.concatenate((esn.normalize_input(u), esn.bias_in * np.ones((1, 1))))
+    x_tanh = np.tanh(esn.sigma_in * esn.Win.dot(u_aug) + esn.rho * esn.W.dot(r))
+    np.testing.assert_allclose(esn.step(u, r)[1], (1 - alpha) * r + alpha * x_tanh)
+
+
+def test_jacobian_matches_finite_differences_with_and_without_leak():
+    rng = np.random.default_rng(13)
+    data = rng.normal(size=(80, 3))
+    for alpha in (1.0, 0.6):
+        esn = EchoStateNetwork(data.T, dt=1, N_units=12, upsample=1, t_train=40,
+                               t_val=15, t_test=10, N_wash=5, leak_rate=alpha,
+                               hyperparameters_to_optimize=[])
+        esn.train(data, plot_training=False)
+        u = data[5].reshape(-1, 1).copy()
+        r = 0.1 * rng.normal(size=(esn.N_units, 1))
+        J = esn.Jacobian(u, r)
+        eps = 1e-4   # smaller eps only adds FD roundoff (verified quadratic convergence)
+        J_fd = np.zeros_like(J)
+        for j in range(u.shape[0]):
+            up, um = u.copy(), u.copy()
+            up[j] += eps
+            um[j] -= eps
+            J_fd[:, j] = ((esn.step(up, r)[0] - esn.step(um, r)[0]) / (2 * eps))[:, 0]
+        np.testing.assert_allclose(J, J_fd, rtol=1e-5, atol=1e-8)
+
+
+def test_leak_rate_optimized_in_bayesian_search():
+    rng = np.random.default_rng(14)
+    data = rng.normal(size=(2, 80, 3))
+    esn = EchoStateNetwork(data[0].T, dt=1, N_units=15, upsample=1, t_train=40,
+                           t_val=10, t_test=10, N_wash=5, N_folds=2, N_grid=2,
+                           N_func_evals=4,
+                           hyperparameters_to_optimize=['leak_rate'])
+    esn.train(data, plot_training=False)
+    lo, hi = esn.leak_rate_range
+    assert lo <= esn.leak_rate <= hi
+    assert 'leak_rate' in esn.bo_results['hp_names']
+    assert 'leak_rate' in esn.training_summary() or esn.leak_rate == 1.0
