@@ -196,7 +196,7 @@ def test_rvc_fold_placement_adapts_to_each_segments_own_length():
     # N_train, as if every segment were that long. With segments now genuinely
     # variable-length (some far shorter than N_train), that silently sliced out of
     # bounds for later folds on short segments -- an empty U_wash/Y_val, NaN in
-    # compute_nRMSE, and a NaN-catch that *reset* the whole accumulated score to a
+    # compute_nMAE, and a NaN-catch that *reset* the whole accumulated score to a
     # constant, making every hyperparameter combination look identical. Fold
     # placement must instead be computed per segment.
     rng = np.random.default_rng(6)
@@ -505,3 +505,26 @@ def test_training_summary_reports_realized_fold_count():
     # capped to what fits: the summary shows the REALIZED count, not the request
     assert esn_kfv.n_folds_realized < 100
     assert f'{esn_kfv.n_folds_realized} validation folds' in esn_kfv.training_summary()
+
+
+def test_compute_nRMSE_deprecated_alias():
+    data = np.random.default_rng(0).normal(size=(30, 3))
+    esn = EchoStateNetwork(data, dt=1, N_units=5, hyperparameters_to_optimize=[])
+    a, b = data[:10], data[10:20]
+    with pytest.warns(DeprecationWarning, match='compute_nMAE'):
+        assert esn.compute_nRMSE(a, b, norm=2.0) == esn.compute_nMAE(a, b, norm=2.0)
+
+
+def test_train_n_seeds_selects_best_realization():
+    rng = np.random.default_rng(3)
+    data = rng.normal(size=(2, 80, 3))
+    esn = EchoStateNetwork(data[0].T, dt=1, N_units=15, upsample=1,
+                            t_train=40, t_val=10, t_test=10, N_wash=5, N_folds=2,
+                            hyperparameters_to_optimize=[])
+    esn.train(data, plot_training=False, n_seeds=3)
+
+    assert esn.trained
+    scores = np.array(list(esn.seed_scores.values()))
+    assert scores.shape == (3,) and np.isfinite(scores).all()
+    # the network kept in place is the best-scoring seed's realization
+    assert esn.seed == list(esn.seed_scores)[int(np.argmin(scores))]

@@ -36,7 +36,7 @@ def RVC_Noise(x, case, U_wtv, Y_wtv, tikh_opt, hp_names, print_convergence=True)
 
     Returns
     -------
-        float: Normalized mean squared error (MSE) for the validation set.
+        float: Mean (over folds) log10 closed-loop normalized MAE of the best Tikhonov candidate.
 
     See Also
     --------
@@ -50,7 +50,7 @@ def RVC_Noise(x, case, U_wtv, Y_wtv, tikh_opt, hp_names, print_convergence=True)
         case._reset_hyperparams(x, hp_names)
 
     N_tikh = len(case.tikh_range)
-    nRMSE = np.zeros(N_tikh)
+    nMAE = np.zeros(N_tikh)
 
     # Train using tv: Wout_tik is passed with all the combinations of tikh_ and target noise
     # This must result in L-Xa timeseries
@@ -83,7 +83,7 @@ def RVC_Noise(x, case, U_wtv, Y_wtv, tikh_opt, hp_names, print_convergence=True)
         # case.N_folds evenly-spaced folds derived from the nominal case.N_train
         # (as if every segment were that long) silently slices out of bounds for
         # any shorter segment -- an empty U_wash/Y_val and a NaN in
-        # compute_nRMSE instead of a genuine hyperparameter signal.
+        # compute_nMAE instead of a genuine hyperparameter signal.
         Nt_l = U_l.shape[0]
         usable_span = Nt_l - case.N_wash - case.N_val
         if usable_span < 0:
@@ -98,7 +98,7 @@ def RVC_Noise(x, case, U_wtv, Y_wtv, tikh_opt, hp_names, print_convergence=True)
             # construction of N_fw_l, so this never slices past the segment
             # end into an empty Y_val (the "case.N_wash + ..." variant did,
             # whenever fold spacing was wide enough for the last fold to run
-            # past Nt_l -- silently returning an empty slice and a NaN nRMSE).
+            # past Nt_l -- silently returning an empty slice and a NaN nMAE).
             p = fold * N_fw_l
 
             # Select washout and validation data
@@ -128,11 +128,11 @@ def RVC_Noise(x, case, U_wtv, Y_wtv, tikh_opt, hp_names, print_convergence=True)
                     Y_closed[i] = u_out[:, 0].copy()
 
                 # Compute normalized MSE; a diverged run contributes a fixed
-                # per-fold penalty (log10 nRMSE of 10) instead of resetting the
+                # per-fold penalty (log10 nMAE of 10) instead of resetting the
                 # whole accumulated sum for this tikhonov value, which would
                 # erase every previous fold's genuine signal.
-                err = np.log10(case.compute_nRMSE(Y_val, Y_closed, norm=norm_l))
-                nRMSE[tik_j] += err if np.isfinite(err) else 10.0
+                err = np.log10(case.compute_nMAE(Y_val, Y_closed, norm=norm_l))
+                nMAE[tik_j] += err if np.isfinite(err) else 10.0
 
     if n_looop == 0:
         raise ValueError('No segment is long enough to hold a single validation '
@@ -140,19 +140,19 @@ def RVC_Noise(x, case, U_wtv, Y_wtv, tikh_opt, hp_names, print_convergence=True)
     case.n_folds_realized = n_looop   # surfaced by training_summary()
 
     # select and save the optimal tikhonov and noise level in the targets
-    a = nRMSE.argmin()
+    a = nMAE.argmin()
     tikh_opt[case.val_k] = case.tikh_range[a]
     case.tikh = case.tikh_range[a]
-    normalized_best_RMSE = nRMSE[a] / n_looop
+    normalized_best_MAE = nMAE[a] / n_looop
 
     case.val_k += 1
     if print_convergence:
         print(case.val_k, end="")
         for hp in case.hyperparameters_to_optimize:
             print(f'\t {case._get_hyperparam(hp):.3e}', end="")
-        print(f'\t {normalized_best_RMSE:.4f}')
+        print(f'\t {normalized_best_MAE:.4f}')
 
-    return normalized_best_RMSE
+    return normalized_best_MAE
 
 def SegmentRVC_Noise(x, case, U_wtv, Y_wtv, tikh_opt, hp_names, print_convergence=True):
     """Recycle validation for a corpus of many, possibly short, roughly-independent
@@ -180,7 +180,7 @@ def SegmentRVC_Noise(x, case, U_wtv, Y_wtv, tikh_opt, hp_names, print_convergenc
         case._reset_hyperparams(x, hp_names)
 
     N_tikh = len(case.tikh_range)
-    nRMSE = np.zeros(N_tikh)
+    nMAE = np.zeros(N_tikh)
 
     LHS, RHS, _, _ = case._compute_RR_terms(U_wtv, Y_wtv)
     Wout_tik = np.empty((N_tikh, case.N_units + 1, case.N_dim))
@@ -243,8 +243,8 @@ def SegmentRVC_Noise(x, case, U_wtv, Y_wtv, tikh_opt, hp_names, print_convergenc
 
             # per-probe penalty for a diverged run, as in RVC_Noise (never
             # reset the accumulated sum -- that erases the other probes' signal)
-            err = np.log10(case.compute_nRMSE(Y_val, Y_closed, norm=norm_l))
-            nRMSE[tik_j] += err if np.isfinite(err) else 10.0
+            err = np.log10(case.compute_nMAE(Y_val, Y_closed, norm=norm_l))
+            nMAE[tik_j] += err if np.isfinite(err) else 10.0
 
     if n_looop == 0:
         raise ValueError('No probeable segment available for validation after filtering; '
@@ -252,19 +252,19 @@ def SegmentRVC_Noise(x, case, U_wtv, Y_wtv, tikh_opt, hp_names, print_convergenc
     case.n_folds_realized = n_looop   # surfaced by training_summary()
 
     # select and save the optimal tikhonov and noise level in the targets
-    a = nRMSE.argmin()
+    a = nMAE.argmin()
     tikh_opt[case.val_k] = case.tikh_range[a]
     case.tikh = case.tikh_range[a]
-    normalized_best_RMSE = nRMSE[a] / n_looop
+    normalized_best_MAE = nMAE[a] / n_looop
 
     case.val_k += 1
     if print_convergence:
         print(case.val_k, end="")
         for hp in case.hyperparameters_to_optimize:
             print(f'\t {case._get_hyperparam(hp):.3e}', end="")
-        print(f'\t {normalized_best_RMSE:.4f}')
+        print(f'\t {normalized_best_MAE:.4f}')
 
-    return normalized_best_RMSE
+    return normalized_best_MAE
 
 def single_series_validation(x, case, U_wtv, Y_wtv, tikh_opt, hp_names,
                               print_convergence, folds_of, strategy_name):
@@ -359,7 +359,7 @@ def single_series_validation(x, case, U_wtv, Y_wtv, tikh_opt, hp_names,
         prefix[b] = (A, B)
 
     N_tikh = len(case.tikh_range)
-    nRMSE = np.zeros(N_tikh)
+    nMAE = np.zeros(N_tikh)
     r_washed = None  # lazily-computed genuine washout state (i0 == 0 folds)
 
     for train_ranges, i0, n_val_k in folds:
@@ -409,24 +409,24 @@ def single_series_validation(x, case, U_wtv, Y_wtv, tikh_opt, hp_names,
             # Per-fold penalty for a diverged closed loop, as in RVC_Noise
             # (never reset the accumulated sum -- that erases the other
             # folds' signal).
-            err = np.log10(case.compute_nRMSE(Y_val, Y_closed, norm=norm_l))
-            nRMSE[tik_j] += err if np.isfinite(err) else 10.0
+            err = np.log10(case.compute_nMAE(Y_val, Y_closed, norm=norm_l))
+            nMAE[tik_j] += err if np.isfinite(err) else 10.0
 
     # select and save the optimal tikhonov (same bookkeeping as RVC_Noise:
     # _optimize_hyperparameters reads tikh_opt[best_idx] after BHO)
-    a = nRMSE.argmin()
+    a = nMAE.argmin()
     tikh_opt[case.val_k] = case.tikh_range[a]
     case.tikh = case.tikh_range[a]
-    normalized_best_RMSE = nRMSE[a] / len(folds)
+    normalized_best_MAE = nMAE[a] / len(folds)
 
     case.val_k += 1
     if print_convergence:
         print(case.val_k, end="")
         for hp in case.hyperparameters_to_optimize:
             print(f'\t {case._get_hyperparam(hp):.3e}', end="")
-        print(f'\t {normalized_best_RMSE:.4f}')
+        print(f'\t {normalized_best_MAE:.4f}')
 
-    return normalized_best_RMSE
+    return normalized_best_MAE
 
 def SSV(x, case, U_wtv, Y_wtv, tikh_opt, hp_names, print_convergence=True):
     """Single shot validation (SSV) of Racca & Magri (2021).

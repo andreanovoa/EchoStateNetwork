@@ -3,8 +3,12 @@
 Shared ESN implementation for qlrom, romda and related projects.
 """
 
+import io
 import os
+import pickle
 import warnings
+from concurrent.futures import ProcessPoolExecutor
+from contextlib import redirect_stdout
 from copy import deepcopy
 
 # Validation methods
@@ -25,6 +29,35 @@ def add_pdf_page(pdf, fig):
     """Save one matplotlib figure as a page in an open PdfPages, then close it."""
     pdf.savefig(fig)
     plt.close(fig)
+
+
+def _train_one_seed(case, seed, train_data, add_noise, validation_strategy, kwargs):
+    """Worker for `EchoStateNetwork.train(n_seeds=...)` (module-level so it pickles
+    into worker processes): regenerate the reservoir for this seed, train fully,
+    and return ``(case, score)`` with one validation score comparable across seeds
+    -- the BHO minimum when a search ran, otherwise one evaluation of the
+    validation strategy on a sacrificial copy (the strategy mutates `Wout`/`tikh`
+    while scanning `tikh_range`). Stdout is captured and returned instead of
+    printed: worker prints interleave across processes, and a forked Jupyter
+    kernel's ZMQ stream is not fork-safe -- the parent prints the logs in order."""
+    log = io.StringIO()
+    with redirect_stdout(log):
+        for attr in ('_W', '_Win', '_Wout'):
+            if hasattr(case, attr):
+                delattr(case, attr)
+        case.seed = seed
+        case.train(train_data, add_noise=add_noise, plot_training=False,
+                   validation_strategy=validation_strategy, seed=seed, **kwargs)
+        if case.bo_results is not None:
+            score = case.bo_results['fun']
+        else:
+            strategy = validation_strategy or validation.RVC_Noise
+            U_wtv, Y_wtv = case._split_and_format_data(train_data, add_noise=add_noise)[:2]
+            probe = case.copy()
+            probe.val_k = 0
+            score = strategy([], probe, U_wtv, Y_wtv, np.zeros(1), [],
+                             print_convergence=False)
+    return case, float(score), log.getvalue()
 
 # XDG_RUNTIME_DIR = 'tmp/'
 
@@ -652,6 +685,7 @@ class EchoStateNetwork:
               folder=None,
               validation_strategy=None,
               seed=None,
+              n_seeds=1,
               **kwargs
               ):
         """Train the ESN: format the data into washout/train/validation/test sets,
@@ -678,6 +712,12 @@ class EchoStateNetwork:
         seed : int, optional
             Random seed for generating `Win`/`W` if they don't already exist.
             Defaults to `seed`/`rng`.
+        n_seeds : int
+            If > 1, train this many reservoir realizations (seeds ``base, base+1,
+            ...`` with ``base = seed or self.seed``) on the same data and settings,
+            in parallel processes, and keep the one with the best validation score;
+            per-seed scores are stored in `seed_scores` for statistical comparison.
+            Training plots are skipped in this mode.
         **kwargs
             Any existing attribute to override before training (e.g. `N_units`).
 
@@ -693,6 +733,11 @@ class EchoStateNetwork:
             retains the training corpus and the fitted GP models, which would bloat
             every pickle/deepcopy of a trained ESN.
         """
+        if n_seeds > 1:
+            return self._train_multi_seed(train_data, n_seeds, add_noise=add_noise,
+                                          validation_strategy=validation_strategy,
+                                          seed=seed, **kwargs)
+
         if self.trained:
             print("ESN is already trained. Skipping training.")
             pass #  skip training
@@ -747,6 +792,45 @@ class EchoStateNetwork:
                 self._plot_training_results(U_test, Y_test, bo_results, save_ESN_training, folder)
         finally:
             self.input_parameters = original_input_parameters
+
+    def _train_multi_seed(self, train_data, n_seeds, add_noise, validation_strategy,
+                          seed, **kwargs):
+        """Backend of ``train(n_seeds > 1)``: train `n_seeds` reservoir realizations
+        of this ESN on the same data and settings, adopt the realization with the
+        best validation score in place, and store the per-seed scores in
+        `seed_scores` (``{seed: score}``) for statistical comparison. Runs one
+        process per seed when the ESN and validation strategy pickle (a closure
+        strategy doesn't -- falls back to a serial loop with a note)."""
+        base = self.seed if seed is None else seed
+        seeds = [base + i for i in range(n_seeds)]
+        try:
+            pickle.dumps((self, validation_strategy))
+            parallel = True
+        except Exception:
+            print('n_seeds: ESN or validation_strategy is not picklable; '
+                  'training the seeds serially instead of in parallel.')
+            parallel = False
+        if parallel:
+            # ponytail: no BLAS-thread throttling in workers; export OMP_NUM_THREADS
+            # if n_seeds x BLAS threads oversubscribes the machine.
+            with ProcessPoolExecutor(max_workers=min(n_seeds, os.cpu_count() or 1)) as ex:
+                results = list(ex.map(_train_one_seed, [self] * n_seeds, seeds,
+                                      [train_data] * n_seeds, [add_noise] * n_seeds,
+                                      [validation_strategy] * n_seeds,
+                                      [kwargs] * n_seeds))
+        else:
+            results = [_train_one_seed(self.copy(), s, train_data, add_noise,
+                                       validation_strategy, kwargs) for s in seeds]
+        for _, _, log in results:
+            print(log, end='')
+        scores = np.array([score for _, score, _ in results])
+        best = int(np.nanargmin(scores))
+        self.__dict__.clear()
+        self.__dict__.update(results[best][0].__dict__)
+        self.seed_scores = dict(zip(seeds, scores))
+        print(f'n_seeds={n_seeds}: validation score {scores.mean():.4f} +/- '
+              f'{scores.std():.4f} (best {scores[best]:.4f} @ seed {seeds[best]}, '
+              f'worst {scores.max():.4f}) -> kept seed {seeds[best]}')
 
     def training_summary(self) -> str:
         """One-line summary of the last `train` call: the data split (from
@@ -1361,7 +1445,7 @@ class EchoStateNetwork:
         # Update hyperparameters with the best result
         self._reset_hyperparams(result.x, hp_names, tikhonov=tikh_opt[best_idx])
 
-        print(f"seed {self.seed} \t Optimal hyperparameters: {result.x}, {self.tikh}, MSE: {result.fun}")  # type: ignore
+        print(f"seed {self.seed} \t Optimal hyperparameters: {result.x}, {self.tikh}, val score: {result.fun}")  # type: ignore
 
         return dict(res=result,
                     hp_names=hp_names,
@@ -1491,11 +1575,11 @@ class EchoStateNetwork:
     _WFV = staticmethod(validation.WFV)
     _KFV = staticmethod(validation.KFV)
 
-    def compute_nRMSE(self, Y_true, Y_pred, norm=1.0):
-        r"""Error metric used throughout training/validation/testing,
+    def compute_nMAE(self, Y_true, Y_pred, norm=1.0):
+        r"""Error metric used throughout training/validation/testing: the normalized
+        mean absolute error
         $\mathrm{mean}(|\mathbf{Y}_\mathrm{true} - \mathbf{Y}_\mathrm{pred}|) /
-        \mathrm{mean}(|\texttt{norm}|)$ -- despite the name, this is a normalized
-        mean absolute error, not a root-mean-square error.
+        \mathrm{mean}(|\texttt{norm}|)$.
 
         Parameters
         ----------
@@ -1511,7 +1595,13 @@ class EchoStateNetwork:
         float
             Normalized error.
         """
-        return np.mean(np.sqrt((Y_true - Y_pred) ** 2)) / np.mean(np.sqrt(norm**2))
+        return np.mean(np.abs(Y_true - Y_pred)) / np.mean(np.abs(norm))
+
+    def compute_nRMSE(self, Y_true, Y_pred, norm=1.0):
+        """Deprecated alias of `compute_nMAE` -- the metric was never an RMSE."""
+        warnings.warn('compute_nRMSE computes a normalized MAE; use compute_nMAE',
+                      DeprecationWarning, stacklevel=2)
+        return self.compute_nMAE(Y_true, Y_pred, norm)
 
     # _______________________________________________________________________________________ TEST & PLOTTING FUNCTIONS
 
@@ -1702,7 +1792,7 @@ class EchoStateNetwork:
                 # predict over the entire test set
                 Y_closed, U_open = predict_Y(U_test_l[:-1], Y_test_l[self.N_wash:])
 
-                err_long = np.log10(self.compute_nRMSE(Y_closed, Y_test_l[self.N_wash:], norm=norm_l))
+                err_long = np.log10(self.compute_nMAE(Y_closed, Y_test_l[self.N_wash:], norm=norm_l))
 
                 fig_long, grid = plt.subplots(nrows=self.N_dim, ncols=2, figsize=[10, 2.5 * self.N_dim],
                                          sharex='col', sharey='row', layout='tight', width_ratios=[5, 1])
@@ -1756,7 +1846,7 @@ class EchoStateNetwork:
                     # predict
                     Y_closed, U_open = predict_Y(current_input, current_target)
 
-                    current_error = np.log10(self.compute_nRMSE(current_target, Y_closed, norm=norm_l))
+                    current_error = np.log10(self.compute_nMAE(current_target, Y_closed, norm=norm_l))
 
                     short_term_error += current_error
 
