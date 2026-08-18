@@ -26,6 +26,18 @@ The hyperparameters that matter are the effective spectral radius `rho`, the
 input scaling `sigma_in`, and the Tikhonov regularization `tikh` — all three
 selected by validation (below).
 
+![The two ESN configurations](img/esn_basic_config.png)
+
+*The two configurations of the network (diagram from
+[romda](https://github.com/andreanovoa/romda), where the ESN forecasts a bias
+$\mathbf{b}$ — read $\mathbf{b}$ as this package's physical state
+$\mathbf{u}$). (a) Training: teacher-forced open loop on data pairs; the
+readouts $\mathbf{b}^\mathrm{tr}_{k+1}$ against their targets form the ridge
+regression for $\mathbf{W}_\mathrm{out}$. (b) Forecasting: closed loop — each
+prediction $\mathbf{b}^\mathrm{f}$ feeds back as the next input (in romda the
+first input is the innovation $\mathbf{d}_k - \mathbf{M}\bar{\psi}^a_k$; here,
+the last washout readout).*
+
 For a *parametric* ESN, `input_parameters` appends parameter columns to the
 input, densely connected through $\mathbf{W}_\mathrm{in}$ — one reservoir
 conditioned on a physical parameter
