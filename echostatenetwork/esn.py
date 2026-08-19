@@ -986,20 +986,15 @@ class EchoStateNetwork:
 
             # Washout phase to initialize reservoir state
             N_ens = U_wash_l.shape[-1] if U_wash_l.ndim == 3 else 1
-            r = np.zeros((self.N_units, N_ens))
+            r_out = np.zeros((self.N_units, N_ens))
             for u_in in U_wash_l:
-                _, r = self.step(u_in, r)
+                _, r_out = self.step(u_in, r_out)
 
             if Yout_l.ndim == 3:
                 assert Yout_l.shape[-1] == 1, f'Yout_l has shape {Yout_l.shape}, only 1 sample at a time is allowed'
                 Yout_l = Yout_l[..., 0]
 
             # Open-loop train phase: one pass over the whole segment, states filled
-            # in place. The Gram cost is invariant to batching, so chunking bought
-            # no speed, and its per-chunk appends only added copies and peak RAM.
-            # ponytail: whole-segment buffers; stream fixed-size chunks (and make
-            # the state return opt-in) if RAM on very long single series ever matters.
-            r_out = r
             r_open = np.zeros((Uin_l.shape[0], self.N_units, N_ens))
             y_open = np.zeros((Uin_l.shape[0], self.N_dim, N_ens))
             for ii, u_in in enumerate(Uin_l):
@@ -1009,8 +1004,8 @@ class EchoStateNetwork:
             if y_open.ndim > 2:
                 y_open, r_open = y_open.squeeze(axis=-1), r_open.squeeze(axis=-1)
 
-            R_RR[ll] = r_open
-            U_RR[ll] = y_open
+            R_RR[ll] = r_open # type: ignore
+            U_RR[ll] = y_open # type: ignore
 
             # Compute matrices for linear regression system
             bias_out = np.ones([r_open.shape[0], 1]) * self.bias_out
