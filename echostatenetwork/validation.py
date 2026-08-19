@@ -34,8 +34,8 @@ def log_nMAE(case, Y_true, Y_pred, norm=1.0):
 
 def nMSE(case, Y_true, Y_pred, norm=None):
     """Probe metric: raw MSE normalised by the truth's own mean square (`norm` is
-    ignored); 1e6 for a diverged probe. The open-loop one-step objective of
-    Armin's BO, usable in any strategy via ``case.validation_metric``."""
+    ignored); 1e6 for a diverged probe. A common open-loop one-step objective,
+    usable in any strategy via ``case.validation_metric``."""
     m = float(np.mean((Y_pred - Y_true) ** 2)) / (float(np.mean(Y_true**2)) + 1e-14)
     return m if np.isfinite(m) else 1e6
 
