@@ -437,7 +437,7 @@ def test_wfv_rejects_ragged_segments():
                             t_train=30, t_val=10, N_wash=5,
                             N_grid=2, N_func_evals=2,
                             hyperparameters_to_optimize=['rho'])
-    with pytest.raises(ValueError, match='SegmentRVC_Noise'):
+    with pytest.raises(ValueError, match='segment strategies'):
         esn.train(segments, plot_training=False,
                   validation_strategy=EchoStateNetwork._WFV)
 
@@ -530,30 +530,24 @@ def test_train_n_seeds_selects_best_realization():
     assert esn.seed == list(esn.seed_scores)[int(np.argmin(scores))]
 
 
-def test_recycled_segment_probe_seed_matches_dedicated_washout():
-    # The recycled strategy's foundation: R_RR's post-washout state is bit-identical
-    # to driving the reservoir from zero over the same N_wash inputs.
-    rng = np.random.default_rng(5)
-    segments = [rng.normal(size=(30, 3)) for _ in range(3)]
-    esn = EchoStateNetwork(segments[0].T, dt=1, N_units=20, upsample=1, N_wash=5,
-                            hyperparameters_to_optimize=[])
-    esn.train(segments, plot_training=False, add_noise=False)
-    U_wtv, Y_wtv = esn._split_and_format_data(segments, add_noise=False)[:2]
-    R_open = esn._compute_RR_terms(U_wtv, Y_wtv)[3]
-    for U_l, R_l in zip(U_wtv, R_open):
-        r = np.zeros((esn.N_units, 1))
-        for u_in in U_l[:esn.N_wash + 1]:      # R_l[0] is the state AFTER U_l[N_wash]
-            _, r = esn.step(u_in, r)
-        assert np.array_equal(R_l[0], r[:, 0])
+def test_validation_metric_is_shared_across_strategies():
+    # A custom probe metric set on the ESN is used by RVC and the single-series
+    # engine alike (strategy geometry and probe scoring are orthogonal).
+    calls = []
 
+    def counting_metric(case, Y_true, Y_pred, norm):
+        calls.append(Y_true.shape)
+        return float(np.mean((Y_true - Y_pred) ** 2))
 
-def test_recycled_segment_rvc_selects_finite():
-    rng = np.random.default_rng(6)
-    segments = [rng.normal(size=(40, 3)) for _ in range(6)]
-    esn = EchoStateNetwork(segments[0].T, dt=1, N_units=15, upsample=1, N_wash=5,
-                            N_folds=3, N_grid=2, N_func_evals=2,
-                            hyperparameters_to_optimize=['rho'])
-    esn.train(segments, plot_training=False,
-              validation_strategy=EchoStateNetwork._RecycledSegmentRVC_Noise)
-    assert esn.trained and np.isfinite(esn.Wout).all()
-    assert esn.n_folds_realized == 3
+    rng = np.random.default_rng(11)
+    data = rng.normal(size=(2, 80, 3))
+    esn = EchoStateNetwork(data[0].T, dt=1, N_units=12, upsample=1,
+                            t_train=40, t_val=10, t_test=0., N_wash=5, N_folds=2,
+                            hyperparameters_to_optimize=[],
+                            validation_metric=counting_metric)
+    esn.train(data, plot_training=False)
+    U_wtv, Y_wtv = esn._split_and_format_data(data)[:2]
+    from echostatenetwork import validation
+    out = validation.RVC_Noise([], esn.copy(), U_wtv, Y_wtv, np.zeros(1), [],
+                               print_convergence=False)
+    assert calls and np.isfinite(out)

@@ -102,6 +102,10 @@ class EchoStateNetwork:
 
     N_folds = 4
     val_fold_step = None
+    # optional probe metric shared by every validation strategy:
+    # metric(case, Y_true, Y_pred, norm) -> float; None = each strategy's default
+    # (validation.log_nMAE for the recycle family). See validation.py.
+    validation_metric = None
     N_func_evals = 20
     N_grid = 4
     N_initial_rand = 0
@@ -1565,12 +1569,10 @@ class EchoStateNetwork:
     # ___________________________________________________________________________________________ VALIDATION STRATEGIES
 
     # Implemented as module-level functions in validation.py; aliased as
-    # staticmethods so existing references keep working: self._RVC_Noise
-    # (train()'s default), EchoStateNetwork._SegmentRVC_Noise (qlrom's
-    # esn_LL/esn_SRC), scripts, tutorials and tests.
+    # staticmethods so existing references keep working: self._RVC_Noise is
+    # train()'s default. The qlESN segment strategies live in
+    # qlroms.data_driven_qlroms.validation (they are dwell-corpus specific).
     _RVC_Noise = staticmethod(validation.RVC_Noise)
-    _SegmentRVC_Noise = staticmethod(validation.SegmentRVC_Noise)
-    _RecycledSegmentRVC_Noise = staticmethod(validation.RecycledSegmentRVC_Noise)
     _single_series_validation = staticmethod(validation.single_series_validation)
     _SSV = staticmethod(validation.SSV)
     _WFV = staticmethod(validation.WFV)

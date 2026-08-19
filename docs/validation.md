@@ -23,10 +23,6 @@ training data.*
   scores a closed-loop run on an interval recycled from the training series.
   Racca & Magri (2021) find it matches K-fold's accuracy at a fraction of the
   cost, since there is no per-fold retraining.
-- **`SegmentRVC_Noise`** — recycle validation for a *ragged corpus* of many,
-  possibly short, segments (e.g. cluster-dwell chunks in
-  [qlrom](https://github.com/andreanovoa/qlrom)): one washout + closed-loop
-  probe per segment instead of within-segment folds.
 - **`SSV`** — *single shot validation*: one training/validation split. The
   cheapest and, for chaotic series, the least reliable — its single interval
   correlates weakly with test error. Provided for comparison.
@@ -38,10 +34,15 @@ training data.*
   on everything outside its validation interval, exactly (prefix-sum
   assembly), and validates on it.
 
-All strategies score with the range-normalized mean absolute error
-(`compute_nMAE`) accumulated as a log-mean over folds, guard against diverged
-closed loops (a fixed per-fold penalty instead of a poisoned sum), and select
-the Tikhonov parameter from `tikh_range` per evaluation.
+All strategies select the Tikhonov parameter from `tikh_range` per evaluation
+and score their probes through a shared **validation metric**: any callable
+`metric(case, Y_true, Y_pred, norm) -> float` (divergence penalty included).
+Set `validation_metric` on the ESN to swap the scoring for every strategy at
+once; built-ins are `log_nMAE` (log10 range-normalized MAE, the recycle-family
+default) and `nMSE` (raw variance-normalized MSE). The qlESN-specific segment
+strategies (`SegmentRVC_Noise`, `RecycledSegmentRVC_Noise`) live in
+[qlrom](https://github.com/andreanovoa/qlrom)'s
+`qlroms.data_driven_qlroms.validation` and share the same contract.
 
 ## Ensembles of reservoir seeds
 
