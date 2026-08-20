@@ -551,3 +551,13 @@ def test_validation_metric_is_shared_across_strategies():
     out = validation.RVC_Noise([], esn.copy(), U_wtv, Y_wtv, np.zeros(1), [],
                                print_convergence=False)
     assert calls and np.isfinite(out)
+
+
+def test_ragged_t_test_zero_trains_on_every_segment():
+    rng = np.random.default_rng(12)
+    segments = [rng.normal(size=(40, 3)) for _ in range(6)]
+    esn = EchoStateNetwork(segments[0].T, dt=1, N_units=10, upsample=1, N_wash=5,
+                            t_test=0.0, hyperparameters_to_optimize=[])
+    esn.train(segments, plot_training=False)
+    assert esn.split_summary['segments_train'] == 6
+    assert esn.split_summary['segments_test'] == 0

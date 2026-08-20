@@ -1217,7 +1217,10 @@ class EchoStateNetwork:
             # reuse). t_train is written back from what was kept, so N_train is
             # defined afterwards even though nothing was capped by it.
             t_train_given = self.t_train
-            n_wtv = max(1, int(round(0.8 * len(usable))))
+            # t_test == 0 means NO diagnostic holdout: every segment trains
+            # (run_test then reuses the training segments in-sample)
+            n_wtv = (len(usable) if self.t_test == 0
+                     else max(1, int(round(0.8 * len(usable)))))
             wtv, test = usable[:n_wtv], usable[n_wtv:]
             U_wtv = [U_l[:-1] for U_l, _ in wtv]
             Y_wtv = [Y_l[1:] for _, Y_l in wtv]
