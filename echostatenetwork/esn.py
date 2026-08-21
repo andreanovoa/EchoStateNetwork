@@ -878,6 +878,92 @@ class EchoStateNetwork:
         """
         return deepcopy(self)
 
+    def to_arrays(self) -> dict:
+        """Deployment state as a flat dict of plain numpy-compatible values, ready
+        for ``np.savez`` (no pickled objects). The inverse is `from_arrays`.
+
+        Captures exactly what `step`/`reservoir_to_physical`/`outputs_to_inputs`
+        read -- configuration scalars, `bias_in`/`bias_out` (pinned as data, so a
+        future class-default change cannot alter a stored model), `norm`/`shift`
+        (which carry any BHO-tuned parameter normalization), and the matrices
+        (`W`/`Win` as exact CSR triplets, so a rebuilt reservoir is bit-identical).
+        Matrices appear only when generated. A ragged (list) `input_parameters` is
+        collapsed to ``np.zeros((N_param, 1))``: after training only its column
+        count is read at run time. Dropped entirely: BO search state and ranges,
+        split/seed summaries, `WCout` and other derived caches. The rng is NOT
+        stored -- a reloaded model's stochastic noise stream restarts from `seed`.
+        """
+        out = dict(N_dim=self.N_dim, N_units=self.N_units, N_wash=self.N_wash,
+                   upsample=self.upsample, seed=self.seed, dt_ESN=self.dt_ESN,
+                   rho=self.rho, sigma_in=self.sigma_in, tikh=self.tikh,
+                   leak_rate=self.leak_rate, noise=self.noise,
+                   Win_type=self.Win_type, norm_method=self.norm_method,
+                   noise_type=self.noise_type,
+                   bias_in=np.asarray(self.bias_in), bias_out=np.asarray(self.bias_out),
+                   observed_idx=np.asarray(self.observed_idx),
+                   norm=np.asarray(self.norm), shift=np.asarray(self.shift))
+        ip = self.input_parameters
+        if ip is not None:
+            out['input_parameters'] = (np.zeros((self._n_param(ip), 1))
+                                       if isinstance(ip, list) else np.asarray(ip))
+        if hasattr(self, '_Wout'):
+            out['Wout'] = np.asarray(self._Wout)
+        if hasattr(self, '_W'):
+            out.update(W_data=self._W.data, W_indices=self._W.indices,
+                       W_indptr=self._W.indptr)
+        if hasattr(self, '_Win'):
+            if issparse(self._Win):
+                out.update(Win_data=self._Win.data, Win_indices=self._Win.indices,
+                           Win_indptr=self._Win.indptr)
+            else:
+                out['Win'] = np.asarray(self._Win)
+        return out
+
+    @classmethod
+    def from_arrays(cls, arrays) -> 'EchoStateNetwork':
+        """Rebuild a deployable ESN from `to_arrays`'s dict (values may be 0-d numpy
+        scalars from an npz, or memory-mapped arrays). `trained` is True iff the
+        matrix keys are present. Assignment runs through the normal constructor and
+        property setters, so every shape assertion still guards the load."""
+        def f(key):
+            return float(np.asarray(arrays[key]))
+
+        def s(key):
+            return str(np.asarray(arrays[key]))
+
+        n_units = int(np.asarray(arrays['N_units']))
+        upsample = int(np.asarray(arrays['upsample']))
+        ip = np.asarray(arrays['input_parameters']) if 'input_parameters' in arrays else None
+        esn = cls(np.zeros((int(np.asarray(arrays['N_dim'])), 1)),
+                  dt=f('dt_ESN') / upsample,
+                  N_units=n_units, N_wash=int(np.asarray(arrays['N_wash'])),
+                  upsample=upsample, Win_type=s('Win_type'),
+                  norm_method=s('norm_method'), noise_type=s('noise_type'),
+                  noise=f('noise'), rho=f('rho'), sigma_in=f('sigma_in'),
+                  tikh=f('tikh'), leak_rate=f('leak_rate'),
+                  observed_idx=np.asarray(arrays['observed_idx']),
+                  input_parameters=ip)
+        esn.seed = int(np.asarray(arrays['seed']))
+        esn.bias_in = np.asarray(arrays['bias_in'])
+        esn.bias_out = np.asarray(arrays['bias_out'])
+        if 'Win' in arrays:
+            esn.Win = np.asarray(arrays['Win'])
+        elif 'Win_data' in arrays:
+            esn.Win = csr_matrix((np.asarray(arrays['Win_data']),
+                                  np.asarray(arrays['Win_indices']),
+                                  np.asarray(arrays['Win_indptr'])),
+                                 shape=(n_units, esn.N_dim_in + 1))
+        if 'W_data' in arrays:
+            esn.W = csr_matrix((np.asarray(arrays['W_data']),
+                                np.asarray(arrays['W_indices']),
+                                np.asarray(arrays['W_indptr'])),
+                               shape=(n_units, n_units))
+        if 'Wout' in arrays:
+            esn.Wout = np.asarray(arrays['Wout'])
+        esn.norm = np.asarray(arrays['norm'])
+        esn.shift = np.asarray(arrays['shift'])
+        return esn
+
     # _______________________________________________________________________________________ HELPER METHODS FOR ESN INITIALIZATION & TRAINING
 
 
