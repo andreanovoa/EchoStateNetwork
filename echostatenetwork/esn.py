@@ -1797,7 +1797,9 @@ class EchoStateNetwork:
             # Perform washout (open-loop without extra forecast step)
             r_out = np.zeros((self.N_units, N_ens))
             u_out = np.zeros((self.N_dim, N_ens))
-            u_open = np.zeros_like(_target[:self.N_wash])
+            # sized by the washout, not by the target: a short-term test whose window is
+            # shorter than N_wash would otherwise overflow this buffer (IndexError)
+            u_open = np.zeros((self.N_wash,) + _target.shape[1:])
 
 
             for ii, u_in in enumerate(_input[:self.N_wash]):
