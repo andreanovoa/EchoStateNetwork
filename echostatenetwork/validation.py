@@ -83,7 +83,7 @@ def RVC_Noise(x, case, U_wtv, Y_wtv, tikh_opt, hp_names, print_convergence=True)
     # Train using tv: Wout_tik is passed with all the combinations of tikh_ and target noise
     # This must result in L-Xa timeseries
     LHS, RHS, _, _ = case._compute_RR_terms(U_wtv, Y_wtv)
-    Wout_tik = np.empty((N_tikh, case.N_units + 1, case.N_dim))
+    Wout_tik = np.empty((N_tikh,) + RHS.shape)
 
     # print(f'Computing Wout for tikhonov values: {case.tikh_range}')
     # print(f'LHS shape: {LHS.shape}, RHS shape: {RHS.shape}')
@@ -246,6 +246,9 @@ def single_series_validation(x, case, U_wtv, Y_wtv, tikh_opt, hp_names,
     _, _, _, R_RR = case._compute_RR_terms(U_wtv, Y_wtv)
     R = R_RR[0]  # (Nt - N_wash, N_units)
     r_aug = np.hstack([R, np.ones((R.shape[0], 1)) * case.bias_out])
+    if case.readout_input:   # row i also reads the normalised input U_l[N_wash + i]
+        r_aug = np.hstack([R, case.normalize_input(U_l[case.N_wash:case.N_wash + R.shape[0]].T).T,
+                           np.ones((R.shape[0], 1)) * case.bias_out])
     Y_t = Y_l[case.N_wash:]  # row i <-> input U_l[N_wash + i]
     n_post = r_aug.shape[0]
 
@@ -262,8 +265,8 @@ def single_series_validation(x, case, U_wtv, Y_wtv, tikh_opt, hp_names,
     # system is a difference of prefixes, so every teacher-forced row enters
     # exactly one Gram product regardless of the number of folds.
     bounds = sorted({0, *(b for tr, _, _ in folds for rng_ in tr for b in rng_)})
-    A = np.zeros((case.N_units + 1, case.N_units + 1))
-    B = np.zeros((case.N_units + 1, case.N_dim))
+    A = np.zeros((r_aug.shape[1], r_aug.shape[1]))
+    B = np.zeros((r_aug.shape[1], case.N_dim))
     prefix, prev = {}, 0
     for b in bounds:
         if b > prev:
@@ -296,7 +299,9 @@ def single_series_validation(x, case, U_wtv, Y_wtv, tikh_opt, hp_names,
         # pass serves every fold and Tikhonov candidate.
         if i0 >= 1:
             r_seed = R[i0 - 1][:, np.newaxis]
+            u_seed = U_l[case.N_wash + i0 - 1].reshape(-1, 1)   # the input that produced r_seed
         else:
+            u_seed = U_l[case.N_wash - 1].reshape(-1, 1)
             if r_washed is None:
                 r_washed = np.zeros((case.N_units, 1))
                 for u_in in U_l[:case.N_wash]:
@@ -313,7 +318,7 @@ def single_series_validation(x, case, U_wtv, Y_wtv, tikh_opt, hp_names,
             # Tikhonov loop, since the open-loop reservoir path is
             # Wout-independent and only the seed readout depends on Wout.
             r_out = r_seed.copy()
-            u_out = case.reservoir_to_physical(r_out)
+            u_out = case.reservoir_to_physical(r_out, u=u_seed)
 
             Y_closed = np.zeros_like(Y_val)
             for i in range(Y_closed.shape[0]):

@@ -100,6 +100,11 @@ class EchoStateNetwork:
     # or list of (Nt_l, N_param) arrays when the parameter varies within a segment.
     input_parameters: np.ndarray | None = None
 
+    # Readout on [r; u; bias] instead of [r; bias]: a direct linear input-to-output
+    # term (u = the normalised ESN input, parameter columns included), the common
+    # "input skip" ESN variant. Wout then has N_units + N_dim_in + 1 rows.
+    readout_input = False
+
     N_folds = 4
     val_fold_step = None
     # optional probe metric shared by every validation strategy:
@@ -192,6 +197,11 @@ class EchoStateNetwork:
         self.initialised = False
 
     @property
+    def _n_readout(self) -> int:
+        """int: rows of `Wout` -- reservoir units, the input when `readout_input`, and the bias."""
+        return self.N_units + 1 + (self.N_dim_in if self.readout_input else 0)
+
+    @property
     def trained(self):
         """Flag to check if the model has been trained"""
         return hasattr(self, '_Win') and hasattr(self, '_Wout') and hasattr(self, '_W')
@@ -279,7 +289,8 @@ class EchoStateNetwork:
     @property
     def Wout(self) -> np.ndarray:
         """The trained (ridge-regression) read-out matrix, shape
-        ``(N_units + 1, N_dim)`` -- the last row multiplies the output bias
+        ``(N_units + 1, N_dim)``, or ``(N_units + N_dim_in + 1, N_dim)`` with
+        `readout_input` (rows [r; u; bias]) -- the last row multiplies the output bias
         `bias_out`. Used in `reservoir_to_physical`.
         """
         return self._Wout
@@ -290,8 +301,8 @@ class EchoStateNetwork:
         Setter for the reservoir state matrix (W).
         """
         # Ensure the matrix has the correct dimensions
-        assert value.shape == (self.N_units + 1, self.N_dim), \
-            f'Wout must be a matrix of shape ({self.N_units + 1}, {self.N_dim}), but got {value.shape}'
+        assert value.shape == (self._n_readout, self.N_dim), \
+            f'Wout must be a matrix of shape ({self._n_readout}, {self.N_dim}), but got {value.shape}'
         # Set the output matrix
         self._Wout = value
 
@@ -366,7 +377,7 @@ class EchoStateNetwork:
         """
         assert self.trained, 'ESN must be trained with washout before calling step method. Call ESN.train() first.'
         if value is None:
-            self._WCout = np.linalg.lstsq(self.Wout[:-1], self.W.toarray(), rcond=None)[0]
+            self._WCout = np.linalg.lstsq(self.Wout[:self.N_units], self.W.toarray(), rcond=None)[0]
         else:
             self._WCout = value
 
@@ -522,12 +533,12 @@ class EchoStateNetwork:
             (1.0 - self.leak_rate) * r + self.leak_rate * x_tanh
 
         # compute output from ESN if not during training
-        u_out = self.reservoir_to_physical(r_out)
+        u_out = self._readout(r_out, u_norm)
         return u_out, r_out
 
 
 
-    def reservoir_to_physical(self, r):
+    def reservoir_to_physical(self, r, u=None):
         """Convert the reservoir state to the physical state via the output matrix.
 
         Parameters
@@ -535,18 +546,29 @@ class EchoStateNetwork:
         r : np.ndarray
             Reservoir state, shape ``(N_units, N_ens)`` (the output bias row is
             appended internally).
+        u : np.ndarray, optional
+            The (raw, un-normalised) ESN input that produced `r`, shape
+            ``(N_dim_in, N_ens)``. Required when `readout_input` is True, since the
+            readout then also reads the input; ignored otherwise.
 
         Returns
         -------
         np.ndarray
             Physical state, shape ``(N_dim, N_ens)``.
         """
+        if not self.readout_input:
+            return self._readout(r, None)
+        if u is None:
+            raise ValueError("readout_input=True: the readout also reads the input that "
+                             "produced r; pass u= (the raw ESN input of that step).")
+        u = u[:, np.newaxis] if u.ndim == 1 else u
+        return self._readout(r, self.normalize_input(u))
 
-        # output bias added
+    def _readout(self, r, u_norm):
+        """Wout^T [r; u_norm; bias_out] (u_norm only when `readout_input`)."""
         bias_out = self.bias_out * np.ones((1, r.shape[-1]))
-        r_aug = np.concatenate((r, bias_out))
-
-        return np.dot(self.Wout.T, r_aug)
+        parts = (r, u_norm, bias_out) if self.readout_input else (r, bias_out)
+        return np.dot(self.Wout.T, np.concatenate(parts))
 
     def normalize_input(self, data):
         r"""Shift-and-scale the input, $(\mathbf{u} - \texttt{shift}) / \texttt{norm}$
@@ -659,13 +681,16 @@ class EchoStateNetwork:
             #  Win_G += dr_di ......
             raise NotImplementedError('Numerical test of closed-loop Jacobian did not pass')
 
+        # readout_input adds the direct term Wout_u^T diag(1/norm) (constant in r)
+        J_u = (self.Wout[self.N_units:self.N_units + self.N_dim_in].T / self.norm[np.newaxis, :]
+               if self.readout_input else 0.)
         N_ens = tt.shape[-1]
         if N_ens == 1:
             if issparse(dr_di):
                 RHS = dr_di.T.multiply(tt[:, 0][np.newaxis, :])
             else:
                 RHS = dr_di.T * tt[:, 0][np.newaxis, :]
-            return RHS.dot(Wout_1.T).T
+            return RHS.dot(Wout_1.T).T + J_u
 
         J = np.zeros((self.N_dim, self.N_dim_in, N_ens))
         for ens_i in range(N_ens):
@@ -673,7 +698,7 @@ class EchoStateNetwork:
                 RHS = dr_di.T.multiply(tt[:, ens_i][np.newaxis, :])
             else:
                 RHS = dr_di.T * tt[:, ens_i][np.newaxis, :]
-            J[:, :, ens_i] = RHS.dot(Wout_1.T).T
+            J[:, :, ens_i] = RHS.dot(Wout_1.T).T + J_u
 
         return J
 
@@ -761,7 +786,7 @@ class EchoStateNetwork:
         if not hasattr(self, '_W') or not hasattr(self, '_Win'):
             self._generate_W_Win(seed=seed)
 
-        self.Wout = np.zeros((self.N_units + 1, self.N_dim))  # Initialize Wout with zeros
+        self.Wout = np.zeros((self._n_readout, self.N_dim))  # Initialize Wout with zeros
 
         # Validation/test runs temporarily overwrite self.input_parameters
         original_input_parameters = self.input_parameters
@@ -898,7 +923,7 @@ class EchoStateNetwork:
                    rho=self.rho, sigma_in=self.sigma_in, tikh=self.tikh,
                    leak_rate=self.leak_rate, noise=self.noise,
                    Win_type=self.Win_type, norm_method=self.norm_method,
-                   noise_type=self.noise_type,
+                   noise_type=self.noise_type, readout_input=bool(self.readout_input),
                    bias_in=np.asarray(self.bias_in), bias_out=np.asarray(self.bias_out),
                    observed_idx=np.asarray(self.observed_idx),
                    norm=np.asarray(self.norm), shift=np.asarray(self.shift))
@@ -942,7 +967,9 @@ class EchoStateNetwork:
                   noise=f('noise'), rho=f('rho'), sigma_in=f('sigma_in'),
                   tikh=f('tikh'), leak_rate=f('leak_rate'),
                   observed_idx=np.asarray(arrays['observed_idx']),
-                  input_parameters=ip)
+                  input_parameters=ip,
+                  readout_input=bool(np.asarray(arrays['readout_input']))
+                  if 'readout_input' in arrays else False)
         esn.seed = int(np.asarray(arrays['seed']))
         esn.bias_in = np.asarray(arrays['bias_in'])
         esn.bias_out = np.asarray(arrays['bias_out'])
@@ -1051,8 +1078,8 @@ class EchoStateNetwork:
                 - R_RR (list): List of reservoir states split by L-segments.
         """
 
-        LHS = np.zeros((self.N_units + 1, self.N_units + 1))
-        RHS = np.zeros((self.N_units + 1, self.N_dim))
+        LHS = np.zeros((self._n_readout, self._n_readout))
+        RHS = np.zeros((self._n_readout, self.N_dim))
         R_RR = [None] * len(U_wtv)
         U_RR = [None] * len(U_wtv)
 
@@ -1095,7 +1122,11 @@ class EchoStateNetwork:
 
             # Compute matrices for linear regression system
             bias_out = np.ones([r_open.shape[0], 1]) * self.bias_out
-            r_aug = np.hstack((r_open, bias_out))
+            if self.readout_input:   # row ii also reads the (normalised) input that produced r_open[ii]
+                U2 = Uin_l[..., 0] if Uin_l.ndim == 3 else Uin_l
+                r_aug = np.hstack((r_open, self.normalize_input(U2.T).T, bias_out))
+            else:
+                r_aug = np.hstack((r_open, bias_out))
 
             LHS += np.dot(r_aug.T, r_aug)
             RHS += np.dot(r_aug.T, Yout_l)

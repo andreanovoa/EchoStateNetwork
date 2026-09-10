@@ -561,3 +561,46 @@ def test_ragged_t_test_zero_trains_on_every_segment():
     esn.train(segments, plot_training=False)
     assert esn.split_summary['segments_train'] == 6
     assert esn.split_summary['segments_test'] == 0
+
+
+def test_readout_input_reads_the_input_directly():
+    # readout_input=True: Wout^T [r; u_norm; bias], the "input skip" readout
+    rng = np.random.default_rng(21)
+    data = rng.normal(size=(80, 3))
+    kw = dict(dt=1, N_units=12, upsample=1, t_train=40, t_val=15, t_test=10, N_wash=5,
+              hyperparameters_to_optimize=[])
+    esn = EchoStateNetwork(data.T, readout_input=True, **kw)
+    esn.train(data, plot_training=False)
+    assert esn.Wout.shape == (esn.N_units + esn.N_dim_in + 1, 3)
+    u = data[5].reshape(-1, 1).copy()
+    r = 0.1 * rng.normal(size=(esn.N_units, 1))
+    u_out, r_out = esn.step(u, r)
+    manual = esn.Wout.T @ np.vstack([r_out, esn.normalize_input(u), esn.bias_out * np.ones((1, 1))])
+    np.testing.assert_allclose(u_out, manual)
+    np.testing.assert_allclose(esn.reservoir_to_physical(r_out, u=u), u_out)
+    with pytest.raises(ValueError, match="readout_input"):
+        esn.reservoir_to_physical(r_out)
+    # the Jacobian carries the direct term
+    J = esn.Jacobian(u, r)
+    eps, J_fd = 1e-4, np.zeros((3, 3))
+    for j in range(3):
+        up, um = u.copy(), u.copy()
+        up[j] += eps
+        um[j] -= eps
+        J_fd[:, j] = ((esn.step(up, r)[0] - esn.step(um, r)[0]) / (2 * eps))[:, 0]
+    np.testing.assert_allclose(J, J_fd, rtol=1e-5, atol=1e-8)
+    # save/load keeps the flag and the closed loop is bit-identical
+    back = EchoStateNetwork.from_arrays(esn.to_arrays())
+    assert back.readout_input
+    assert np.array_equal(back.step(u, r)[0], u_out)
+    # the default readout is unchanged
+    plain = EchoStateNetwork(data.T, **kw)
+    plain.train(data, plot_training=False)
+    assert plain.Wout.shape == (plain.N_units + 1, 3) and not plain.readout_input
+
+
+def test_readout_input_through_the_validation_strategies():
+    for strategy in (None, EchoStateNetwork._SSV, EchoStateNetwork._WFV):
+        esn = _train_single_series(strategy, readout_input=True)
+        assert esn.trained and np.isfinite(esn.Wout).all()
+        assert esn.Wout.shape == (esn.N_units + esn.N_dim_in + 1, 3)
