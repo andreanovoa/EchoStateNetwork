@@ -103,7 +103,11 @@ class EchoStateNetwork:
     # Readout on [r; u; bias] instead of [r; bias]: a direct linear input-to-output
     # term (u = the normalised ESN input, parameter columns included), the common
     # "input skip" ESN variant. Wout then has N_units + N_dim_in + 1 rows.
+    # 'params': the readout reads only the parameter rows, Wout on [r; p; bias].
     readout_input = False
+    # False: Win's parameter columns are zero, so the parameter reaches the output only
+    # through the readout (with readout_input='params'), never the reservoir.
+    param_in_reservoir = True
 
     N_folds = 4
     val_fold_step = None
@@ -111,6 +115,10 @@ class EchoStateNetwork:
     # metric(case, Y_true, Y_pred, norm) -> float; None = each strategy's default
     # (validation.log_nMAE for the recycle family). See validation.py.
     validation_metric = None
+    # optional guardrail shared by the closed-loop validation strategies: weight of the
+    # saturation penalty (0 = off). See qlroms' segment strategies for the rationale --
+    # a saturated reservoir scores well over a short probe and fails over a long forecast.
+    saturation_penalty = 0.0
     N_func_evals = 20
     N_grid = 4
     N_initial_rand = 0
@@ -198,8 +206,20 @@ class EchoStateNetwork:
 
     @property
     def _n_readout(self) -> int:
-        """int: rows of `Wout` -- reservoir units, the input when `readout_input`, and the bias."""
-        return self.N_units + 1 + (self.N_dim_in if self.readout_input else 0)
+        """int: rows of `Wout` -- reservoir units, the input rows `readout_input` reads, and the bias."""
+        rows = self._readout_rows
+        return self.N_units + 1 + rows.stop - rows.start
+
+    @property
+    def _readout_rows(self) -> slice:
+        """slice: rows of the normalised input the readout reads -- all with
+        `readout_input` True, the parameter rows with 'params', none when False."""
+        if isinstance(self.readout_input, str):
+            if self.readout_input != 'params' or self.input_parameters is None:
+                raise ValueError(f"readout_input={self.readout_input!r}: only 'params' is "
+                                 "accepted, and it needs input_parameters")
+            return slice(self.N_dim_in - self._n_param(self.input_parameters), self.N_dim_in)
+        return slice(0, self.N_dim_in if self.readout_input else 0)
 
     @property
     def trained(self):
@@ -567,7 +587,7 @@ class EchoStateNetwork:
     def _readout(self, r, u_norm):
         """Wout^T [r; u_norm; bias_out] (u_norm only when `readout_input`)."""
         bias_out = self.bias_out * np.ones((1, r.shape[-1]))
-        parts = (r, u_norm, bias_out) if self.readout_input else (r, bias_out)
+        parts = (r, u_norm[self._readout_rows], bias_out) if self.readout_input else (r, bias_out)
         return np.dot(self.Wout.T, np.concatenate(parts))
 
     def normalize_input(self, data):
@@ -681,9 +701,10 @@ class EchoStateNetwork:
             #  Win_G += dr_di ......
             raise NotImplementedError('Numerical test of closed-loop Jacobian did not pass')
 
-        # readout_input adds the direct term Wout_u^T diag(1/norm) (constant in r)
-        J_u = (self.Wout[self.N_units:self.N_units + self.N_dim_in].T / self.norm[np.newaxis, :]
-               if self.readout_input else 0.)
+        # readout_input adds the direct term Wout_u^T diag(1/norm) on the rows it reads
+        rows = self._readout_rows
+        J_u = np.zeros((self.N_dim, self.N_dim_in))
+        J_u[:, rows] = self.Wout[self.N_units:self._n_readout - 1].T / self.norm[np.newaxis, rows]
         N_ens = tt.shape[-1]
         if N_ens == 1:
             if issparse(dr_di):
@@ -923,7 +944,7 @@ class EchoStateNetwork:
                    rho=self.rho, sigma_in=self.sigma_in, tikh=self.tikh,
                    leak_rate=self.leak_rate, noise=self.noise,
                    Win_type=self.Win_type, norm_method=self.norm_method,
-                   noise_type=self.noise_type, readout_input=bool(self.readout_input),
+                   noise_type=self.noise_type, readout_input=str(self.readout_input),
                    bias_in=np.asarray(self.bias_in), bias_out=np.asarray(self.bias_out),
                    observed_idx=np.asarray(self.observed_idx),
                    norm=np.asarray(self.norm), shift=np.asarray(self.shift))
@@ -968,7 +989,9 @@ class EchoStateNetwork:
                   tikh=f('tikh'), leak_rate=f('leak_rate'),
                   observed_idx=np.asarray(arrays['observed_idx']),
                   input_parameters=ip,
-                  readout_input=bool(np.asarray(arrays['readout_input']))
+                  readout_input={'True': True, 'False': False}.get(
+                      str(np.asarray(arrays['readout_input'])),
+                      str(np.asarray(arrays['readout_input'])))
                   if 'readout_input' in arrays else False)
         esn.seed = int(np.asarray(arrays['seed']))
         esn.bias_in = np.asarray(arrays['bias_in'])
@@ -1032,12 +1055,14 @@ class EchoStateNetwork:
                 sparse_cols = np.append(np.arange(N_state), self.N_dim_in)
                 for j in range(self.N_units):
                     Win[j, rng0.choice(sparse_cols)] = rng0.uniform(low=-1, high=1)
-                if N_param > 0:
+                if N_param > 0 and self.param_in_reservoir:
                     Win[:, N_state:self.N_dim_in] = rng0.uniform(
                         low=-1, high=1, size=(self.N_units, N_param))
             elif self.Win_type == 'dense':
                 for j in range(self.N_units):
                     Win[j, :] = rng0.uniform(low=-1, high=1, size=self.N_dim_in + 1)
+                if not self.param_in_reservoir and self.input_parameters is not None:
+                    Win[:, self.N_dim_in - self._n_param(self.input_parameters):self.N_dim_in] = 0
             else:
                 raise ValueError(f"Win type {self.Win_type} not implemented ['sparse', 'dense']")
             # Store
@@ -1124,7 +1149,7 @@ class EchoStateNetwork:
             bias_out = np.ones([r_open.shape[0], 1]) * self.bias_out
             if self.readout_input:   # row ii also reads the (normalised) input that produced r_open[ii]
                 U2 = Uin_l[..., 0] if Uin_l.ndim == 3 else Uin_l
-                r_aug = np.hstack((r_open, self.normalize_input(U2.T).T, bias_out))
+                r_aug = np.hstack((r_open, self.normalize_input(U2.T).T[:, self._readout_rows], bias_out))
             else:
                 r_aug = np.hstack((r_open, bias_out))
 

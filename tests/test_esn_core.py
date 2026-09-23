@@ -604,3 +604,34 @@ def test_readout_input_through_the_validation_strategies():
         esn = _train_single_series(strategy, readout_input=True)
         assert esn.trained and np.isfinite(esn.Wout).all()
         assert esn.Wout.shape == (esn.N_units + esn.N_dim_in + 1, 3)
+
+
+@pytest.mark.parametrize("in_reservoir", [True, False])
+def test_readout_params_reads_only_the_parameter(in_reservoir):
+    # readout_input='params': Wout^T [r; p_norm; bias]; param_in_reservoir=False zeroes
+    # Win's parameter columns, so p reaches the output only through the readout
+    rng = np.random.default_rng(22)
+    data = rng.normal(size=(2, 80, 3))
+    esn = EchoStateNetwork(data[0].T, dt=1, N_units=12, upsample=1, t_train=40, t_val=10,
+                            t_test=10, N_wash=5, hyperparameters_to_optimize=[],
+                            input_parameters=np.array([[0.0, 1.0]]), readout_input='params',
+                            param_in_reservoir=in_reservoir)
+    esn.train(data, plot_training=False)
+    assert esn.Wout.shape == (esn.N_units + 2, 3)
+    assert (abs(esn.Win[:, 3]).sum() > 0) == in_reservoir
+    u = np.vstack([data[0, 5].reshape(-1, 1), [[0.5]]])
+    r = 0.1 * rng.normal(size=(esn.N_units, 1))
+    u_out, r_out = esn.step(u, r)
+    manual = esn.Wout.T @ np.vstack([r_out, esn.normalize_input(u)[3:], esn.bias_out * np.ones((1, 1))])
+    np.testing.assert_allclose(u_out, manual)
+    J = esn.Jacobian(u, r)
+    eps, J_fd = 1e-4, np.zeros((3, 4))
+    for j in range(4):
+        up, um = u.copy(), u.copy()
+        up[j] += eps
+        um[j] -= eps
+        J_fd[:, j] = ((esn.step(up, r)[0] - esn.step(um, r)[0]) / (2 * eps))[:, 0]
+    np.testing.assert_allclose(J, J_fd, rtol=1e-5, atol=1e-8)
+    back = EchoStateNetwork.from_arrays(esn.to_arrays())
+    assert back.readout_input == 'params'
+    assert np.array_equal(back.step(u, r)[0], u_out)

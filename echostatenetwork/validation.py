@@ -247,7 +247,7 @@ def single_series_validation(x, case, U_wtv, Y_wtv, tikh_opt, hp_names,
     R = R_RR[0]  # (Nt - N_wash, N_units)
     r_aug = np.hstack([R, np.ones((R.shape[0], 1)) * case.bias_out])
     if case.readout_input:   # row i also reads the normalised input U_l[N_wash + i]
-        r_aug = np.hstack([R, case.normalize_input(U_l[case.N_wash:case.N_wash + R.shape[0]].T).T,
+        r_aug = np.hstack([R, case.normalize_input(U_l[case.N_wash:case.N_wash + R.shape[0]].T).T[:, case._readout_rows],
                            np.ones((R.shape[0], 1)) * case.bias_out])
     Y_t = Y_l[case.N_wash:]  # row i <-> input U_l[N_wash + i]
     n_post = r_aug.shape[0]
