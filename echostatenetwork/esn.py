@@ -123,6 +123,8 @@ class EchoStateNetwork:
     N_grid = 4
     N_initial_rand = 0
     N_units = 100
+    # False silences train()'s reporting 
+    verbose = True
     N_wash = 50
 
     max_L_tests = 10
@@ -835,7 +837,8 @@ class EchoStateNetwork:
             # Compute the output weight matrix Wout
             self.Wout = self._solve_ridge_regression(U_wtv, Y_wtv)
 
-            print(self.training_summary())
+            if self.verbose:
+                print(self.training_summary())
 
             # ========================== STEP 4: TEST AND PLOTTING ======================
             if plot_training:
@@ -871,16 +874,18 @@ class EchoStateNetwork:
         else:
             results = [_train_one_seed(self.copy(), s, train_data, add_noise,
                                        validation_strategy, kwargs) for s in seeds]
-        for _, _, log in results:
-            print(log, end='')
+        if self.verbose:
+            for _, _, log in results:
+                print(log, end='')
         scores = np.array([score for _, score, _ in results])
         best = int(np.nanargmin(scores))
         self.__dict__.clear()
         self.__dict__.update(results[best][0].__dict__)
         self.seed_scores = dict(zip(seeds, scores))
-        print(f'n_seeds={n_seeds}: validation score {scores.mean():.4f} +/- '
-              f'{scores.std():.4f} (best {scores[best]:.4f} @ seed {seeds[best]}, '
-              f'worst {scores.max():.4f}) -> kept seed {seeds[best]}')
+        if self.verbose:
+            print(f'n_seeds={n_seeds}: validation score {scores.mean():.4f} +/- '
+                  f'{scores.std():.4f} (best {scores[best]:.4f} @ seed {seeds[best]}, '
+                  f'worst {scores.max():.4f}) -> kept seed {seeds[best]}')
 
     def training_summary(self) -> str:
         """One-line summary of the last `train` call: the data split (from
@@ -1594,7 +1599,8 @@ class EchoStateNetwork:
         # Update hyperparameters with the best result
         self._reset_hyperparams(result.x, hp_names, tikhonov=tikh_opt[best_idx])
 
-        print(f"seed {self.seed} \t Optimal hyperparameters: {result.x}, {self.tikh}, val score: {result.fun}")  # type: ignore
+        if self.verbose:
+            print(f"seed {self.seed} \t Optimal hyperparameters: {result.x}, {self.tikh}, val score: {result.fun}")  # type: ignore
 
         return dict(res=result,
                     hp_names=hp_names,
