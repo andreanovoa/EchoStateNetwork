@@ -1072,9 +1072,14 @@ class EchoStateNetwork:
         if not hasattr(self, '_W'):
             W = csr_matrix(rng0.uniform(low=-1, high=1, size=(self.N_units, self.N_units)) *
                         (rng0.random(size=(self.N_units, self.N_units)) < (1 - self.sparsity)))
-            # scale W by the spectral radius to have unitary spectral radius
+            # scale W by the spectral radius to have unitary spectral radius.
+            # ARPACK's default starting vector is unseeded, which makes the
+            # radius (and so W, W_out) differ between processes with the same
+            # seed; a fixed v0 keeps it deterministic without consuming rng0.
+            v0 = np.full(self.N_units, 1.0 / np.sqrt(self.N_units))
             try:
-                spectral_radius = np.abs(sparse_eigs(W, k=1, which='LM', return_eigenvectors=False))[0]
+                spectral_radius = np.abs(sparse_eigs(W, k=1, which='LM', v0=v0,
+                                                     return_eigenvectors=False))[0]
             except ArpackNoConvergence:
                 # seed-dependent ARPACK stagnation on small reservoirs; dense
                 # eigenvalues are exact and cheap at typical N_units

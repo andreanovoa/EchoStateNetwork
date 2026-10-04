@@ -635,3 +635,31 @@ def test_readout_params_reads_only_the_parameter(in_reservoir):
     back = EchoStateNetwork.from_arrays(esn.to_arrays())
     assert back.readout_input == 'params'
     assert np.array_equal(back.step(u, r)[0], u_out)
+
+
+_SEEDED_TRAIN_SCRIPT = """
+import sys
+import numpy as np
+from echostatenetwork import EchoStateNetwork
+data = np.random.default_rng(0).normal(size=(1, 300, 3))
+esn = EchoStateNetwork(data[0].T, dt=1, N_units=200, upsample=1, t_train=200, t_val=40,
+                       t_test=20, N_wash=10, hyperparameters_to_optimize=[], seed=3)
+esn.train(data, plot_training=False)
+np.savez(sys.argv[1], W=esn.W.toarray(), Wout=esn.Wout)
+"""
+
+
+def test_seeded_training_is_bit_identical_across_processes(tmp_path):
+    # ARPACK's default start vector is unseeded, so the spectral-radius scaling of W
+    # must pass a fixed v0 or W (and Wout) drift in the last digits between processes
+    import subprocess
+    import sys
+
+    outs = []
+    for k in range(2):
+        out = tmp_path / f'run{k}.npz'
+        subprocess.run([sys.executable, '-c', _SEEDED_TRAIN_SCRIPT, str(out)],
+                       check=True, capture_output=True)
+        outs.append(np.load(out))
+    assert np.array_equal(outs[0]['W'], outs[1]['W'])
+    assert np.array_equal(outs[0]['Wout'], outs[1]['Wout'])
