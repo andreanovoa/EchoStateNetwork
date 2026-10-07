@@ -59,6 +59,16 @@ def _train_one_seed(case, seed, train_data, add_noise, validation_strategy, kwar
                              print_convergence=False)
     return case, float(score), log.getvalue()
 
+
+def _patch_metric(case, Y_true, Y_pred, norm=1.0, metric=None, sites=None):
+    """Validation metric of the network of an independent patch: `metric` (default
+    `validation.log_nMAE`) on the columns `sites` of the patch within its window, the
+    only outputs that the parallel network keeps. Module-level, so that it pickles
+    into the worker processes of ``train(n_seeds=...)``."""
+    metric = metric or validation.log_nMAE
+    norm = norm[sites] if np.ndim(norm) else norm
+    return metric(case, Y_true[:, sites], Y_pred[:, sites], norm)
+
 # XDG_RUNTIME_DIR = 'tmp/'
 
 
@@ -75,12 +85,35 @@ class EchoStateNetwork:
         - Optimization settings for Bayesian hyperparameter search (e.g., hyperparameters_to_optimize, rho_range, etc.)
         - Bayesian optimization output of the last train() call (bo_results; None when no BHO ran)
         - Input and output weight matrices (Win, Wout) and reservoir state matrix (W)
+        - Parallel layout (patch_size, halo, periodic, shared): one reservoir per patch of sites, see below
+
+    Parallel layout:
+        With ``patch_size=G``, the ``N_dim`` sites are split into
+        ``N_patches = N_dim / G`` patches of ``G`` neighbouring sites. Each patch has
+        a reservoir of ``N_units`` units, which reads the ``G + 2H`` sites of its
+        window (the patch and a halo of ``H = halo`` sites on either side) and
+        predicts the ``G`` sites of its patch (Pathak et al. 2018). By default
+        (``shared=True``), the patches share `Win`, `W`, `Wout` and the
+        hyperparameters, as a convolution does, so the layout suits systems that
+        are invariant under a shift of the sites. The reservoirs still predict
+        different values, because each reads a different window, and they are
+        coupled through the overlapping halos. With ``shared=False``, every patch
+        has its own network (`patches`): its own random `Win` and `W`, readout,
+        hyperparameters and normalization, trained and selected on the record of its
+        own window. The reservoir state stacks the patches,
+        ``r = [r_0; ...; r_{P-1}]`` with ``N_r = N_patches * N_units`` rows, and
+        every row has a position (`state_positions`), which covariance localization
+        in data assimilation requires.
 
     References:
         Based on https://github.com/alberacca/Echo-State-Networks, which implements
         Racca & Magri (2021). Robust optimization and validation of echo state
         networks for learning chaotic dynamics. Neural Networks, 142, 252-268
         (arXiv:2103.03174).
+
+        Parallel layout: Pathak, Hunt, Girvan, Lu & Ott (2018). Model-free
+        prediction of large spatiotemporally chaotic systems from data: a reservoir
+        computing approach. Physical Review Letters, 120, 024102.
     """
 
     bias_in = np.array([0.1])
@@ -108,6 +141,19 @@ class EchoStateNetwork:
     # False: Win's parameter columns are zero, so the parameter reaches the output only
     # through the readout (with readout_input='params'), never the reservoir.
     param_in_reservoir = True
+
+    # Parallel layout (Pathak et al. 2018): one reservoir of N_units units per patch of
+    # `patch_size` neighbouring sites, which reads its patch and `halo` sites on either
+    # side and predicts its patch. None: one reservoir for the whole state.
+    # `periodic`: the sites lie on a ring; False pads the windows that cross the domain
+    # boundary with zeros (see `patch_sites`). `shared`: the patches share Win, W, Wout
+    # and the hyperparameters; False gives every patch its own network in `patches`.
+    patch_size: int | None = None
+    halo = 0
+    periodic = True
+    shared = True
+    # shared=False: one EchoStateNetwork per patch, built by train()/_generate_W_Win
+    patches: list | None = None
 
     N_folds = 4
     val_fold_step = None
@@ -172,12 +218,18 @@ class EchoStateNetwork:
             Time step of the input data, such that ``dt_ESN = dt * upsample``.
         **kwargs
             Any `EchoStateNetwork` class attribute to override (e.g. ``N_units``,
-            ``rho``, ``observed_idx``, ``input_parameters``, ``optimize_parameter_normalization``).
+            ``rho``, ``observed_idx``, ``input_parameters``, ``optimize_parameter_normalization``,
+            or ``patch_size``, ``halo``, ``periodic`` and ``shared`` for the parallel layout).
 
         Raises
         ------
         AssertionError
             If `y` has more than two dimensions.
+        ValueError
+            If the parallel layout cannot work: `patch_size` does not divide `N_dim`,
+            the window of a patch exceeds a periodic domain, `patch_size` is combined
+            with `input_parameters`, `readout_input` or partial observability
+            (`observed_idx`), or ``shared=False`` is set without `patch_size`.
         """
 
         if y.ndim == 1:
@@ -198,6 +250,11 @@ class EchoStateNetwork:
         # Dense parameter columns can otherwise dominate the reservoir dynamics.
         if self.input_parameters is not None and 'optimize_parameter_normalization' not in vars(self):
             self.optimize_parameter_normalization = True
+
+        if self.patch_size is not None:
+            self._check_patch_layout()
+        elif not self.shared:
+            raise ValueError('shared=False requires the parallel layout: set patch_size.')
 
         # Define time steps and windows.
         self.dt_ESN = dt * self.upsample
@@ -225,15 +282,32 @@ class EchoStateNetwork:
 
     @property
     def trained(self):
-        """Flag to check if the model has been trained"""
+        """Flag to check if the model has been trained (with independent patches,
+        every network of `patches`)"""
+        if self._independent:
+            return self.patches is not None and all(net.trained for net in self.patches)
         return hasattr(self, '_Win') and hasattr(self, '_Wout') and hasattr(self, '_W')
+
+    @property
+    def _independent(self) -> bool:
+        """bool: parallel layout with independent patches (``shared=False``)."""
+        return self.patch_size is not None and not self.shared
+
+    def _per_patch_error(self, name):
+        """AttributeError for a matrix that independent patches hold per patch."""
+        return AttributeError(f'with independent patches (shared=False), every patch has its '
+                              f'own {name}: see patches[p].{name}')
 
     @property
     def W(self) -> csr_matrix:
         """The reservoir (recurrent) connectivity matrix, shape ``(N_units, N_units)``,
         stored in CSR format. Rescaled to unit spectral radius when generated (see
         `_generate_W_Win`), so `rho` is the *effective* spectral radius used in `step`.
+        With independent patches (``shared=False``), every patch has its own `W`, in
+        ``patches[p].W``.
         """
+        if self._independent:
+            raise self._per_patch_error('W')
         return self._W
 
 
@@ -260,6 +334,8 @@ class EchoStateNetwork:
         """
         Setter for the reservoir state matrix (W). Converts the input to CSR format.
         """
+        if self._independent:
+            raise self._per_patch_error('W')
         if not isinstance(value, csr_matrix):
             value = csr_matrix(value)
 
@@ -276,8 +352,14 @@ class EchoStateNetwork:
         multiplies the input bias `bias_in`). Sparse (``Win_type='sparse'``, one
         random connection per neuron to a state or bias column, but densely
         connected to any `input_parameters` columns) or dense
-        (``Win_type='dense'``); see `_generate_W_Win`.
+        (``Win_type='dense'``); see `_generate_W_Win`. With the parallel layout
+        (`patch_size`), the input matrix that the patches share, shape
+        ``(N_units, patch_size + 2 * halo + 1)``: its columns are the sites of a
+        window (`patch_sites`) and the bias. With independent patches
+        (``shared=False``), every patch has its own `Win`, in ``patches[p].Win``.
         """
+        if self._independent:
+            raise self._per_patch_error('Win')
         return self._Win
 
     @Win.setter
@@ -285,6 +367,8 @@ class EchoStateNetwork:
         """
         Setter for the input matrix (Win). Converts the input to CSR format if sparse.
         """
+        if self._independent:
+            raise self._per_patch_error('Win')
 
         assert self.Win_type in ['sparse', 'dense'], \
                 f"Win type {self.Win_type} not implemented ['sparse', 'dense']"
@@ -296,8 +380,8 @@ class EchoStateNetwork:
 
 
         # Ensure the matrix has the correct dimensions
-        assert value.shape ==  (self.N_units, self.N_dim_in+1), \
-            f'Win must be a square matrix of shape ({self.N_units}, {self.N_dim_in + 1}), but got {value.shape}'
+        assert value.shape ==  (self.N_units, self._n_in + 1), \
+            f'Win must be a matrix of shape ({self.N_units}, {self._n_in + 1}), but got {value.shape}'
 
         # Set the input matrix
         self._Win = value
@@ -313,8 +397,14 @@ class EchoStateNetwork:
         """The trained (ridge-regression) read-out matrix, shape
         ``(N_units + 1, N_dim)``, or ``(N_units + N_dim_in + 1, N_dim)`` with
         `readout_input` (rows [r; u; bias]) -- the last row multiplies the output bias
-        `bias_out`. Used in `reservoir_to_physical`.
+        `bias_out`. Used in `reservoir_to_physical`. With the parallel layout
+        (`patch_size`), the readout that the patches share, shape
+        ``(N_units + 1, patch_size)``: it maps the reservoir of a patch to the sites
+        of that patch. With independent patches (``shared=False``), every patch has
+        its own readout, in ``patches[p].Wout``.
         """
+        if self._independent:
+            raise self._per_patch_error('Wout')
         return self._Wout
 
     @Wout.setter
@@ -322,9 +412,11 @@ class EchoStateNetwork:
         """
         Setter for the reservoir state matrix (W).
         """
+        if self._independent:
+            raise self._per_patch_error('Wout')
         # Ensure the matrix has the correct dimensions
-        assert value.shape == (self._n_readout, self.N_dim), \
-            f'Wout must be a matrix of shape ({self._n_readout}, {self.N_dim}), but got {value.shape}'
+        assert value.shape == (self._n_readout, self._n_out), \
+            f'Wout must be a matrix of shape ({self._n_readout}, {self._n_out}), but got {value.shape}'
         # Set the output matrix
         self._Wout = value
 
@@ -438,6 +530,197 @@ class EchoStateNetwork:
             return len(self.observed_idx)
         return len(self.observed_idx) + self._n_param(self.input_parameters)
 
+    # _______________________________________________________________________________________ PARALLEL LAYOUT
+    @property
+    def N_patches(self) -> int:
+        """int: Number of patches, ``N_dim // patch_size``, each with its own
+        reservoir; 1 without the parallel layout (``patch_size=None``)."""
+        return 1 if self.patch_size is None else self.N_dim // self.patch_size
+
+    @property
+    def N_r(self) -> int:
+        """int: Number of rows of the reservoir state `r` that `step` advances,
+        ``N_patches * N_units``: the reservoirs of the patches stacked in patch
+        order, ``r = [r_0; ...; r_{P-1}]``. Equal to `N_units` for a single reservoir."""
+        return self.N_patches * self.N_units
+
+    @property
+    def patch_sites(self) -> np.ndarray:
+        """np.ndarray: Sites that each reservoir reads, shape
+        ``(N_patches, patch_size + 2 * halo)``. Patch ``p`` predicts the sites
+        ``p * patch_size, ..., (p + 1) * patch_size - 1`` and reads them together
+        with `halo` sites on either side. On a periodic domain (`periodic`), the
+        windows wrap around the ring. On a non-periodic domain, the windows of the
+        patches at the boundaries extend outside the domain; -1 marks these
+        positions, which read zero, i.e. the training mean of the data in the
+        normalized units of `normalize_input` (of the network of the patch, with
+        independent patches).
+
+        Raises
+        ------
+        ValueError
+            Without the parallel layout (``patch_size=None``).
+        """
+        if self.patch_size is None:
+            raise ValueError('patch_sites requires the parallel layout: set patch_size.')
+        sites = (np.arange(self.N_patches)[:, np.newaxis] * self.patch_size
+                 + np.arange(-self.halo, self.patch_size + self.halo)[np.newaxis, :])
+        if self.periodic:
+            return sites % self.N_dim
+        return np.where((sites >= 0) & (sites < self.N_dim), sites, -1)
+
+    @property
+    def state_positions(self) -> np.ndarray:
+        """np.ndarray: Position, in units of sites, of every row of the state
+        ``[u; r]`` with ``u`` the ``N_dim`` outputs and ``r`` the ``N_r`` reservoir
+        rows, shape ``(N_dim + N_r,)``. Output ``i`` lies at site ``i`` and every
+        row of the reservoir of patch ``p`` lies at the centre of the patch,
+        ``p * patch_size + (patch_size - 1) / 2``. These are the positions that
+        covariance localization in data assimilation requires (e.g. the
+        ``state_positions`` of a local ensemble transform Kalman filter); on a
+        periodic domain the period is ``N_dim`` sites. The reservoir rows alone are
+        ``state_positions[N_dim:]``.
+
+        Raises
+        ------
+        ValueError
+            Without the parallel layout: a single reservoir reads every site, so
+            its rows have no position.
+        """
+        if self.patch_size is None:
+            raise ValueError('a single reservoir reads every site, so its rows have no position: '
+                             'set patch_size for the parallel layout.')
+        centres = np.arange(self.N_patches) * self.patch_size + (self.patch_size - 1) / 2
+        return np.concatenate([np.arange(self.N_dim, dtype=float), np.repeat(centres, self.N_units)])
+
+    @property
+    def _n_in(self) -> int:
+        """int: columns of `Win` before the bias column -- `N_dim_in`, or the window
+        width ``patch_size + 2 * halo`` with the parallel layout."""
+        return self.N_dim_in if self.patch_size is None else self.patch_size + 2 * self.halo
+
+    @property
+    def _n_out(self) -> int:
+        """int: columns of `Wout` -- `N_dim`, or `patch_size` with the parallel layout."""
+        return self.N_dim if self.patch_size is None else self.patch_size
+
+    def _check_patch_layout(self):
+        """Raise a ValueError if the parallel layout (`patch_size`, `halo`,
+        `periodic`) cannot work with the other options."""
+        G, H, N = self.patch_size, self.halo, self.N_dim
+        if not isinstance(G, (int, np.integer)) or G < 1 or N % G:
+            raise ValueError(f'patch_size={G!r} must be a positive integer that divides the '
+                             f'N_dim={N} sites into patches of equal size.')
+        if not isinstance(H, (int, np.integer)) or H < 0:
+            raise ValueError(f'halo={H!r} must be a non-negative integer.')
+        if self.periodic and G + 2 * H > N:
+            raise ValueError(f'on a periodic domain, the window of a patch (patch_size + 2 * halo '
+                             f'= {G + 2 * H} sites) must not exceed the N_dim={N} sites.')
+        if self.input_parameters is not None:
+            raise ValueError('input_parameters is not implemented with the parallel layout (patch_size).')
+        if self.readout_input:
+            raise ValueError('readout_input is not implemented with the parallel layout (patch_size).')
+        if not np.array_equal(self.observed_idx, np.arange(N)):
+            raise ValueError('with the parallel layout (patch_size), each reservoir reads its window '
+                             'from the full state: observed_idx must list all the N_dim sites in order.')
+
+    def _to_columns(self, x):
+        """``(N_patches, n, N_ens)`` -> ``(n, N_patches * N_ens)``: the patches become
+        columns of the shared reservoir, column ``p * N_ens + j`` for patch ``p``
+        of member ``j``."""
+        return x.transpose(1, 0, 2).reshape(x.shape[1], -1)
+
+    def _from_columns(self, x):
+        """Inverse of `_to_columns`, stacked: ``(n, N_patches * N_ens)`` ->
+        ``(N_patches * n, N_ens)``, rows ``p * n, ..., (p + 1) * n - 1`` for patch ``p``."""
+        n = x.shape[0]
+        return x.reshape(n, self.N_patches, -1).transpose(1, 0, 2).reshape(self.N_patches * n, -1)
+
+    # ---------------------------------------------------------------- independent patches
+    def _init_patches(self, seed=None):
+        """Build `patches` for ``shared=False``: one untrained `EchoStateNetwork` per
+        patch, whose state is the window of the patch (``patch_size + 2 * halo``
+        sites). Each network copies the options of this one (reservoir size,
+        hyperparameters and their search ranges, validation settings, ...) and takes
+        its own seed, spawned from `seed` (default `self.seed`), so that the patches
+        are independent random realizations. Its validation probes feed back only the
+        sites of the patch and take the halo from the data, and its validation metric
+        scores only the sites of the patch (see `_closed_loop_input`, `_patch_metric`)."""
+        excluded = {'patch_size', 'halo', 'periodic', 'shared', 'patches', 'observed_idx',
+                    'input_parameters', 'readout_input', 'bo_results', 'split_summary',
+                    'validation_metric', 'verbose'}
+        options = deepcopy({k: getattr(self, k) for k, v in vars(EchoStateNetwork).items()
+                            if not k.startswith('_') and k not in excluded and not callable(v)
+                            and not isinstance(v, (property, cached_property, staticmethod,
+                                                   classmethod))})
+        sites = slice(self.halo, self.halo + self.patch_size)
+        seeds = np.random.SeedSequence(self.seed if seed is None else seed).generate_state(self.N_patches)
+        self.patches = []
+        for seed_p in seeds:
+            net = EchoStateNetwork(np.zeros((self._n_in, 1)), dt=self.dt_ESN / self.upsample,
+                                   verbose=False, **options)
+            net.seed = int(seed_p)
+            net._forecast_sites = sites
+            net.validation_metric = partial(_patch_metric, metric=self.validation_metric, sites=sites)
+            self.patches.append(net)
+
+    def _patch_record(self, data, p):
+        """Record of the window of patch `p`: the columns `patch_sites[p]` of `data`
+        (``(..., N_dim)`` array or ragged list of segments), with zeros at the
+        positions outside a non-periodic domain."""
+        if isinstance(data, (list, tuple)):
+            return [self._patch_record(segment, p) for segment in data]
+        data = np.asarray(data)
+        padded = np.concatenate([data, np.zeros(data.shape[:-1] + (1,))], axis=-1)
+        return padded[..., self.patch_sites[p]]
+
+    def _patch_windows(self, u):
+        """Raw input windows of the independent patches, ``(N_patches, n_window, N_ens)``,
+        from ``u`` ``(N_dim, N_ens)``. A position outside a non-periodic domain takes
+        the `shift` of the network of its patch, so that it reads zero once
+        normalized, as with shared patches."""
+        sites = self.patch_sites
+        windows = u[sites]                      # -1 positions are overwritten below
+        for p, net in enumerate(self.patches):
+            outside = sites[p] < 0
+            windows[p, outside] = net.shift[outside, np.newaxis]
+        return windows
+
+    def _step_independent(self, u, r):
+        """`step` with independent patches: every network of `patches` advances its
+        own reservoir from its window, and the parallel network keeps the forecast of
+        the sites of each patch."""
+        n, sites = self.N_units, slice(self.halo, self.halo + self.patch_size)
+        u_out, r_out = [], []
+        for p, (net, window) in enumerate(zip(self.patches, self._patch_windows(u))):
+            u_p, r_p = net.step(window, r[p * n:(p + 1) * n])
+            u_out.append(u_p[sites])
+            r_out.append(r_p)
+        return np.concatenate(u_out), np.concatenate(r_out)
+
+    def _train_patches(self, train_data, add_noise=True, validation_strategy=None, seed=None,
+                       n_seeds=1, **kwargs):
+        """Backend of `train` with independent patches (``shared=False``): train the
+        network of every patch on the record of its own window, with its own
+        hyperparameter search (the validation strategy and Bayesian optimization of
+        `train`, run per patch), its own normalization and its own ridge regression;
+        `n_seeds` selects the reservoir realization per patch. Training plots are not
+        drawn. The validation probes of a patch forecast the sites of the patch in
+        closed loop with the halo taken from the data, so that the search of one patch
+        does not depend on the other patches."""
+        for key, val in kwargs.items():
+            if hasattr(self, key):
+                setattr(self, key, val)
+        if self.patches is None:
+            self._init_patches(seed)
+        for p, net in enumerate(self.patches):
+            net.train(self._patch_record(train_data, p), add_noise=add_noise, plot_training=False,
+                      validation_strategy=validation_strategy, n_seeds=n_seeds, **kwargs)
+        # the split is the same for every patch (same record length)
+        self.t_train, self.t_val = self.patches[0].t_train, self.patches[0].t_val
+        if self.verbose:
+            print(self.training_summary())
+
 
     @property
     def norm(self):
@@ -468,8 +751,12 @@ class EchoStateNetwork:
         the bias column dropped. This is *not* the full $\partial\mathbf{r}/\partial\mathbf{u}$:
         `Jacobian` additionally applies the $\mathrm{diag}(1-\mathbf{r}^2)$ factor from
         differentiating $\tanh$. Cached via `functools.cached_property` and
-        invalidated whenever `Win` is reassigned.
+        invalidated whenever `Win` is reassigned. Not defined for the parallel
+        layout, whose `Jacobian` assembles the blocks of the patches instead.
         """
+        if self.patch_size is not None:
+            raise ValueError('dr_di is not defined for the parallel layout (patch_size); '
+                             'Jacobian assembles the blocks of the patches.')
         norm = self.norm.copy()
 
         Win_1 = self.Win[:, :self.N_dim_in]  # type: Union[csr_matrix, np.ndarray]
@@ -513,19 +800,36 @@ class EchoStateNetwork:
         $\alpha=1$ is the plain tanh update, no leak), and read out the corresponding
         physical state (see the class docstring for the full formulation).
 
+        With the parallel layout (`patch_size`), the same update advances the
+        reservoir of every patch $p$, with $\mathbf{u}_n$ replaced by its values at
+        the sites of the window of the patch, ``patch_sites[p]``, and $\mathbf{r}_n$
+        by the rows of the patch, $\mathbf{r}_{p,n}$. The shared readout maps
+        $\mathbf{r}_{p,n+1}$ to the sites of patch $p$. Internally, the patches are
+        extra columns of one shared reservoir, so an ensemble of ``N_ens`` members
+        advances ``N_patches * N_ens`` columns at once. With independent patches
+        (``shared=False``), the network of every patch (`patches`) advances its own
+        reservoir from its window with its own matrices and hyperparameters.
+
         Parameters
         ----------
         u : np.ndarray
             Input state at the current time step, shape ``(N_dim_in, N_ens)``.
         r : np.ndarray
-            Reservoir state at the current time step, shape ``(N_units, N_ens)``.
+            Reservoir state at the current time step, shape ``(N_r, N_ens)``, with
+            ``N_r = N_units`` for a single reservoir and ``N_r = N_patches * N_units``
+            (the patches stacked in patch order) with the parallel layout.
 
         Returns
         -------
         u_out : np.ndarray
             Physical output at the next time step, shape ``(N_dim, N_ens)``.
         r_out : np.ndarray
-            Updated reservoir state, shape ``(N_units, N_ens)``.
+            Updated reservoir state, shape ``(N_r, N_ens)``.
+
+        Raises
+        ------
+        ValueError
+            With the parallel layout, if `r` does not have `N_r` rows.
         """
         # Normalise input data and augment with input bias (ESN symmetry parameter)
 
@@ -542,11 +846,24 @@ class EchoStateNetwork:
             assert r.shape[0] == 1, f'Input r has shape {r.shape}, only 1 sample at a time is allowed'
             r = r[0]
 
+        if self.patch_size is not None and r.shape[0] != self.N_r:
+            raise ValueError(f'r has {r.shape[0]} rows, but the reservoir state stacks the '
+                             f'{self.N_patches} patches: N_r = N_patches * N_units = {self.N_r} rows.')
+        if self._independent:
+            return self._step_independent(u, r)
+
         # Normalize input
         u_norm = self.normalize_input(u)
 
+        if self.patch_size is not None:
+            # parallel layout: the patches become columns of the shared reservoir --
+            # u_norm -> the windows (n_window, N_patches * N_ens), r -> (N_units, N_patches * N_ens);
+            # the appended zero row is what the -1 entries of patch_sites read
+            u_norm = self._to_columns(np.vstack([u_norm, np.zeros((1, u.shape[-1]))])[self.patch_sites])
+            r = self._to_columns(r.reshape(self.N_patches, self.N_units, -1))
+
         # Augment input with bias
-        bias_in = self.bias_in * np.ones((1, u.shape[-1]))
+        bias_in = self.bias_in * np.ones((1, u_norm.shape[-1]))
         u_aug = np.concatenate((u_norm, bias_in))
 
         # Forecast the reservoir state (leaky-integrator; leak_rate=1 -> plain tanh)
@@ -556,6 +873,8 @@ class EchoStateNetwork:
 
         # compute output from ESN if not during training
         u_out = self._readout(r_out, u_norm)
+        if self.patch_size is not None:   # columns -> sites and stacked patches
+            return self._from_columns(u_out), self._from_columns(r_out)
         return u_out, r_out
 
 
@@ -566,8 +885,8 @@ class EchoStateNetwork:
         Parameters
         ----------
         r : np.ndarray
-            Reservoir state, shape ``(N_units, N_ens)`` (the output bias row is
-            appended internally).
+            Reservoir state, shape ``(N_r, N_ens)`` (the output bias row is
+            appended internally); ``N_r = N_units`` for a single reservoir.
         u : np.ndarray, optional
             The (raw, un-normalised) ESN input that produced `r`, shape
             ``(N_dim_in, N_ens)``. Required when `readout_input` is True, since the
@@ -578,6 +897,15 @@ class EchoStateNetwork:
         np.ndarray
             Physical state, shape ``(N_dim, N_ens)``.
         """
+        if self._independent:   # the network of each patch reads out its window
+            r = r[:, np.newaxis] if r.ndim == 1 else r
+            n, sites = self.N_units, slice(self.halo, self.halo + self.patch_size)
+            return np.concatenate([net.reservoir_to_physical(r[p * n:(p + 1) * n])[sites]
+                                   for p, net in enumerate(self.patches)])
+        if self.patch_size is not None:   # each patch reads out its own sites
+            r = r[:, np.newaxis] if r.ndim == 1 else r
+            return self._from_columns(self._readout(
+                self._to_columns(r.reshape(self.N_patches, self.N_units, -1)), None))
         if not self.readout_input:
             return self._readout(r, None)
         if u is None:
@@ -608,6 +936,19 @@ class EchoStateNetwork:
         """
         return (data - self.shift[:, np.newaxis]) / self.norm[:, np.newaxis]
 
+
+    def _closed_loop_input(self, u_out, u_data):
+        """Input of the next step of a closed-loop validation probe: the forecast
+        `u_out` mapped back to the input space (`outputs_to_inputs`). The network of an
+        independent patch (see `patches`) feeds back only the sites of its patch and
+        takes its halo from `u_data`, the data at that step, so that its probes do not
+        depend on the other patches."""
+        sites = getattr(self, '_forecast_sites', None)
+        if sites is None:
+            return self.outputs_to_inputs(full_state=u_out)
+        u_in = np.array(u_data, dtype=float).reshape(-1, 1)
+        u_in[sites] = u_out[sites]
+        return u_in
 
     def outputs_to_inputs(self, full_state):
         """Map a full physical state (e.g. a closed-loop prediction) back to the
@@ -655,12 +996,20 @@ class EchoStateNetwork:
         the tanh pre-leak value, recovered from the step as
         $(\mathbf{r}_{n+1} - (1-\alpha)\mathbf{r}_n)/\alpha$.
 
+        With the parallel layout (`patch_size`), the Jacobian is sparse: the rows of
+        the sites of patch $p$ depend only on the columns of its window,
+        ``patch_sites[p]``, through the block above evaluated with the reservoir
+        state of the patch, $\mathbf{r}_{p,n+1}$. A position outside a non-periodic
+        domain reads no input and contributes no column. With independent patches
+        (``shared=False``), each block is the Jacobian of the network of the patch.
+
         Parameters
         ----------
         u_in : np.ndarray
             Input state, shape ``(N_dim_in, N_ens)``.
         r_in : np.ndarray
-            Reservoir state, shape ``(N_units, N_ens)``.
+            Reservoir state, shape ``(N_r, N_ens)`` (``N_r = N_units`` for a single
+            reservoir).
         open_loop_J : bool
             If True (default), compute the open-loop Jacobian above. The closed-loop
             variant (linearizing through the feedback of `u_out` back into the next
@@ -679,6 +1028,10 @@ class EchoStateNetwork:
             numerical check of the sketched derivation did not pass).
         """
         assert self.trained, 'ESN must be trained before computing the Jacobian. Call ESN.train() first.'
+        if self._independent:
+            if not open_loop_J:
+                raise NotImplementedError('Numerical test of closed-loop Jacobian did not pass')
+            return self._independent_jacobian(u_in, r_in)
 
 
         Wout_1 = self.Wout[:self.N_units, :].T
@@ -695,13 +1048,15 @@ class EchoStateNetwork:
                 (r_in[0] if r_in.ndim == 3 else r_in)
             x_tanh = (rout - (1. - self.leak_rate) * r_prev) / self.leak_rate
             tt = self.leak_rate * (1. - x_tanh ** 2)
-        dr_di = self.dr_di
         if not open_loop_J:
             # u_aug = np.concatenate((u_in / self.norm, self.bias_in))
             # rout = np.tanh(self.sigma_in * self.Win.dot(u_aug) + self.rho * np.dot(self.WCout.T, u_in))
             # dr_di = self.sigma_in * Win_1 / self.norm + self.rho * self.WCout.T
             #  Win_G += dr_di ......
             raise NotImplementedError('Numerical test of closed-loop Jacobian did not pass')
+        if self.patch_size is not None:
+            return self._patch_jacobian(tt)
+        dr_di = self.dr_di
 
         # readout_input adds the direct term Wout_u^T diag(1/norm) on the rows it reads
         rows = self._readout_rows
@@ -725,6 +1080,40 @@ class EchoStateNetwork:
 
         return J
 
+    def _independent_jacobian(self, u_in, r_in):
+        """Backend of `Jacobian` with independent patches: the Jacobian of the network
+        of every patch, rows of the sites of the patch, scattered into the columns of
+        its window."""
+        u = u_in[:, np.newaxis] if u_in.ndim == 1 else u_in
+        r = r_in[:, np.newaxis] if r_in.ndim == 1 else r_in
+        N_ens, n, H, G = u.shape[-1], self.N_units, self.halo, self.patch_size
+        J = np.zeros((self.N_dim, self.N_dim_in, N_ens))
+        for p, (net, window) in enumerate(zip(self.patches, self._patch_windows(u))):
+            J_p = net.Jacobian(window, r[p * n:(p + 1) * n]).reshape(self._n_in, self._n_in, N_ens)
+            sites = self.patch_sites[p]
+            inside = sites >= 0
+            J[p * G:(p + 1) * G][:, sites[inside]] += J_p[H:H + G][:, inside]
+        return J[..., 0] if N_ens == 1 else J
+
+    def _patch_jacobian(self, tt):
+        """Backend of `Jacobian` for the parallel layout: scatter the block
+        ``Wout_1^T diag(tt_p) sigma_in Win_1 diag(1/norm[window])`` of every patch p
+        into the rows of its sites and the columns of its window. `tt` is the
+        derivative of the reservoir update with respect to its pre-activation,
+        shape ``(N_r, N_ens)``."""
+        N_ens = tt.shape[-1]
+        sites = self.patch_sites                                       # (P, n_window)
+        Win_1 = self.Win[:, :self._n_in]
+        Win_1 = Win_1.toarray() if issparse(Win_1) else np.asarray(Win_1)
+        inv_norm = np.where(sites >= 0, 1. / self.norm[sites], 0.)      # padded positions: no input
+        blocks = np.einsum('jg,pjm,jk,pk->pgkm', self.Wout[:self.N_units],
+                           tt.reshape(self.N_patches, self.N_units, N_ens),
+                           self.sigma_in * Win_1, inv_norm, optimize=True)   # (P, G, n_window, N_ens)
+        J = np.zeros((self.N_dim, self.N_dim_in, N_ens))
+        rows = np.arange(self.N_dim).reshape(self.N_patches, self.patch_size, 1)
+        np.add.at(J, (rows, np.maximum(sites, 0)[:, np.newaxis, :]), blocks)
+        return J[..., 0] if N_ens == 1 else J
+
 
 
 
@@ -744,6 +1133,15 @@ class EchoStateNetwork:
         (re)generate `Win`/`W` if not already set, select hyperparameters via
         Bayesian optimization (unless `hyperparameters_to_optimize` is empty), and
         fit `Wout` by ridge regression on the resulting hyperparameters.
+
+        With the parallel layout (`patch_size`), the patches share `Wout`, which the
+        ridge regression fits on all the patches at once: every time step provides
+        `N_patches` samples, one per patch, each mapping the reservoir of the patch
+        to its sites. The input `norm` and `shift` take one value for all sites,
+        pooled over the sites, because the patches share `Win`. With independent
+        patches (``shared=False``), the network of every patch trains on the record of
+        its own window, with its own hyperparameter search, normalization and ridge
+        regression (see `_train_patches`); `n_seeds` then applies per patch.
 
         Parameters
         ----------
@@ -785,6 +1183,10 @@ class EchoStateNetwork:
             retains the training corpus and the fitted GP models, which would bloat
             every pickle/deepcopy of a trained ESN.
         """
+        if self._independent:
+            return self._train_patches(train_data, add_noise=add_noise,
+                                       validation_strategy=validation_strategy, seed=seed,
+                                       n_seeds=n_seeds, **kwargs)
         if n_seeds > 1:
             return self._train_multi_seed(train_data, n_seeds, add_noise=add_noise,
                                           validation_strategy=validation_strategy,
@@ -809,7 +1211,7 @@ class EchoStateNetwork:
         if not hasattr(self, '_W') or not hasattr(self, '_Win'):
             self._generate_W_Win(seed=seed)
 
-        self.Wout = np.zeros((self._n_readout, self.N_dim))  # Initialize Wout with zeros
+        self.Wout = np.zeros((self._n_readout, self._n_out))  # Initialize Wout with zeros
 
         # Validation/test runs temporarily overwrite self.input_parameters
         original_input_parameters = self.input_parameters
@@ -892,6 +1294,9 @@ class EchoStateNetwork:
         `_split_and_format_data`, stored in `split_summary`), the resulting
         train/validation windows, and the selected hyperparameters (with the number
         of Bayesian-optimization evaluations when a search ran)."""
+        if self._independent and self.patches is not None:
+            return '\n'.join(f'patch {p}: {net.training_summary()}'
+                             for p, net in enumerate(self.patches))
         s = self.split_summary
         if s is None:
             raise RuntimeError('no training summary yet: call train() first.')
@@ -943,6 +1348,10 @@ class EchoStateNetwork:
         count is read at run time. Dropped entirely: BO search state and ranges,
         split/seed summaries, `WCout` and other derived caches. The rng is NOT
         stored -- a reloaded model's stochastic noise stream restarts from `seed`.
+        The parallel layout (`patch_size`, `halo`, `periodic`, `shared`) is stored only
+        when it is set, so a dict without these keys loads as a single reservoir;
+        independent patches store the arrays of each patch network under the key
+        prefix ``patch<p>_``.
         """
         out = dict(N_dim=self.N_dim, N_units=self.N_units, N_wash=self.N_wash,
                    upsample=self.upsample, seed=self.seed, dt_ESN=self.dt_ESN,
@@ -953,6 +1362,12 @@ class EchoStateNetwork:
                    bias_in=np.asarray(self.bias_in), bias_out=np.asarray(self.bias_out),
                    observed_idx=np.asarray(self.observed_idx),
                    norm=np.asarray(self.norm), shift=np.asarray(self.shift))
+        if self.patch_size is not None:
+            out.update(patch_size=int(self.patch_size), halo=int(self.halo),
+                       periodic=bool(self.periodic), shared=bool(self.shared))
+        if self._independent and self.patches is not None:   # one key prefix per patch
+            for p, net in enumerate(self.patches):
+                out.update({f'patch{p}_{k}': v for k, v in net.to_arrays().items()})
         ip = self.input_parameters
         if ip is not None:
             out['input_parameters'] = (np.zeros((self._n_param(ip), 1))
@@ -985,7 +1400,13 @@ class EchoStateNetwork:
         n_units = int(np.asarray(arrays['N_units']))
         upsample = int(np.asarray(arrays['upsample']))
         ip = np.asarray(arrays['input_parameters']) if 'input_parameters' in arrays else None
+        patches = (dict(patch_size=int(np.asarray(arrays['patch_size'])),
+                        halo=int(np.asarray(arrays['halo'])),
+                        periodic=bool(np.asarray(arrays['periodic'])),
+                        shared=bool(np.asarray(arrays['shared'])) if 'shared' in arrays else True)
+                   if 'patch_size' in arrays else {})
         esn = cls(np.zeros((int(np.asarray(arrays['N_dim'])), 1)),
+                  **patches,
                   dt=f('dt_ESN') / upsample,
                   N_units=n_units, N_wash=int(np.asarray(arrays['N_wash'])),
                   upsample=upsample, Win_type=s('Win_type'),
@@ -1007,7 +1428,7 @@ class EchoStateNetwork:
             esn.Win = csr_matrix((np.asarray(arrays['Win_data']),
                                   np.asarray(arrays['Win_indices']),
                                   np.asarray(arrays['Win_indptr'])),
-                                 shape=(n_units, esn.N_dim_in + 1))
+                                 shape=(n_units, esn._n_in + 1))
         if 'W_data' in arrays:
             esn.W = csr_matrix((np.asarray(arrays['W_data']),
                                 np.asarray(arrays['W_indices']),
@@ -1017,6 +1438,16 @@ class EchoStateNetwork:
             esn.Wout = np.asarray(arrays['Wout'])
         esn.norm = np.asarray(arrays['norm'])
         esn.shift = np.asarray(arrays['shift'])
+        if esn._independent and 'patch0_N_dim' in arrays:
+            esn._init_patches()      # options, metric and closed-loop sites of each patch
+            for p in range(esn.N_patches):
+                prefix = f'patch{p}_'
+                loaded = EchoStateNetwork.from_arrays(
+                    {k[len(prefix):]: arrays[k] for k in arrays.keys() if k.startswith(prefix)})
+                for name in ('_Win', '_W', '_Wout', '_norm', '_shift', 'rho', 'sigma_in',
+                             'tikh', 'leak_rate', 'bias_in', 'bias_out', 'seed'):
+                    if hasattr(loaded, name):
+                        setattr(esn.patches[p], name, getattr(loaded, name))
         return esn
 
     # _______________________________________________________________________________________ HELPER METHODS FOR ESN INITIALIZATION & TRAINING
@@ -1042,6 +1473,13 @@ class EchoStateNetwork:
         None
             Sets `Win` and `W` in place.
         """
+        if self._independent:   # one independent realization per patch
+            if self.patches is None:
+                self._init_patches(seed)
+            for net in self.patches:
+                net._generate_W_Win()
+            return
+
         if seed is None:
             rng0 = self.rng
         else:
@@ -1051,23 +1489,25 @@ class EchoStateNetwork:
         # Parameter columns (if any) are the exception: every neuron connects densely to them,
         # since they carry a single global forcing rather than a per-neuron-selected observation.
         if not hasattr(self, '_Win'):
+            # input columns: N_dim_in, or the window of one patch with the parallel layout
+            n_in = self._n_in
             Win = lil_matrix((self.N_units,
-                              self.N_dim_in + 1))  # +1 accounts for input bias
+                              n_in + 1))  # +1 accounts for input bias
             if self.Win_type == 'sparse':
                 N_param = self._n_param(self.input_parameters) if self.input_parameters is not None else 0
-                N_state = self.N_dim_in - N_param
+                N_state = n_in - N_param
                 # columns eligible for the single sparse connection: state columns + bias (last column)
-                sparse_cols = np.append(np.arange(N_state), self.N_dim_in)
+                sparse_cols = np.append(np.arange(N_state), n_in)
                 for j in range(self.N_units):
                     Win[j, rng0.choice(sparse_cols)] = rng0.uniform(low=-1, high=1)
                 if N_param > 0 and self.param_in_reservoir:
-                    Win[:, N_state:self.N_dim_in] = rng0.uniform(
+                    Win[:, N_state:n_in] = rng0.uniform(
                         low=-1, high=1, size=(self.N_units, N_param))
             elif self.Win_type == 'dense':
                 for j in range(self.N_units):
-                    Win[j, :] = rng0.uniform(low=-1, high=1, size=self.N_dim_in + 1)
+                    Win[j, :] = rng0.uniform(low=-1, high=1, size=n_in + 1)
                 if not self.param_in_reservoir and self.input_parameters is not None:
-                    Win[:, self.N_dim_in - self._n_param(self.input_parameters):self.N_dim_in] = 0
+                    Win[:, n_in - self._n_param(self.input_parameters):n_in] = 0
             else:
                 raise ValueError(f"Win type {self.Win_type} not implemented ['sparse', 'dense']")
             # Store
@@ -1110,11 +1550,16 @@ class EchoStateNetwork:
                 - LHS (np.ndarray): Left-hand side matrix for ridge regression.
                 - RHS (np.ndarray): Right-hand side matrix for ridge regression.
                 - U_RR (list): List of input states split by L-segments.
-                - R_RR (list): List of reservoir states split by L-segments.
+                - R_RR (list): List of reservoir states split by L-segments, each
+                  ``(Nt, N_r)`` (the patches stacked with the parallel layout).
+
+        With the parallel layout, every time step contributes one regression sample
+        per patch, ``[r_p; bias_out] -> y[sites of p]``, so LHS and RHS sum over the
+        time steps and the patches of the shared readout.
         """
 
         LHS = np.zeros((self._n_readout, self._n_readout))
-        RHS = np.zeros((self._n_readout, self.N_dim))
+        RHS = np.zeros((self._n_readout, self._n_out))
         R_RR = [None] * len(U_wtv)
         U_RR = [None] * len(U_wtv)
 
@@ -1134,7 +1579,7 @@ class EchoStateNetwork:
 
             # Washout phase to initialize reservoir state
             N_ens = U_wash_l.shape[-1] if U_wash_l.ndim == 3 else 1
-            r_out = np.zeros((self.N_units, N_ens))
+            r_out = np.zeros((self.N_r, N_ens))
             for u_in in U_wash_l:
                 _, r_out = self.step(u_in, r_out)
 
@@ -1143,7 +1588,7 @@ class EchoStateNetwork:
                 Yout_l = Yout_l[..., 0]
 
             # Open-loop train phase: one pass over the whole segment, states filled
-            r_open = np.zeros((Uin_l.shape[0], self.N_units, N_ens))
+            r_open = np.zeros((Uin_l.shape[0], self.N_r, N_ens))
             y_open = np.zeros((Uin_l.shape[0], self.N_dim, N_ens))
             for ii, u_in in enumerate(Uin_l):
                 u_out, r_out = self.step(u_in, r_out)
@@ -1154,6 +1599,11 @@ class EchoStateNetwork:
 
             R_RR[ll] = r_open # type: ignore
             U_RR[ll] = y_open # type: ignore
+
+            if self.patch_size is not None:
+                # one sample per step and patch, row t * N_patches + p: the patches share Wout
+                r_open = r_open.reshape(-1, self.N_units)
+                Yout_l = Yout_l.reshape(-1, self.patch_size)
 
             # Compute matrices for linear regression system
             bias_out = np.ones([r_open.shape[0], 1]) * self.bias_out
@@ -1435,6 +1885,12 @@ class EchoStateNetwork:
             norm_obs, shift_obs = norm_obs.reshape(-1), shift_obs.reshape(-1)
         else:
             norm_obs, shift_obs = EchoStateNetwork._set_norm(U_wtv[..., :N_obs], method=self.norm_method)
+        if self.patch_size is not None:
+            # the patches share Win, so every site takes the same shift and scale,
+            # computed from the samples of all the sites pooled together
+            pooled = np.reshape(obs_pool if is_ragged else U_wtv[..., :N_obs], (1, -1, 1))
+            norm_obs, shift_obs = (np.full(N_obs, np.ravel(v)[0]) for v in
+                                   EchoStateNetwork._set_norm(pooled, method=self.norm_method))
         if self.input_parameters is not None:
             N_param = self._n_param(self.input_parameters)
             # Identity normalization for the parameter columns, unless the Bayesian
@@ -1862,7 +2318,7 @@ class EchoStateNetwork:
         def predict_Y(_input, _target):
 
             # Perform washout (open-loop without extra forecast step)
-            r_out = np.zeros((self.N_units, N_ens))
+            r_out = np.zeros((self.N_r, N_ens))
             u_out = np.zeros((self.N_dim, N_ens))
             # sized by the washout, not by the target: a short-term test whose window is
             # shorter than N_wash would otherwise overflow this buffer (IndexError)

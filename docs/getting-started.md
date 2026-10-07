@@ -35,3 +35,19 @@ observed data) followed by closed-loop prediction is shown end to end in the
 Pass `input_parameters` (shape `(N_param, L)`, one parameter vector per training
 segment) to condition the reservoir on a physical parameter — see the
 [parametric ESN tutorial](https://github.com/andreanovoa/EchoStateNetwork/blob/master/tutorials/02_parametric_esn.ipynb).
+
+## Parallel ESN
+
+For a spatially extended system, such as Lorenz-96 on a ring of sites, pass
+`patch_size` (the sites of a patch), `halo` (the sites read on either side of a
+patch) and `periodic` to run one reservoir of `N_units` units per patch. By
+default, the patches share the input, reservoir and readout matrices and the
+hyperparameters; `shared=False` gives every patch its own network (`patches`).
+The reservoir state stacks the patches (`N_r = N_patches * N_units` rows), and
+`state_positions` gives the position of every state row for covariance
+localization — see [Parallel echo state network](parallel.md).
+
+```python
+esn = EchoStateNetwork(y=y[:1].T, dt=0.02, N_units=300,
+                       patch_size=2, halo=3, periodic=True)       # shared=False: independent patches
+```

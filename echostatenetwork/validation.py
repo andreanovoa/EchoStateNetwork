@@ -142,7 +142,7 @@ def RVC_Noise(x, case, U_wtv, Y_wtv, tikh_opt, hp_names, print_convergence=True)
                 # candidate Wout must start from its own washout -- otherwise
                 # every tikh_ but the first begins from the previous candidate's
                 # final state, and the first from a washout with a stale Wout.
-                r_out = np.zeros((case.N_units, 1))
+                r_out = np.zeros((case.N_r, 1))
                 u_out = np.zeros((case.N_dim, 1))
                 for u_in in U_wash:
                     u_out, r_out = case.step(u_in, r_out)
@@ -151,7 +151,9 @@ def RVC_Noise(x, case, U_wtv, Y_wtv, tikh_opt, hp_names, print_convergence=True)
                 Y_closed = np.zeros_like(Y_val)
 
                 for i in range(Y_closed.shape[0]):
-                    u_input = case.outputs_to_inputs(full_state=u_out)
+                    # outputs_to_inputs(u_out); U_l[...] is the data at this step, which
+                    # the network of an independent patch reads for its halo
+                    u_input = case._closed_loop_input(u_out, U_l[p + case.N_wash + i])
                     u_out, r_out = case.step(u_input, r_out)
                     Y_closed[i] = u_out[:, 0].copy()
 
@@ -244,13 +246,18 @@ def single_series_validation(x, case, U_wtv, Y_wtv, tikh_opt, hp_names,
     # zeroed before BHO -- stale, so they are discarded; the total LHS/RHS
     # are rebuilt per fold from interval sums below.
     _, _, _, R_RR = case._compute_RR_terms(U_wtv, Y_wtv)
-    R = R_RR[0]  # (Nt - N_wash, N_units)
-    r_aug = np.hstack([R, np.ones((R.shape[0], 1)) * case.bias_out])
+    R = R_RR[0]  # (Nt - N_wash, N_r)
+    n_post = R.shape[0]
+    # Regression rows: P = N_patches rows per step (one per patch, which share the
+    # readout; P = 1 for a single reservoir), so step i owns rows [i * P, (i + 1) * P).
+    P = case.N_patches
+    R_rows = R.reshape(n_post * P, case.N_units)
+    r_aug = np.hstack([R_rows, np.ones((R_rows.shape[0], 1)) * case.bias_out])
     if case.readout_input:   # row i also reads the normalised input U_l[N_wash + i]
         r_aug = np.hstack([R, case.normalize_input(U_l[case.N_wash:case.N_wash + R.shape[0]].T).T[:, case._readout_rows],
                            np.ones((R.shape[0], 1)) * case.bias_out])
     Y_t = Y_l[case.N_wash:]  # row i <-> input U_l[N_wash + i]
-    n_post = r_aug.shape[0]
+    Y_rows = Y_t.reshape(n_post * P, case._n_out)
 
     if n_post < case.N_val + 1:
         raise ValueError(
@@ -266,13 +273,13 @@ def single_series_validation(x, case, U_wtv, Y_wtv, tikh_opt, hp_names,
     # exactly one Gram product regardless of the number of folds.
     bounds = sorted({0, *(b for tr, _, _ in folds for rng_ in tr for b in rng_)})
     A = np.zeros((r_aug.shape[1], r_aug.shape[1]))
-    B = np.zeros((r_aug.shape[1], case.N_dim))
+    B = np.zeros((r_aug.shape[1], case._n_out))
     prefix, prev = {}, 0
     for b in bounds:
         if b > prev:
-            block = r_aug[prev:b]
+            block = r_aug[prev * P:b * P]
             A = A + block.T @ block  # new arrays: stored references stay valid
-            B = B + block.T @ Y_t[prev:b]
+            B = B + block.T @ Y_rows[prev * P:b * P]
             prev = b
         prefix[b] = (A, B)
 
@@ -303,7 +310,7 @@ def single_series_validation(x, case, U_wtv, Y_wtv, tikh_opt, hp_names,
         else:
             u_seed = U_l[case.N_wash - 1].reshape(-1, 1)
             if r_washed is None:
-                r_washed = np.zeros((case.N_units, 1))
+                r_washed = np.zeros((case.N_r, 1))
                 for u_in in U_l[:case.N_wash]:
                     _, r_washed = case.step(u_in, r_washed)
             r_seed = r_washed
@@ -322,7 +329,9 @@ def single_series_validation(x, case, U_wtv, Y_wtv, tikh_opt, hp_names,
 
             Y_closed = np.zeros_like(Y_val)
             for i in range(Y_closed.shape[0]):
-                u_input = case.outputs_to_inputs(full_state=u_out)
+                # outputs_to_inputs(u_out); U_l[...] is the data at this step, which
+                # the network of an independent patch reads for its halo
+                u_input = case._closed_loop_input(u_out, U_l[case.N_wash + i0 + i])
                 u_out, r_out = case.step(u_input, r_out)
                 Y_closed[i] = u_out[:, 0].copy()
 
