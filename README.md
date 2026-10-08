@@ -29,6 +29,9 @@ Documentation: <https://andreanovoa.github.io/EchoStateNetwork/>
 - [`tutorials/05_parallel_esn_kuramoto_sivashinsky.ipynb`](tutorials/05_parallel_esn_kuramoto_sivashinsky.ipynb)
   — global, parallel (shared matrices) and local (independent patches) networks
   on the Kuramoto–Sivashinsky equation.
+- [`tutorials/06_esn_architectures.ipynb`](tutorials/06_esn_architectures.ipynb)
+  — drawings of the architectures that the constructor keywords build, a gallery
+  and an interactive explorer (`ipywidgets`).
 
 ## Install
 

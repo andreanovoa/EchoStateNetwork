@@ -32,6 +32,10 @@ bias-aware data assimilation).
   network with independent patches, compared on closed-loop forecasts,
   long-term statistics and training cost; see also
   [Parallel echo state network](parallel.md).
+- [Architectures of the ESN](https://github.com/andreanovoa/EchoStateNetwork/blob/master/tutorials/06_esn_architectures.ipynb)
+  — drawings of the architectures that the constructor keywords build (inputs,
+  parameters, input skip, leak rate, parallel layout, hyperparameter search),
+  as a gallery and as an interactive explorer.
 
 ## Acknowledgements
 
