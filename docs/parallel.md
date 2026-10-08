@@ -7,7 +7,11 @@ needs more units as the number of sites grows, and its readout couples every
 unit with every site. The parallel layout of Pathak et al. (2018) replaces the
 single reservoir with one reservoir per patch of neighbouring sites. Each
 reservoir reads its patch and a halo of sites on either side, and predicts only
-its patch. Vlachas et al. (2020) employ the same layout for reservoirs and for
+its patch. The term comes from domain decomposition, in which the halo, or ghost
+region, is the copy of the data of the neighbouring subdomains that each process
+stores locally, so that it can compute independently; here, the halo is the copy
+of the neighbouring sites that each reservoir reads. Pathak et al. (2018) call it
+a buffer region, of $l$ sites. Vlachas et al. (2020) employ the same layout for reservoirs and for
 recurrent networks trained by backpropagation, on the Lorenz-96 and
 Kuramoto–Sivashinsky systems.
 
