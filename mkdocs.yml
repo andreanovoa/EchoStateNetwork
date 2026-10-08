@@ -51,6 +51,7 @@ nav:
   - Training and forecasting: training.md
   - Validation strategies: validation.md
   - Parallel echo state network: parallel.md
+  - "Live demo: building an ESN": demo/esn.md
   - API reference: api/esn.md
   - Tutorial notebooks:
       - EchoStateNetwork class: https://github.com/andreanovoa/EchoStateNetwork/blob/master/tutorials/01_echo_state_network.ipynb
@@ -58,3 +59,4 @@ nav:
       - Leaky-integrator ESN: https://github.com/andreanovoa/EchoStateNetwork/blob/master/tutorials/03_leaky_esn.ipynb
       - Validation strategies: https://github.com/andreanovoa/EchoStateNetwork/blob/master/tutorials/04_validation_strategies.ipynb
       - Parallel ESN on Kuramoto–Sivashinsky: https://github.com/andreanovoa/EchoStateNetwork/blob/master/tutorials/05_parallel_esn_kuramoto_sivashinsky.ipynb
+      - Architectures of the ESN: https://github.com/andreanovoa/EchoStateNetwork/blob/master/tutorials/06_esn_architectures.ipynb
