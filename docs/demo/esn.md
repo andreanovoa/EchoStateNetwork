@@ -38,17 +38,17 @@ the number of data steps per network step (`upsample`), the lengths of the train
 validation records (`t_train`, `t_val`), and the number of washout steps (`N_wash`). The
 tiles show the resulting numbers of washout, training and validation steps.
 
-**Inputs and readout.** The number of observed sites (`observed_idx`, spread evenly over
-the state), the number of physical parameters appended to the input
-(`input_parameters`), whether the parameters enter the reservoir
-(`param_in_reservoir`), what the readout reads besides the reservoir state
-(`readout_input`), and the level of the noise added to the training inputs (`noise`).
-
 **Layout.** One reservoir for the whole state, or one reservoir per patch of sites, with
 shared matrices or with independent patches (`patch_size`, `halo`, `periodic`, `shared`).
 The patch sizes on offer divide the number of sites, and the halo stops where the window
 of a patch would exceed a periodic domain. The parallel layout reads and forecasts every
 site, so it disables the controls of the inputs and the readout.
+
+**Inputs and readout.** The number of observed sites (`observed_idx`, spread evenly over
+the state), the number of physical parameters appended to the input
+(`input_parameters`), whether the parameters enter the reservoir
+(`param_in_reservoir`), what the readout reads besides the reservoir state
+(`readout_input`), and the level of the noise added to the training inputs (`noise`).
 
 **Reservoir.** The number of units of each reservoir (`N_units`), the number of
 connections per unit (`connect`), whether the input matrix is sparse or dense
