@@ -4,7 +4,10 @@ Echo state networks / reservoir computing in pure numpy. One class,
 [`EchoStateNetwork`](api/esn.md): ridge-regression training with chaotic recycle
 validation (contiguous runs or ragged dwell segments), parametric inputs, optional
 Bayesian hyperparameter search (`scikit-optimize`), closed-loop prediction, and
-Jacobians for data assimilation.
+Jacobians for data assimilation. For spatially extended systems, the
+[parallel layout](parallel.md) runs one reservoir per patch of neighbouring
+sites, with shared matrices and a position for every reservoir row, which
+covariance localization requires.
 
 This is the single shared reservoir core behind
 [`qlrom`](https://github.com/andreanovoa/qlrom) (quantized-local ESN families) and
@@ -24,6 +27,15 @@ bias-aware data assimilation).
   — SSV/WFV/KFV/recycle validation compared live on Lorenz 63, including
   seeded ensembles with `train(n_seeds=...)`; see also
   [Validation strategies](validation.md).
+- [Parallel ESN on Kuramoto–Sivashinsky](https://github.com/andreanovoa/EchoStateNetwork/blob/master/tutorials/05_parallel_esn_kuramoto_sivashinsky.ipynb)
+  — a global network, a parallel network with shared matrices and a local
+  network with independent patches, compared on closed-loop forecasts,
+  long-term statistics and training cost; see also
+  [Parallel echo state network](parallel.md).
+- [Architectures of the ESN](https://github.com/andreanovoa/EchoStateNetwork/blob/master/tutorials/06_esn_architectures.ipynb)
+  — drawings of the architectures that the constructor keywords build (inputs,
+  parameters, input skip, leak rate, parallel layout, hyperparameter search),
+  as a gallery and as an interactive explorer.
 
 ## Acknowledgements
 

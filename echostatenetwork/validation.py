@@ -8,7 +8,7 @@ Pass one as ``train(validation_strategy=...)``; the class aliases
 
 - RVC_Noise: chaotic recycle validation, within-segment folds (the default).
 - SSV / WFV / KFV: the single-series strategies of Racca & Magri (2021), sharing
-  the single_series_validation engine (one teacher-forced pass, prefix-sum ridge).
+  the single_series_validation engine (one open-loop pass, prefix-sum ridge).
 
 The qlESN-specific segment strategies (SegmentRVC_Noise, RecycledSegmentRVC_Noise)
 live in qlroms.data_driven_qlroms.validation -- they exist for ragged dwell-segment
@@ -142,7 +142,7 @@ def RVC_Noise(x, case, U_wtv, Y_wtv, tikh_opt, hp_names, print_convergence=True)
                 # candidate Wout must start from its own washout -- otherwise
                 # every tikh_ but the first begins from the previous candidate's
                 # final state, and the first from a washout with a stale Wout.
-                r_out = np.zeros((case.N_units, 1))
+                r_out = np.zeros((case.N_r, 1))
                 u_out = np.zeros((case.N_dim, 1))
                 for u_in in U_wash:
                     u_out, r_out = case.step(u_in, r_out)
@@ -151,7 +151,9 @@ def RVC_Noise(x, case, U_wtv, Y_wtv, tikh_opt, hp_names, print_convergence=True)
                 Y_closed = np.zeros_like(Y_val)
 
                 for i in range(Y_closed.shape[0]):
-                    u_input = case.outputs_to_inputs(full_state=u_out)
+                    # outputs_to_inputs(u_out); U_l[...] is the data at this step, which
+                    # the network of an independent patch reads for its halo
+                    u_input = case._closed_loop_input(u_out, U_l[p + case.N_wash + i])
                     u_out, r_out = case.step(u_input, r_out)
                     Y_closed[i] = u_out[:, 0].copy()
 
@@ -184,7 +186,7 @@ def single_series_validation(x, case, U_wtv, Y_wtv, tikh_opt, hp_names,
     """Shared engine for the single-series validation strategies of
     Racca & Magri (2021): `SSV`, `WFV` and `KFV` differ only in fold
     geometry, which each supplies via `folds_of`; everything else -- the
-    teacher-forced open-loop pass, the per-fold ridge solves, the closed-loop
+    open-loop pass, the per-fold ridge solves, the closed-loop
     probes, the Tikhonov grid and the BHO bookkeeping -- lives here.
 
     Noise handling is identical to `RVC_Noise`: U_wtv is already the noisy
@@ -192,7 +194,7 @@ def single_series_validation(x, case, U_wtv, Y_wtv, tikh_opt, hp_names,
     and no extra noise is added here.
 
     The open-loop reservoir trajectory does not depend on `Wout`, so ONE
-    teacher-forced pass over the series per objective call serves every fold
+    open-loop pass over the series per objective call serves every fold
     and every Tikhonov candidate. Each fold's ridge system is then assembled
     from prefix sums of per-interval Gram terms -- per-fold retraining is
     pure arithmetic, with no reservoir recomputation.
@@ -239,18 +241,23 @@ def single_series_validation(x, case, U_wtv, Y_wtv, tikh_opt, hp_names,
         N_param = case._n_param(case.input_parameters)
         case.input_parameters = U_l[0, -N_param:].reshape(N_param, 1)
 
-    # ONE teacher-forced open-loop pass (Wout-independent). The returned
+    # ONE open-loop pass (Wout-independent). The returned
     # open-loop readouts (U_RR) are computed with the scratch Wout train()
     # zeroed before BHO -- stale, so they are discarded; the total LHS/RHS
     # are rebuilt per fold from interval sums below.
     _, _, _, R_RR = case._compute_RR_terms(U_wtv, Y_wtv)
-    R = R_RR[0]  # (Nt - N_wash, N_units)
-    r_aug = np.hstack([R, np.ones((R.shape[0], 1)) * case.bias_out])
+    R = R_RR[0]  # (Nt - N_wash, N_r)
+    n_post = R.shape[0]
+    # Regression rows: P = N_patches rows per step (one per patch, which share the
+    # readout; P = 1 for a single reservoir), so step i owns rows [i * P, (i + 1) * P).
+    P = case.N_patches
+    R_rows = R.reshape(n_post * P, case.N_units)
+    r_aug = np.hstack([R_rows, np.ones((R_rows.shape[0], 1)) * case.bias_out])
     if case.readout_input:   # row i also reads the normalised input U_l[N_wash + i]
         r_aug = np.hstack([R, case.normalize_input(U_l[case.N_wash:case.N_wash + R.shape[0]].T).T[:, case._readout_rows],
                            np.ones((R.shape[0], 1)) * case.bias_out])
     Y_t = Y_l[case.N_wash:]  # row i <-> input U_l[N_wash + i]
-    n_post = r_aug.shape[0]
+    Y_rows = Y_t.reshape(n_post * P, case._n_out)
 
     if n_post < case.N_val + 1:
         raise ValueError(
@@ -262,17 +269,17 @@ def single_series_validation(x, case, U_wtv, Y_wtv, tikh_opt, hp_names,
     case.n_folds_realized = len(folds)   # surfaced by training_summary()
 
     # Prefix Gram sums at every training-range boundary: each fold's ridge
-    # system is a difference of prefixes, so every teacher-forced row enters
+    # system is a difference of prefixes, so every open-loop row enters
     # exactly one Gram product regardless of the number of folds.
     bounds = sorted({0, *(b for tr, _, _ in folds for rng_ in tr for b in rng_)})
     A = np.zeros((r_aug.shape[1], r_aug.shape[1]))
-    B = np.zeros((r_aug.shape[1], case.N_dim))
+    B = np.zeros((r_aug.shape[1], case._n_out))
     prefix, prev = {}, 0
     for b in bounds:
         if b > prev:
-            block = r_aug[prev:b]
+            block = r_aug[prev * P:b * P]
             A = A + block.T @ block  # new arrays: stored references stay valid
-            B = B + block.T @ Y_t[prev:b]
+            B = B + block.T @ Y_rows[prev * P:b * P]
             prev = b
         prefix[b] = (A, B)
 
@@ -290,7 +297,7 @@ def single_series_validation(x, case, U_wtv, Y_wtv, tikh_opt, hp_names,
         Y_val = Y_t[i0:i0 + n_val_k]
 
         # Reservoir seed for the closed-loop probe, free from the
-        # teacher-forced pass: R[i0-1] is the open-loop state after
+        # open-loop pass: R[i0-1] is the open-loop state after
         # consuming the ENTIRE history up to input U_l[N_wash+i0-1]
         # (equivalent to, and longer than, a washout on the N_wash steps
         # preceding the interval). For i0 == 0 (interval flush with the training
@@ -303,7 +310,7 @@ def single_series_validation(x, case, U_wtv, Y_wtv, tikh_opt, hp_names,
         else:
             u_seed = U_l[case.N_wash - 1].reshape(-1, 1)
             if r_washed is None:
-                r_washed = np.zeros((case.N_units, 1))
+                r_washed = np.zeros((case.N_r, 1))
                 for u_in in U_l[:case.N_wash]:
                     _, r_washed = case.step(u_in, r_washed)
             r_seed = r_washed
@@ -322,7 +329,9 @@ def single_series_validation(x, case, U_wtv, Y_wtv, tikh_opt, hp_names,
 
             Y_closed = np.zeros_like(Y_val)
             for i in range(Y_closed.shape[0]):
-                u_input = case.outputs_to_inputs(full_state=u_out)
+                # outputs_to_inputs(u_out); U_l[...] is the data at this step, which
+                # the network of an independent patch reads for its halo
+                u_input = case._closed_loop_input(u_out, U_l[case.N_wash + i0 + i])
                 u_out, r_out = case.step(u_input, r_out)
                 Y_closed[i] = u_out[:, 0].copy()
 
@@ -404,7 +413,7 @@ def WFV(x, case, U_wtv, Y_wtv, tikh_opt, hp_names, print_convergence=True):
 
     A fixed-length training window slides forward by ``step`` per fold;
     each fold retrains Wout on its own window (pure arithmetic on
-    per-interval ridge sums -- the teacher-forced reservoir pass is shared)
+    per-interval ridge sums -- the open-loop reservoir pass is shared)
     and validates closed-loop on the ``N_val`` steps immediately after it,
     the reservoir washed out open-loop on the data immediately preceding
     the interval. Hyperparameters minimize the mean closed-loop error over
@@ -482,11 +491,11 @@ def KFV(x, case, U_wtv, Y_wtv, tikh_opt, hp_names, print_convergence=True):
     ``N_val`` cover the post-washout data (after an initial offset
     absorbing the remainder, cf. the ``b*v`` offset in the paper); each
     fold retrains Wout on ALL rows outside its own interval (pure
-    arithmetic on per-interval ridge sums -- the teacher-forced reservoir
+    arithmetic on per-interval ridge sums -- the open-loop reservoir
     pass is shared) and validates closed-loop on it, the reservoir washed
     out open-loop on the data immediately preceding the interval.
 
-    Note: the shared teacher-forced pass drives the reservoir open-loop
+    Note: the shared open-loop pass drives the reservoir
     through the held-out interval too -- the same recycling of training
     data that `RVC_Noise` embraces for its washout windows. `RVC_Noise`
     (recycle validation) matches KFV's accuracy at lower cost by also

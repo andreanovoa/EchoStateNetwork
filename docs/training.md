@@ -33,6 +33,11 @@ conditioned on a physical parameter
 With partial observability, `observed_idx` selects which components of the
 full state are fed back as inputs.
 
+For a spatially extended system, the *parallel* layout (`patch_size`, `halo`,
+`periodic`) advances one reservoir per patch of neighbouring sites with the
+same update, and the patches share the three matrices
+([parallel echo state network](parallel.md)).
+
 ## Training
 
 `train(train_data)` accepts a single trajectory `(Nt, N_dim)`, a batch of
@@ -83,7 +88,7 @@ The ESN runs in two modes:
 $\hat{\phi}(t_{i+1})$ are one-step-ahead predictions; (b) closed loop: each
 prediction is fed back as the next input and the network runs autonomously.*
 
-- **Open loop** (teacher forcing): `step()` is fed observed data; used for
+- **Open loop**: `step()` is fed observed data; used for
   training and for *washout* — driving the reservoir from
   $\mathbf{r}_0 = \mathbf{0}$ through a short window of true history so it
   synchronizes with the physical state before a forecast.

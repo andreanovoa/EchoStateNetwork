@@ -28,7 +28,7 @@ training data.*
   correlates weakly with test error. Provided for comparison.
 - **`WFV`** — *walk forward validation*: a fixed training window slides
   forward, validating on the interval just after it; each fold retrains `Wout`
-  on its own window (pure arithmetic on prefix ridge sums — the teacher-forced
+  on its own window (pure arithmetic on prefix ridge sums — the open-loop
   reservoir pass is shared).
 - **`KFV`** — *K-fold validation*: leave-one-interval-out; each fold retrains
   on everything outside its validation interval, exactly (prefix-sum
