@@ -1,5 +1,6 @@
 # EchoStateNetwork
 
+[![DOI](https://img.shields.io/badge/DOI-10.5281%2Fzenodo.23266679-blue.svg)](https://doi.org/10.5281/zenodo.23266679)
 [![PyPI](https://img.shields.io/pypi/v/echostatenetwork)](https://pypi.org/project/echostatenetwork/)
 
 Echo state networks / reservoir computing in pure numpy. One class,
@@ -53,12 +54,39 @@ esn.train([y])
 u_wash, r = ...                          # see docstrings: washout then closed loop
 ```
 
+## Citation
+
+If this package contributes to your work, please cite the software archive on Zenodo:
+
+```bibtex
+@software{novoa_echostatenetwork,
+  author = {Nóvoa, Andrea},
+  title = {echostatenetwork: echo state networks in pure numpy},
+  publisher = {Zenodo},
+  doi = {10.5281/zenodo.23266679},
+  url = {https://doi.org/10.5281/zenodo.23266679},
+}
+```
+
+and the paper that introduced chaotic recycle validation, which `train()` employs by
+default:
+
+```bibtex
+@article{racca2021robust,
+  author = {Racca, Alberto and Magri, Luca},
+  title = {Robust optimization and validation of echo state networks for learning chaotic dynamics},
+  journal = {Neural Networks},
+  volume = {142},
+  pages = {252--268},
+  year = {2021},
+  doi = {10.1016/j.neunet.2021.05.004},
+  url = {https://doi.org/10.1016/j.neunet.2021.05.004},
+}
+```
+
 ## Acknowledgements
 
 This repository is based on
 [alberacca/Echo-State-Networks](https://github.com/alberacca/Echo-State-Networks),
-the reference implementation of the recycle-validation ESN:
-
-> Racca, A., & Magri, L. (2021). Robust optimization and validation of echo state
-> networks for learning chaotic dynamics. *Neural Networks*, 142, 252-268.
-> [doi:10.1016/j.neunet.2021.05.004](https://doi.org/10.1016/j.neunet.2021.05.004)
+the reference implementation of the recycle-validation echo state network by Racca &
+Magri (2021).
