@@ -1,3 +1,9 @@
+---
+hide:
+  - navigation
+  - toc
+---
+
 # Live demo: building an echo state network
 
 An echo state network is built from a few choices: the data it trains on and how they
