@@ -169,7 +169,7 @@ class EchoStateNetwork:
     N_grid = 4
     N_initial_rand = 0
     N_units = 100
-    # False silences train()'s reporting 
+    # False silences train()'s reporting
     verbose = True
     N_wash = 50
 
