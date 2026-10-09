@@ -1776,7 +1776,7 @@ class EchoStateNetwork:
         if is_ragged:
             # Segments may have very different lengths (e.g. cluster-dwell chunks).
             # Two rules decide what enters training:
-            #   1. a segment must yield at least one teacher-forced pair past its own
+            #   1. a segment must yield at least one open-loop pair past its own
             #      washout (N_wash + 2 raw points). Validation length does NOT gate
             #      training inclusion -- the probing strategies use whatever tail a
             #      segment has (_SegmentRVC_Noise), so tying the drop rule to N_val

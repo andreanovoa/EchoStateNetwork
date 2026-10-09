@@ -195,7 +195,7 @@ def rvc_n_folds(cfg):
 def fold_count(name, cfg):
     """Fold count each strategy realizes on a dataset (for the report header)."""
     n_wash, n_train, n_val = dataset_steps(cfg)
-    n_post = (n_train + n_val - 1) - n_wash    # post-washout teacher-forced rows
+    n_post = (n_train + n_val - 1) - n_wash    # post-washout open-loop rows
     method, chaotic = STRATEGIES[name]
     step = N_LT1 if chaotic else n_val
     if method == '_SSV':
