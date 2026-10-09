@@ -89,4 +89,14 @@ default:
 This repository is based on
 [alberacca/Echo-State-Networks](https://github.com/alberacca/Echo-State-Networks),
 the reference implementation of the recycle-validation echo state network by Racca &
-Magri (2021).
+Magri (2021). The parallel layout follows Pathak et al. (2018) and Vlachas et al. (2020).
+
+- Pathak, J., Hunt, B., Girvan, M., Lu, Z., & Ott, E. (2018). Model-free prediction of
+  large spatiotemporally chaotic systems from data: a reservoir computing approach.
+  *Physical Review Letters*, 120, 024102.
+  [doi:10.1103/PhysRevLett.120.024102](https://doi.org/10.1103/PhysRevLett.120.024102)
+- Vlachas, P. R., Pathak, J., Hunt, B. R., Sapsis, T. P., Girvan, M., Ott, E., &
+  Koumoutsakos, P. (2020). Backpropagation algorithms and reservoir computing in
+  recurrent neural networks for the forecasting of complex spatiotemporal dynamics.
+  *Neural Networks*, 126, 191-217.
+  [doi:10.1016/j.neunet.2020.02.016](https://doi.org/10.1016/j.neunet.2020.02.016)
