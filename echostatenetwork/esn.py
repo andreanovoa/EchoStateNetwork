@@ -24,6 +24,9 @@ from scipy.sparse.linalg import eigs as sparse_eigs
 
 from . import validation
 
+#: `Win_type` options; 'sparse_dense_bias' gives every neuron the bias column (see `EchoStateNetwork.Win`)
+WIN_TYPES = ('sparse', 'sparse_dense_bias', 'dense')
+
 
 def add_pdf_page(pdf, fig):
     """Save one matplotlib figure as a page in an open PdfPages, then close it."""
@@ -117,7 +120,9 @@ class EchoStateNetwork:
     """
 
     bias_in = np.array([0.1])
-    bias_out = np.array([1.0])  # symmetry breaking
+    bias_in_range = (0.0, 2.0)   # searched when 'bias_in' is in hyperparameters_to_optimize
+    bias_out = np.array([1.0])
+    regularize_bias_out = True   # False: the Tikhonov factor leaves the bias row of the readout out
 
     # Slim copy of the last skopt result; None before training or when BHO is off.
     bo_results: dict | None = None
@@ -351,7 +356,10 @@ class EchoStateNetwork:
         """The input matrix, shape ``(N_units, N_dim_in + 1)`` (the last column
         multiplies the input bias `bias_in`). Sparse (``Win_type='sparse'``, one
         random connection per neuron to a state or bias column, but densely
-        connected to any `input_parameters` columns) or dense
+        connected to any `input_parameters` columns), sparse with a dense bias
+        column (``Win_type='sparse_dense_bias'``: one state column per neuron, and
+        every neuron sees the bias, which breaks the odd symmetry of the tanh
+        reservoir in all units; Herteux & Räth 2020) or dense
         (``Win_type='dense'``); see `_generate_W_Win`. With the parallel layout
         (`patch_size`), the input matrix that the patches share, shape
         ``(N_units, patch_size + 2 * halo + 1)``: its columns are the sites of a
@@ -370,10 +378,9 @@ class EchoStateNetwork:
         if self._independent:
             raise self._per_patch_error('Win')
 
-        assert self.Win_type in ['sparse', 'dense'], \
-                f"Win type {self.Win_type} not implemented ['sparse', 'dense']"
+        assert self.Win_type in WIN_TYPES, f"Win type {self.Win_type} not implemented {WIN_TYPES}"
 
-        if self.Win_type == 'sparse' and not isinstance(value, csr_matrix):
+        if self.Win_type != 'dense' and not isinstance(value, csr_matrix):
             value = csr_matrix(value)
         elif self.Win_type == 'dense' and hasattr(value, 'toarray'):
             value = value.toarray()
@@ -1466,7 +1473,7 @@ class EchoStateNetwork:
         Raises
         ------
         ValueError
-            If `Win_type` is not ``'sparse'`` or ``'dense'``.
+            If `Win_type` is not one of `WIN_TYPES`.
 
         Returns
         -------
@@ -1493,13 +1500,16 @@ class EchoStateNetwork:
             n_in = self._n_in
             Win = lil_matrix((self.N_units,
                               n_in + 1))  # +1 accounts for input bias
-            if self.Win_type == 'sparse':
+            if self.Win_type in ('sparse', 'sparse_dense_bias'):
                 N_param = self._n_param(self.input_parameters) if self.input_parameters is not None else 0
                 N_state = n_in - N_param
-                # columns eligible for the single sparse connection: state columns + bias (last column)
-                sparse_cols = np.append(np.arange(N_state), n_in)
+                dense_bias = self.Win_type == 'sparse_dense_bias'
+                # columns eligible for the single sparse connection: state columns (+ bias, last column, if sparse)
+                sparse_cols = np.arange(N_state) if dense_bias else np.append(np.arange(N_state), n_in)
                 for j in range(self.N_units):
                     Win[j, rng0.choice(sparse_cols)] = rng0.uniform(low=-1, high=1)
+                if dense_bias:
+                    Win[:, n_in] = rng0.uniform(low=-1, high=1, size=(self.N_units, 1))
                 if N_param > 0 and self.param_in_reservoir:
                     Win[:, N_state:n_in] = rng0.uniform(
                         low=-1, high=1, size=(self.N_units, N_param))
@@ -1509,7 +1519,7 @@ class EchoStateNetwork:
                 if not self.param_in_reservoir and self.input_parameters is not None:
                     Win[:, n_in - self._n_param(self.input_parameters):n_in] = 0
             else:
-                raise ValueError(f"Win type {self.Win_type} not implemented ['sparse', 'dense']")
+                raise ValueError(f"Win type {self.Win_type} not implemented {WIN_TYPES}")
             # Store
             self.Win = Win
 
@@ -1635,8 +1645,16 @@ class EchoStateNetwork:
             np.ndarray: Computed output weight matrix (Wout).
         """
         LHS, RHS = self._compute_RR_terms(U_wtv, Y_wtv)[:2]
-        LHS.ravel()[::LHS.shape[1] + 1] += self.tikh  # Add tikhonov to the diagonal
-        return np.linalg.solve(LHS, RHS)  # Solve linear regression problem
+        return np.linalg.solve(self._regularized(LHS, self.tikh), RHS)
+
+    def _regularized(self, LHS, tikh):
+        """A copy of the ridge left-hand side with `tikh` on the diagonal; the bias
+        row of the readout (the last one) is left out when `regularize_bias_out` is False."""
+        LHS = LHS.copy()
+        LHS.ravel()[::LHS.shape[1] + 1] += tikh
+        if not self.regularize_bias_out:
+            LHS[-1, -1] -= tikh
+        return LHS
 
 
     def _UY_from_raw_data(self, data, add_noise=True, seed=None):

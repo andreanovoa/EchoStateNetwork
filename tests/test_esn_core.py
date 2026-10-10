@@ -663,3 +663,20 @@ def test_seeded_training_is_bit_identical_across_processes(tmp_path):
         outs.append(np.load(out))
     assert np.array_equal(outs[0]['W'], outs[1]['W'])
     assert np.array_equal(outs[0]['Wout'], outs[1]['Wout'])
+
+
+def test_dense_bias_column_and_unregularized_bias_row():
+    # 'sparse_dense_bias': one state column per neuron and the bias column in every neuron;
+    # regularize_bias_out=False leaves the Tikhonov factor off the bias row only.
+    rng = np.random.default_rng(0)
+    data = rng.normal(size=(1, 200, 3))
+    esn = EchoStateNetwork(data[0].T, dt=1, N_units=30, upsample=1, t_train=150, t_val=20, t_test=10,
+                           N_wash=5, hyperparameters_to_optimize=[], Win_type='sparse_dense_bias', seed=0)
+    esn.train(data, plot_training=False)
+    Win = esn.Win.toarray()
+    assert np.all(Win[:, -1] != 0) and np.all((Win[:, :-1] != 0).sum(1) == 1)
+    assert esn.to_arrays()['Win_type'] == 'sparse_dense_bias'
+    LHS = np.eye(esn._n_readout)
+    esn.regularize_bias_out = False
+    assert np.allclose(np.diag(esn._regularized(LHS, 0.5)), [1.5] * (esn._n_readout - 1) + [1.0])
+    assert np.allclose(LHS, np.eye(esn._n_readout))                     # a copy: the input is untouched
