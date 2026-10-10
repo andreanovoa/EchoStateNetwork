@@ -1,0 +1,864 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ESN builder</title>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css">
+<script src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.js"></script>
+<style>
+  :root {
+    color-scheme: light;
+    --surface-1: #fcfcfb; --plane: #f9f9f7; --border: #dcdbd4;
+    --text-primary: #0b0b0b; --text-secondary: #52514e; --text-muted: #7a7973; --grid: #e6e5df;
+    --accent: #4a3aa7; --warn: #b54708; --warn-bg: #fff4e5;
+    --inp: #0077bb; --out: #009988; --res: #787878; --par: #ee7733; --pad: #bbbbbb;
+    --wash: #b9b8b0; --val: #4a3aa7; --dat: #ee3377;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      color-scheme: dark;
+      --surface-1: #1a1a19; --plane: #0d0d0d; --border: #35342f;
+      --text-primary: #ffffff; --text-secondary: #c3c2b7; --text-muted: #8f8e85; --grid: #2b2b28;
+      --accent: #9085e9; --warn: #f5a524; --warn-bg: #2b2112;
+      --inp: #4aa3e0; --out: #33bbaa; --res: #a5a5a0; --par: #f0884a; --pad: #66665f;
+      --wash: #5a5953; --val: #9085e9; --dat: #f06292;
+    }
+  }
+  :root[data-theme="dark"] {
+    color-scheme: dark;
+    --surface-1: #1a1a19; --plane: #0d0d0d; --border: #35342f;
+    --text-primary: #ffffff; --text-secondary: #c3c2b7; --text-muted: #8f8e85; --grid: #2b2b28;
+    --accent: #9085e9; --warn: #f5a524; --warn-bg: #2b2112;
+    --inp: #4aa3e0; --out: #33bbaa; --res: #a5a5a0; --par: #f0884a; --pad: #66665f;
+    --wash: #5a5953; --val: #9085e9; --dat: #f06292;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 16px; background: var(--plane); color: var(--text-primary);
+    font: 14px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  }
+  .layout { display: grid; grid-template-columns: 350px minmax(0, 1fr); gap: 14px; align-items: start; }
+  @media (max-width: 900px) { .layout { grid-template-columns: minmax(0, 1fr); } }
+  .panel { background: var(--surface-1); border: 1px solid var(--border); border-radius: 10px; padding: 14px; }
+  .stack { display: grid; gap: 14px; align-content: start; }
+  h2 { font-size: 15px; margin: 0 0 2px; font-weight: 600; }
+  h3 { font-size: 13px; margin: 0 0 8px; font-weight: 600; color: var(--text-secondary); text-transform: uppercase; letter-spacing: .03em; }
+  p.sub { margin: 0 0 10px; color: var(--text-secondary); font-size: 12.5px; }
+  .row { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 6px 10px; margin: 6px 0; font-size: 12.5px; color: var(--text-secondary); }
+  .row b { color: var(--text-primary); font-variant-numeric: tabular-nums; }
+  .row.off, .hp.off { opacity: .45; }
+  input[type=range] { width: 100%; accent-color: var(--accent); grid-column: 1 / -1; margin: 0; }
+  input[type=number], input[type=text], select {
+    width: 92px; padding: 3px 6px; border: 1px solid var(--border); border-radius: 6px;
+    background: var(--plane); color: var(--text-primary); font: inherit; font-size: 12.5px; font-variant-numeric: tabular-nums;
+  }
+  input.wide { width: 170px; }
+  .seg { display: flex; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; grid-column: 1 / -1; }
+  .seg input { position: absolute; opacity: 0; pointer-events: none; }
+  .seg label { flex: 1; text-align: center; padding: 4px 4px; font-size: 12px; cursor: pointer; color: var(--text-secondary); border-left: 1px solid var(--border); }
+  .seg label:first-of-type { border-left: 0; }
+  .seg input:checked + label { background: var(--accent); color: #fff; }
+  .seg input:focus-visible + label { outline: 2px solid var(--accent); outline-offset: -2px; }
+  .seg input:disabled + label { cursor: not-allowed; opacity: .5; }
+  .hp { display: grid; grid-template-columns: 44px 1fr; gap: 3px 8px; align-items: center; font-size: 12.5px; margin: 10px 0; color: var(--text-secondary); }
+  .hp .sym { grid-row: span 2; color: var(--text-primary); font-weight: 600; }
+  .hp label { display: flex; gap: 4px; align-items: center; flex-wrap: wrap; }
+  .hp input[type=number], .hp input[type=text] { width: 58px; padding: 4px 7px; }
+  .hp input[type=number] { -moz-appearance: textfield; appearance: textfield; }
+  .hp input[type=number]::-webkit-inner-spin-button, .hp input[type=number]::-webkit-outer-spin-button { -webkit-appearance: none; margin: 0; }
+  .hp input.wide { flex: 1; min-width: 150px; }
+  .note { font-size: 11.5px; color: var(--text-muted); margin-top: 4px; }
+  .warn { display: none; background: var(--warn-bg); color: var(--warn); border: 1px solid var(--warn); border-radius: 8px; padding: 8px 12px; font-size: 12.5px; }
+  .tiles { display: flex; flex-wrap: wrap; gap: 10px; }
+  .tile { flex: 1 1 130px; background: var(--surface-1); border: 1px solid var(--border); border-radius: 10px; padding: 9px 12px; }
+  .tile .k { font-size: 11.5px; color: var(--text-secondary); }
+  .tile .v { font-size: 19px; font-weight: 600; font-variant-numeric: tabular-nums; margin-top: 2px; }
+  .tile .u { font-size: 11.5px; color: var(--text-muted); }
+  svg { width: 100%; height: auto; display: block; }
+  #arch { width: auto; max-width: 100%; height: auto; margin: 0 auto; }
+  .eq { margin: 12px 0 0; }
+  .eq h4 { margin: 0 0 2px; font-size: 12.5px; font-weight: 600; color: var(--text-secondary); }
+  .eq .tex { overflow-x: auto; overflow-y: hidden; padding: 2px 0; }
+  .eq .where { font-size: 12.5px; color: var(--text-secondary); }
+  .katex { font-size: 1.05em; }
+  pre { margin: 0; padding: 12px; background: var(--plane); border: 1px solid var(--border); border-radius: 8px; overflow-x: auto; font-size: 12.5px; line-height: 1.45; }
+  button { font: inherit; font-size: 12.5px; padding: 4px 10px; border-radius: 6px; border: 1px solid var(--border); background: var(--surface-1); color: var(--text-primary); cursor: pointer; }
+  .head { display: flex; justify-content: space-between; align-items: baseline; gap: 10px; }
+  .legend { display: flex; flex-wrap: wrap; gap: 8px 14px; margin-top: 8px; font-size: 12px; color: var(--text-secondary); }
+  .legend span { display: inline-flex; align-items: center; gap: 6px; }
+  .sw { width: 14px; height: 10px; border-radius: 2px; display: inline-block; }
+</style>
+</head>
+<body>
+<div class="layout" id="app">
+  <aside class="stack">
+    <div class="panel">
+      <h3>Data</h3>
+      <div class="row"><span>Sites (state size), N<sub>dim</sub></span> <b id="NdimV"></b><input id="Ndim" type="range" min="2" max="64" step="1" value="12"></div>
+      <div class="row"><span>Time step of the data, dt</span> <input id="dt" type="number" step="any" min="0" value="0.01"></div>
+      <div class="row"><span>Upsample (ESN step = dt × upsample)</span> <input id="ups" type="number" step="1" min="1" value="5"></div>
+      <div class="row"><span>Training time, t<sub>train</sub></span> <input id="ttrain" type="number" step="any" min="0" value="40"></div>
+      <div class="row"><span>Validation time, t<sub>val</sub></span> <input id="tval" type="number" step="any" min="0" value="4"></div>
+      <div class="row"><span>Washout, N<sub>wash</sub> (steps)</span> <b id="NwashV"></b><input id="Nwash" type="range" min="1" max="500" step="1" value="50"></div>
+    </div>
+    <div class="panel">
+      <h3>Layout</h3>
+      <div class="row">
+        <div class="seg" role="radiogroup" aria-label="Layout">
+          <input type="radio" name="layout" id="lay-global" value="global" checked><label for="lay-global">one reservoir</label>
+          <input type="radio" name="layout" id="lay-parallel" value="parallel"><label for="lay-parallel">parallel, shared</label>
+          <input type="radio" name="layout" id="lay-local" value="local"><label for="lay-local">parallel, independent</label>
+        </div>
+      </div>
+      <div class="row" id="r-G"><span>Patch size, G</span> <select id="G"></select></div>
+      <div class="row" id="r-H"><span>Halo, H</span> <b id="HV"></b><input id="H" type="range" min="0" max="8" step="1" value="1"></div>
+      <div class="row" id="r-per"><label for="per">Periodic domain</label><input id="per" type="checkbox" checked></div>
+    </div>
+    <div class="panel">
+      <h3>Inputs and readout</h3>
+      <div class="row" id="r-obs"><span>Observed sites (inputs)</span> <b id="nobsV"></b><input id="nobs" type="range" min="1" max="12" step="1" value="12"></div>
+      <div class="row" id="r-par"><span>Parameters, N<sub>param</sub></span> <b id="nparV"></b><input id="npar" type="range" min="0" max="3" step="1" value="0"></div>
+      <div class="row" id="r-pir"><label for="pir">Parameters enter the reservoir</label><input id="pir" type="checkbox" checked></div>
+      <div class="row" id="r-read"><span>Readout reads</span> <div class="seg" role="radiogroup" aria-label="Readout reads">
+          <input type="radio" name="read" id="read-r" value="r" checked><label for="read-r">[r; 1]</label>
+          <input type="radio" name="read" id="read-u" value="u"><label for="read-u">[r; u; 1]</label>
+          <input type="radio" name="read" id="read-p" value="p"><label for="read-p">[r; p; 1]</label>
+        </div>
+      </div>
+      <div class="row"><span>Input noise, &eta; (training only)</span> <input id="noise" type="text" value="1e-10"></div>
+      <div class="note" id="inNote"></div>
+    </div>
+    <div class="panel">
+      <h3>Reservoir</h3>
+      <div class="row"><span>Units per reservoir, N<sub>units</sub></span> <b id="NuV"></b><input id="Nu" type="range" min="10" max="2000" step="10" value="100"></div>
+      <div class="row"><span>Connections per unit (<code>connect</code>)</span> <input id="connect" type="number" step="1" min="1" value="3"></div>
+      <div class="row"><span>Realizations of W<sub>in</sub> and W, <code>n_seeds</code></span> <input id="nseeds" type="number" step="1" min="1" value="1"></div>
+      <div class="row"><span>Seed of the first realization</span> <input id="seed" type="number" step="1" min="0" value="0"></div>
+      <div class="note">With more than one realization, <code>train()</code> trains each one in its own process and keeps the one with the lowest validation score.</div>
+      <div class="row"><span>Input matrix</span> <div class="seg" role="radiogroup" aria-label="Input matrix">
+          <input type="radio" name="win" id="win-sparse" value="sparse" checked><label for="win-sparse">sparse</label>
+          <input type="radio" name="win" id="win-dense" value="dense"><label for="win-dense">dense</label>
+        </div>
+      </div>
+    </div>
+    <div class="panel">
+      <h3>Hyperparameters</h3>
+      <div class="note">Tick to search by Bayesian optimization in the range; untick to fix the value.</div>
+      <div class="hp" id="hp-rho"><span class="sym">&rho;</span>
+        <label><input type="checkbox" id="s-rho" checked> search in <input id="lo-rho" type="number" step="any" value="0.8"> &ndash; <input id="hi-rho" type="number" step="any" value="1.05"></label>
+        <label>or fix at <input id="v-rho" type="number" step="any" value="0.9"></label></div>
+      <div class="hp" id="hp-sigma"><span class="sym">&sigma;<sub>in</sub></span>
+        <label><input type="checkbox" id="s-sigma" checked> search log<sub>10</sub> in <input id="lo-sigma" type="number" step="any" value="-5"> &ndash; <input id="hi-sigma" type="number" step="any" value="-1"></label>
+        <label>or fix at <input id="v-sigma" type="text" value="1e-3"></label></div>
+      <div class="hp" id="hp-tikh"><span class="sym">&beta; (tikh)</span>
+        <label><input type="checkbox" id="s-tikh" checked> search in <input id="g-tikh" class="wide" type="text" value="1e-8, 1e-10, 1e-12, 1e-16"></label>
+        <label>or fix at <input id="v-tikh" type="text" value="1e-12"></label></div>
+      <div class="hp" id="hp-alpha"><span class="sym">&alpha; (leak)</span>
+        <label><input type="checkbox" id="s-alpha"> search in <input id="lo-alpha" type="number" step="any" value="0.1"> &ndash; <input id="hi-alpha" type="number" step="any" value="1"></label>
+        <label>or fix at <input id="v-alpha" type="number" step="any" value="1"></label></div>
+      <div class="row" id="r-nfe"><span>Evaluations, <code>N_func_evals</code></span> <input id="nfe" type="number" step="1" min="1" value="20"></div>
+      <div class="row" id="r-ngrid"><span>Initial grid per axis, <code>N_grid</code></span> <input id="ngrid" type="number" step="1" min="1" value="4"></div>
+    </div>
+    <div class="panel" id="p-val">
+      <h3>Validation</h3>
+      <div class="row"><span>Strategy</span> <div class="seg" role="radiogroup" aria-label="Validation strategy">
+          <input type="radio" name="strat" id="st-RVC" value="RVC_Noise" checked><label for="st-RVC">RVC</label>
+          <input type="radio" name="strat" id="st-SSV" value="SSV"><label for="st-SSV">SSV</label>
+          <input type="radio" name="strat" id="st-WFV" value="WFV"><label for="st-WFV">WFV</label>
+          <input type="radio" name="strat" id="st-KFV" value="KFV"><label for="st-KFV">KFV</label>
+        </div>
+      </div>
+      <div class="row" id="r-folds"><span>Folds, <code>N_folds</code></span> <input id="folds" type="number" step="1" min="1" value="4"></div>
+      <div class="row" id="r-step"><span>Fold step, <code>val_fold_step</code></span> <input id="fstep" type="text" placeholder="N_val"></div>
+      <div class="row"><span>Metric</span> <div class="seg" role="radiogroup" aria-label="Validation metric">
+          <input type="radio" name="metric" id="m-mae" value="log_nMAE" checked><label for="m-mae">log nMAE</label>
+          <input type="radio" name="metric" id="m-mse" value="nMSE"><label for="m-mse">nMSE</label>
+        </div>
+      </div>
+      <div class="note" id="valNote"></div>
+    </div>
+  </aside>
+
+  <main class="stack">
+    <div class="warn" id="warn" role="alert"></div>
+    <div class="tiles">
+      <div class="tile"><div class="k">Steps: wash / train / val</div><div class="v" id="t-steps">-</div><div class="u" id="t-stepsU"></div></div>
+      <div class="tile"><div class="k">Reservoir state, N<sub>r</sub></div><div class="v" id="t-nr">-</div><div class="u" id="t-nrU"></div></div>
+      <div class="tile"><div class="k">Readout weights trained</div><div class="v" id="t-w">-</div><div class="u" id="t-wU"></div></div>
+      <div class="tile"><div class="k">Search</div><div class="v" id="t-bo">-</div><div class="u" id="t-boU"></div></div>
+      <div class="tile"><div class="k">Closed-loop validation runs</div><div class="v" id="t-runs">-</div><div class="u" id="t-runsU"></div></div>
+    </div>
+    <div class="panel">
+      <div class="head"><h2>Architecture</h2>
+        <div class="seg" role="radiogroup" aria-label="View" style="width: 250px">
+          <input type="radio" name="view" id="view-folded" value="folded" checked><label for="view-folded">folded</label>
+          <input type="radio" name="view" id="view-unfolded" value="unfolded"><label for="view-unfolded">unfolded in time</label>
+        </div>
+      </div>
+      <p class="sub" id="archSub"></p>
+      <svg id="arch" role="img" aria-label="Architecture of the echo state network"></svg>
+    </div>
+    <div class="panel">
+      <h2>Equations</h2>
+      <p class="sub">The equations that <code>train()</code> and the forecast solve with the current settings.</p>
+      <div id="eqs"></div>
+    </div>
+    <div class="panel">
+      <h2>Data split and validation folds</h2>
+      <p class="sub" id="foldSub"></p>
+      <svg id="folds-svg" role="img" aria-label="Training record and validation folds"></svg>
+      <div class="legend">
+        <span><i class="sw" style="background: var(--wash)"></i> washout (open loop)</span>
+        <span><i class="sw" style="background: var(--out)"></i> rows of the ridge regression</span>
+        <span><i class="sw" style="background: var(--val)"></i> closed-loop validation</span>
+      </div>
+    </div>
+    <div class="panel">
+      <div class="head"><h2>Code</h2><button id="copy">Copy</button></div>
+      <p class="sub">Run it locally on your record <code>data</code>, of shape (N<sub>t</sub>, N<sub>dim</sub>).</p>
+      <pre id="code"></pre>
+    </div>
+  </main>
+</div>
+
+<script>
+"use strict";
+const $ = (id) => document.getElementById(id);
+const css = (name) => getComputedStyle(document.body).getPropertyValue(name).trim();
+const radio = (name) => document.querySelector(`input[name=${name}]:checked`).value;
+const num = (id, fallback) => { const v = parseFloat($(id).value); return Number.isFinite(v) ? v : fallback; };
+const NET = ["#CC6677", "#332288", "#DDAA33", "#117733", "#882255", "#44AA99", "#999933", "#AA4499"];
+const DEFAULTS = { N_units: 100, N_wash: 50, upsample: 5, noise: 1e-10, connect: 3, rho: 0.9, rho_range: [0.8, 1.05],
+  sigma_in: 1e-3, sigma_in_range: [-5, -1], tikh: 1e-12, tikh_range: [1e-8, 1e-10, 1e-12, 1e-16], leak_rate: 1,
+  leak_rate_range: [0.1, 1], N_func_evals: 20, N_grid: 4, N_folds: 4 };
+
+/* ---------- settings ---------- */
+function settings() {
+  const N = +$("Ndim").value, layout = radio("layout"), par = layout !== "global";
+  const G = par ? +$("G").value : N, H = par ? +$("H").value : 0;
+  const nobs = par ? N : Math.min(+$("nobs").value, N), npar = par ? 0 : +$("npar").value;
+  let read = par ? "r" : radio("read");
+  if (read === "p" && !npar) read = "r";
+  const ups = Math.max(1, Math.round(num("ups", 5))), dt = num("dt", 0.01), dtE = dt * ups;
+  const Ntr = Math.round(num("ttrain", 40) / dtE), Nval = Math.round(num("tval", 4) / dtE);
+  const tikhGrid = $("g-tikh").value.split(/[\s,;]+/).map(parseFloat).filter(Number.isFinite);
+  const s = {
+    N, layout, par, ind: layout === "local", G, H, P: N / G, periodic: par ? $("per").checked : true,
+    nobs, npar, pir: $("pir").checked, read, noise: num("noise", 1e-10),
+    nseeds: Math.max(1, Math.round(num("nseeds", 1))), seed: Math.max(0, Math.round(num("seed", 0))),
+    Nu: +$("Nu").value, connect: Math.max(1, Math.round(num("connect", 3))), win: radio("win"),
+    dt, ups, dtE, ttrain: num("ttrain", 40), tval: num("tval", 4), Ntr, Nval, Nwash: +$("Nwash").value,
+    search: { rho: $("s-rho").checked, sigma_in: $("s-sigma").checked, tikh: $("s-tikh").checked, leak_rate: $("s-alpha").checked },
+    rho: num("v-rho", 0.9), rho_range: [num("lo-rho", 0.8), num("hi-rho", 1.05)],
+    sigma_in: num("v-sigma", 1e-3), sigma_in_range: [num("lo-sigma", -5), num("hi-sigma", -1)],
+    tikh: num("v-tikh", 1e-12), tikh_range: tikhGrid.length ? tikhGrid : [1e-12],
+    leak_rate: num("v-alpha", 1), leak_rate_range: [num("lo-alpha", 0.1), num("hi-alpha", 1)],
+    nfe: Math.max(1, Math.round(num("nfe", 20))), ngrid: Math.max(1, Math.round(num("ngrid", 4))),
+    strat: radio("strat"), folds: Math.max(1, Math.round(num("folds", 4))), metric: radio("metric"),
+    fstep: $("fstep").value.trim() === "" ? null : Math.max(1, Math.round(num("fstep", 1))),
+  };
+  s.dims = ["rho", "sigma_in", "leak_rate"].filter((k) => s.search[k]);
+  s.bo = s.dims.length > 0 || s.search.tikh;
+  s.observed = Array.from({ length: s.nobs }, (_, i) => (s.nobs === 1 ? 0 : Math.round(i * (N - 1) / (s.nobs - 1))));
+  s.nin = par ? G + 2 * H : s.nobs + s.npar;
+  s.readRows = s.read === "u" ? s.nobs + s.npar : s.read === "p" ? s.npar : 0;
+  s.Nt = s.Ntr + s.Nval - 1;
+  return s;
+}
+
+/* ---------- controls that depend on others ---------- */
+function syncControls() {
+  const N = +$("Ndim").value, layout = radio("layout"), par = layout !== "global";
+  $("NdimV").textContent = N;
+  $("nobs").max = N;
+  if (+$("nobs").value > N) $("nobs").value = N;
+  const divisors = [];
+  for (let g = 1; g <= N; g++) if (N % g === 0) divisors.push(g);
+  const sel = $("G"), prev = +sel.value;
+  if (sel.options.length !== divisors.length || [...sel.options].some((o, i) => +o.value !== divisors[i])) {
+    sel.innerHTML = divisors.map((g) => `<option value="${g}">${g} (${N / g} patches)</option>`).join("");
+    const pick = divisors.includes(prev) ? prev : divisors[Math.floor(divisors.length / 2)];
+    sel.value = pick;
+  }
+  const G = +sel.value, periodic = $("per").checked;
+  $("H").max = periodic ? Math.max(0, Math.floor((N - G) / 2)) : Math.max(1, Math.min(16, N));
+  if (+$("H").value > +$("H").max) $("H").value = $("H").max;
+  $("HV").textContent = $("H").value;
+  $("nobsV").textContent = par ? N : $("nobs").value;
+  $("nparV").textContent = par ? 0 : $("npar").value;
+  $("NwashV").textContent = $("Nwash").value;
+  $("NuV").textContent = $("Nu").value;
+  for (const id of ["r-G", "r-H", "r-per"]) $(id).classList.toggle("off", !par);
+  for (const id of ["G", "H", "per"]) $(id).disabled = !par;
+  for (const id of ["r-obs", "r-par", "r-pir", "r-read"]) $(id).classList.toggle("off", par);
+  for (const id of ["nobs", "npar", "pir", "read-r", "read-u", "read-p"]) $(id).disabled = par;
+  if (!par) { $("read-p").disabled = +$("npar").value === 0; $("pir").disabled = +$("npar").value === 0; }
+  $("inNote").textContent = par ? "The parallel layout reads and forecasts every site, without parameters or input skip." : "";
+  for (const [k, ids] of [["rho", ["lo-rho", "hi-rho", "v-rho"]], ["sigma", ["lo-sigma", "hi-sigma", "v-sigma"]],
+    ["tikh", ["g-tikh", "v-tikh"]], ["alpha", ["lo-alpha", "hi-alpha", "v-alpha"]]]) {
+    const on = $("s-" + k).checked;
+    ids.forEach((id) => { $(id).disabled = id.startsWith("v-") ? on : !on; });
+  }
+}
+
+/* ---------- architecture (SVG): a port of the TikZ schematic; arrows only at 0/90/180/270 degrees ---------- */
+const NEURONS = [[-0.24, 0.98], [0.66, 0.74], [-0.96, 0.34], [-0.1, 0.18], [1.02, -0.06], [-0.7, -0.6], [0.38, -0.38], [0, -1.02]]
+  .map(([x, y]) => [0.88 / 1.25 * x, -0.88 / 1.25 * y]);
+const EDGES = [[1, 4], [2, 1], [3, 4], [4, 7], [5, 2], [7, 5], [6, 3], [4, 6], [8, 6], [7, 8]];
+const LOOPS = [[4, 77.5], [7, -7.5], [3, 82.5]];
+const HATCH = [
+  (c) => `<path d="M-1,1 l2,-2 M0,6 l6,-6 M5,7 l2,-2" stroke="${c}" stroke-width="0.8"/>`,
+  (c) => `<path d="M-1,5 l2,2 M0,0 l6,6 M5,-1 l2,2" stroke="${c}" stroke-width="0.8"/>`,
+  (c) => `<circle cx="1.5" cy="1.5" r="0.7" fill="${c}"/><circle cx="4.5" cy="4.5" r="0.7" fill="${c}"/>`,
+  (c) => `<path d="M3,0 v6" stroke="${c}" stroke-width="0.8"/>`,
+  (c) => `<path d="M0,3 h6" stroke="${c}" stroke-width="0.8"/>`,
+  (c) => `<circle cx="3" cy="3" r="1.6" fill="none" stroke="${c}" stroke-width="0.6"/>`,
+];
+const sub = (s) => `<tspan dy="3" font-size="0.72em">${s}</tspan><tspan dy="-3"> </tspan>`;
+const sup = (s) => `<tspan dy="-5" font-size="0.72em">${s}</tspan><tspan dy="5"> </tspan>`;
+const B = (s) => `<tspan font-weight="700">${s}</tspan>`;
+
+function glyph(cx, cy, R, col, mk, ink, bg) {
+  let g = `<circle cx="${cx}" cy="${cy}" r="${R}" fill="${bg}" stroke="${ink}" stroke-width="1.1"/>`;
+  if (R < 16) return g;
+  const pts = NEURONS.map(([nx, ny]) => [cx + R * nx, cy + R * ny]), dot = 0.07 * R;
+  for (const [a, b] of EDGES) {
+    const [x0, y0] = pts[a - 1], [x1, y1] = pts[b - 1], d = Math.hypot(x1 - x0, y1 - y0);
+    const ux = (x1 - x0) / d, uy = (y1 - y0) / d, sh = 1.7 * dot;
+    g += `<line x1="${x0 + sh * ux}" y1="${y0 + sh * uy}" x2="${x1 - sh * ux}" y2="${y1 - sh * uy}" stroke="${col}" stroke-width="0.7" marker-end="url(#${mk})"/>`;
+  }
+  for (const [i, o] of LOOPS) {
+    const [px, py] = pts[i - 1], d = 0.46 * R, a1 = -o * Math.PI / 180, a2 = -(o - 75) * Math.PI / 180;
+    g += `<path d="M${px},${py} C${px + d * Math.cos(a1)},${py + d * Math.sin(a1)} ${px + d * Math.cos(a2)},${py + d * Math.sin(a2)} ${px},${py}" fill="none" stroke="${col}" stroke-width="0.7" marker-end="url(#${mk})"/>`;
+  }
+  for (const [px, py] of pts) g += `<circle cx="${px}" cy="${py}" r="${dot}" fill="${ink}"/>`;
+  return g;
+}
+
+/* unfolded in time: one column per step n (input at the bottom, reservoir, output at the top),
+   the washout on the data, then the closed loop, in which every forecast is the next input */
+function drawUnfolded(s) {
+  const inp = css("--inp"), out = css("--out"), res = css("--res"), ink = css("--text-primary"), dat = css("--dat"),
+    wash = css("--wash"), mute = css("--text-muted"), sec = css("--text-secondary"), bg = css("--surface-1"), parc = css("--par");
+  const Nw = s.Nwash, leaky = s.search.leak_rate || s.leak_rate < 0.999;
+  const washN = Nw <= 3 ? [...Array(Nw).keys()] : [0, 1, null, Nw - 1];
+  const cols = [...washN.map((n) => ({ n, wash: true })), ...[Nw, Nw + 1, Nw + 2, null].map((n) => ({ n, wash: false }))];
+  const COLW = 92, DOTW = 44, X0 = 78, BW = 54, BH = 26, R = 25;
+  let xx = X0;
+  cols.forEach((c) => { const w = c.n === null ? DOTW : COLW; c.x = xx + w / 2; c.w = w; xx += w; });
+  const W = xx + 16, yBand = 14, yOut = 78, yRes = 168, yIn = 258;
+  let defs = "", b = "";
+  const marker = (id, col, size) => {
+    defs += `<marker id="${id}" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="${size}" markerHeight="${size}" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="${col}"/></marker>`;
+  };
+  marker("u-inp", inp, 5); marker("u-out", out, 5); marker("u-ink", ink, 5); marker("a-res", res, 3.2);
+  NET.forEach((col, i) => marker("a-net" + i, col, 3.2));
+  const line = (pts, col, mk, w = 1.5, dash = "") => `<polyline points="${pts.map((p) => p.join(",")).join(" ")}" fill="none" stroke="${col}" stroke-width="${w}"${dash ? ` stroke-dasharray="${dash}"` : ""}${mk ? ` marker-end="url(#${mk})"` : ""}/>`;
+  const text = (x, y, str, col, size = 10.5, anchor = "middle") => `<text x="${x}" y="${y}" fill="${col}" font-size="${size}" text-anchor="${anchor}" font-family="STIX Two Text, Times New Roman, serif" paint-order="stroke" stroke="${bg}" stroke-width="3" stroke-linejoin="round">${str}</text>`;
+  let labels = "";
+  const box = (x, y, col, label, dashed) => `<rect x="${x - BW / 2}" y="${y - BH / 2}" width="${BW}" height="${BH}" rx="3" fill="${bg}" stroke="${col}" stroke-width="1.5"${dashed ? ' stroke-dasharray="3,2"' : ""}/>` + text(x, y + 4, label, col, 11);
+  const washCols = cols.filter((c) => c.wash), clCols = cols.filter((c) => !c.wash);
+  const band = (cs, col, op, label) => {
+    if (!cs.length) return;
+    const x0 = cs[0].x - cs[0].w / 2 + 3, x1 = cs[cs.length - 1].x + cs[cs.length - 1].w / 2 - 3;
+    b += `<rect x="${x0}" y="${yBand}" width="${x1 - x0}" height="20" rx="4" fill="${col}" opacity="${op}"/>` + text((x0 + x1) / 2, yBand + 14, label, sec, 10.5);
+  };
+  band(washCols, wash, 0.45, `washout: open loop on the data, N${sub("wash")} = ${Nw} steps`);
+  band(clCols, inp, 0.18, "forecast: closed loop");
+  b += text(14, yRes + 4, `${B("r")}${sub(0)} = ${B("0")}`, ink, 11, "start");
+  b += line([[52, yRes], [cols[0].x - R - 2, yRes]], ink, "u-ink");
+  const par = s.par, obsNote = s.nobs < s.N ? "[𝒪]" : "";
+  const inLabel = (n, w) => (w ? `${B("u")}${sub(n)}` : `${B("\u0169")}${sub(n)}${obsNote}`) + (s.npar && s.pir ? `; ${B("p\u0303")}` : "");
+  cols.forEach((c, i) => {
+    const next = cols[i + 1];
+    if (c.n === null) {
+      for (const y of [yOut, yRes, yIn]) b += text(c.x, y + 5, "\u22ef", mute, 16);
+      if (next) b += line([[c.x + 12, yRes], [next.x - R - 2, yRes]], ink, "u-ink");
+      return;
+    }
+    const n = c.n, first = i === 0;
+    // input, reservoir, output
+    b += box(c.x, yIn, c.wash ? dat : inp, inLabel(n, c.wash));
+    b += line([[c.x, yIn - BH / 2], [c.x, yRes + R + 2]], inp, "u-inp");
+    if (par) {
+      for (const o of [8, 4]) b += `<circle cx="${c.x + o}" cy="${yRes - o}" r="${R}" fill="${bg}" stroke="${ink}" stroke-width="1" opacity="${o === 8 ? 0.35 : 0.6}"/>`;
+    }
+    b += glyph(c.x, yRes, R, s.ind ? NET[0] : res, s.ind ? "a-net0" : "a-res", ink, bg);
+    labels += text(c.x + R + 4, yRes - R + 2, `${B("r")}${par ? sup("(p)") : ""}${sub(n + 1)}`, ink, 10.5, "start");
+    b += line([[c.x, yRes - R - 2], [c.x, yOut + BH / 2]], out, "u-out");
+    const discarded = c.wash && n < Nw - 1;
+    b += box(c.x, yOut, discarded ? mute : out, `${B("\u00fb")}${sub(n + 1)}`, discarded);
+    // the reservoir state passes to the next step
+    if (next) {
+      const xe = next.n === null ? next.x - 12 : next.x - R - 2;
+      b += line([[c.x + R, yRes], [xe, yRes]], ink, "u-ink");
+      if (first) labels += text((c.x + R + xe) / 2, yRes + 15, `${B("W")}${leaky ? ", 1\u2212\u03b1" : ""}`, ink, 10);
+    }
+    // input skip: left, up, right into the readout arrow (the arrow rotated with the column)
+    if (s.read === "u") {
+      const xs = c.x - BW / 2 - 8, yj = (yRes - R + yOut + BH / 2) / 2;
+      b += line([[c.x - BW / 2, yIn], [xs, yIn], [xs, yj], [c.x - 1, yj]], inp, "u-inp", 1.1, "3,2");
+    }
+    // closed loop: the forecast is the next input
+    if (next && (!c.wash || n === Nw - 1)) {
+      const xv = c.x + BW / 2 + 9;
+      if (next.n === null) b += line([[c.x + BW / 2, yOut], [next.x - 12, yOut]], inp, "", 1.5, "3,2");
+      else {                                      // right, down, right, up into the bottom of the next input
+        const yLow = yIn + BH / 2 + 12;
+        b += line([[c.x + BW / 2, yOut], [xv, yOut], [xv, yLow], [next.x, yLow], [next.x, yIn + BH / 2 + 1]], inp, "u-inp");
+      }
+    }
+    labels += text(c.x, yIn + BH / 2 + 30, `n = ${n}`, sec, 10.5);
+  });
+  const notes = ["Dashed outputs of the washout are discarded; the last washout output is the first forecast."];
+  if (s.nobs < s.N) notes.push("Only the observed sites, 𝒪, are fed back.");
+  if (par) notes.push(`Each column advances the ${s.P} reservoirs of the patches together (stacked circles).`);
+  const yNote = yIn + BH / 2 + 54;
+  notes.forEach((t, k) => { b += text(X0 - 50, yNote + 15 * k, t, sec, 10.5, "start"); });
+  const svg = $("arch");
+  const H = yNote + 15 * notes.length;
+  svg.setAttribute("viewBox", `0 0 ${W} ${H}`);
+  svg.setAttribute("width", W);
+  svg.setAttribute("height", H);
+  svg.innerHTML = `<defs>${defs}</defs>${b}${labels}`;
+}
+
+function drawArch(s) {
+  if (radio("view") === "unfolded") return drawUnfolded(s);
+  const { N, par, ind, G, H, P } = s;
+  const extraTop = s.npar ? s.npar + 1 : 0;
+  const C = Math.max(4, Math.min(11, 300 / (N + 2 * H + extraTop))), CW = 20;
+  const W = 470, XIN = 64, XRES = 240, XOUT = 410;
+  const rowMin = -H - extraTop, top = 36, y = (row) => top + (row - rowMin + 0.5) * C;
+  const R = Math.min(44, 0.42 * G * C);
+  const inp = css("--inp"), out = css("--out"), res = css("--res"), ink = css("--text-primary"),
+    pad = css("--pad"), parc = css("--par"), bg = css("--surface-1");
+  const observed = new Set(s.observed);
+  let defs = "", body = "";
+  const marker = (id, col, size) => {
+    defs += `<marker id="${id}" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="${size}" markerHeight="${size}" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="${col}"/></marker>`;
+  };
+  marker("a-inp", inp, 5); marker("a-out", out, 5); marker("a-ink", ink, 4.5); marker("a-res", res, 3.2); marker("a-par", parc, 5);
+  NET.forEach((col, i) => marker("a-net" + i, col, 3.2));
+  HATCH.forEach((f, i) => { for (const [nm, col] of [["i", inp], ["o", out]]) defs += `<pattern id="h${nm}${i}" patternUnits="userSpaceOnUse" width="6" height="6">${f(col)}</pattern>`; });
+  const line = (pts, col, mk, w = 1.6, dash = "") =>
+    `<polyline points="${pts.map((p) => p.join(",")).join(" ")}" fill="none" stroke="${col}" stroke-width="${w}" stroke-linejoin="miter"${dash ? ` stroke-dasharray="${dash}"` : ""}${mk ? ` marker-end="url(#${mk})"` : ""}/>`;
+  const text = (x, yy, str, col, size = 10, anchor = "middle") =>
+    `<text x="${x}" y="${yy}" fill="${col}" font-size="${size}" text-anchor="${anchor}" font-family="STIX Two Text, Times New Roman, serif">${str}</text>`;
+  const brace = (x, y0, y1, w, col) => {
+    const ym = (y0 + y1) / 2;
+    body += `<path d="M${x},${y0} C${x + w},${y0} ${x},${ym} ${x + w},${ym} C${x},${ym} ${x + w},${y1} ${x},${y1}" fill="none" stroke="${col}" stroke-width="1.4"/>`;
+    return [x + w, ym];
+  };
+  const cell = (x, row, col, hatches, dashed, label) => {
+    const yy = y(row) - C / 2;
+    body += `<rect x="${x - CW / 2}" y="${yy}" width="${CW}" height="${C}" fill="${bg}" stroke="${col}" stroke-width="0.9"${dashed ? ' stroke-dasharray="2,1.5"' : ""}/>`;
+    for (const h of hatches) body += `<rect x="${x - CW / 2 + 0.8}" y="${yy + 0.8}" width="${CW - 1.6}" height="${C - 1.6}" fill="url(#${h})"/>`;
+    if (label && C >= 6) body += text(x - CW / 2 - 3, y(row) + Math.min(3.5, C / 3), label, col, Math.min(9, C + 1), "end");
+  };
+  const windows = Array.from({ length: P }, (_, p) => [p * G - H, p * G + G + H - 1]);
+  const reads = new Map();
+  windows.forEach(([lo, hi], p) => { for (let r = lo; r <= hi; r++) { if (!reads.has(r)) reads.set(r, []); if (par) reads.get(r).push("hi" + (p % HATCH.length)); } });
+  for (const [r, hs] of reads) {
+    if (r >= 0 && r < N) {
+      if (observed.has(r)) cell(XIN, r, inp, hs, false); else cell(XIN, r, pad, [], true);
+    } else if (s.periodic) cell(XIN, r, inp, hs, true, `x${sub(((r % N) + N) % N)}`);
+    else cell(XIN, r, pad, [], true, "0");
+  }
+  const paramRows = Array.from({ length: s.npar }, (_, j) => -H - 1.4 - j);
+  paramRows.forEach((r, j) => cell(XIN, r, parc, [], false, `p${sub(s.npar - 1 - j)}`));
+  for (let r = 0; r < N; r++) cell(XOUT, r, out, par ? ["ho" + (Math.floor(r / G) % HATCH.length)] : [], false);
+  const topRow = Math.min(...reads.keys(), ...paramRows);
+  body += text(XIN, y(topRow) - C / 2 - 8, `${B("ũ")}${sub("n")}`, inp, 12);
+  body += text(XOUT, y(Math.min(0, topRow)) - C / 2 - 8, `${B("û")}${sub("n+1")}`, out, 12);
+
+  const stagger = H ? 3 : 1, label = G * C >= 22;
+  let xTip = 0, xOtip = 0, yRes = 0;
+  const leaky = s.search.leak_rate || s.leak_rate < 0.999;
+  windows.forEach(([lo, hi], p) => {
+    yRes = y(p * G + (G - 1) / 2);
+    [xTip] = brace(XIN + CW / 2 + 3 + 8 * (p % stagger), y(lo) - C / 2, y(hi) + C / 2, 6, inp);
+    [xOtip] = brace(XOUT - CW / 2 - 3, y(p * G) - C / 2, y(p * G + G - 1) + C / 2, -6, out);
+    body += line([[xTip, yRes], [XRES - R, yRes]], inp, "a-inp");
+    body += line([[XRES + R, yRes], [xOtip, yRes]], out, "a-out");
+    const supP = ind ? sup(`(${p})`) : "";
+    if (label || p === 0) {
+      body += text((xTip + XRES - R) / 2 + 14, yRes - 4, `${B("W")}${sub("in")}${supP}`, inp, 10);
+      body += text((XRES + R + xOtip) / 2, yRes - 4, `${B("W")}${sub("out")}${supP}`, out, 10);
+    }
+    const col = ind ? NET[p % NET.length] : res;
+    body += glyph(XRES, yRes, R, col, ind ? "a-net" + (p % NET.length) : "a-res", ink, bg);
+    if (R >= 9) body += text(XRES + 0.75 * R + 2, yRes - 0.75 * R, `${B("r")}${par ? sup(`(${p})`) : ""}`, ind ? col : ink, 10, "start");
+    if (leaky) {                                  // leaky integrator: up, across, down
+      const dx = 0.45 * R, yc = yRes - Math.sqrt(R * R - dx * dx), yt = yRes - 1.25 * R;
+      body += line([[XRES - dx, yc], [XRES - dx, yt], [XRES + dx, yt], [XRES + dx, yc]], ink, "a-ink", 0.9);
+      if (R >= 9) body += text(XRES + dx + 2, (yc + yt) / 2 + 3, "1−α", ink, 8, "start");
+    }
+  });
+
+  // parameters: right, then down into a junction of the input arrow and/or into the readout arrow
+  const xJoin = xOtip - 22;
+  if (s.npar) {
+    const [xp, yp] = brace(XIN + CW / 2 + 3, y(paramRows[paramRows.length - 1]) - C / 2, y(paramRows[0]) + C / 2, 6, parc);
+    if (s.pir) {
+      const xj = xTip + 14;
+      body += line([[xp, yp], [xj, yp], [xj, yRes - 4]], parc, "a-par");
+      body += `<path d="M${xj},${yRes - 4} l4,4 l-4,4 l-4,-4 z" fill="${bg}" stroke="${ink}" stroke-width="1.1"/>`;
+    }
+    if (s.read === "p" || (s.read === "u" && !s.pir)) {
+      body += line([[xp, yp], [xJoin, yp], [xJoin, yRes - 1]], parc, "a-par");
+      body += text(XRES, yp - 4, `${B("W")}${sub("out")} reads ${B("p̃")}`, parc, 9);
+    }
+  }
+  let bottom = y(Math.max(...reads.keys())) + C / 2;
+  if (s.read === "u") {                           // input skip: down, right, up into the readout arrow
+    const xb = xTip + 30, yLow = yRes + R + 16;
+    body += line([[xb, yRes], [xb, yLow], [xJoin, yLow], [xJoin, yRes + 1]], inp, "a-inp", 1.4, "4,3");
+    const carried = s.npar && s.pir ? `; ${B("p̃")}` : "";
+    body += text((xb + xJoin) / 2, yLow + 12, `input skip: ${B("W")}${sub("out")} reads [${B("r")}; ${B("ũ")}${sub("n")}${carried}]`, inp, 9);
+    bottom = Math.max(bottom, yLow + 14);
+  }
+  const yLoop = bottom + 18;                      // closed loop: down, across, up
+  body += line([[XOUT, y(N - 1) + C / 2], [XOUT, yLoop], [XIN, yLoop], [XIN, y(Math.max(...reads.keys())) + C / 2 + 1]], inp, "a-inp");
+  body += text((XIN + XOUT) / 2, yLoop + 12, s.nobs < N ? "closed loop: observed sites" : "closed loop", inp, 10);
+  const svg = $("arch");
+  svg.setAttribute("viewBox", `0 0 ${W} ${yLoop + 22}`);
+  svg.setAttribute("width", W);
+  svg.setAttribute("height", yLoop + 22);
+  svg.innerHTML = `<defs>${defs}</defs>${body}`;
+}
+
+/* ---------- equations (KaTeX) ---------- */
+const fmt = (v) => {
+  if (v === 0) return "0";
+  const a = Math.abs(v);
+  if (a >= 1e-2 && a < 1e4) return String(+v.toPrecision(4));
+  const [m, e] = v.toExponential(2).split("e");
+  return `${+m === 1 ? "" : `${+m}\\times`}10^{${+e}}`;
+};
+function equations(s) {
+  const { par, ind } = s, P = s.P;
+  const pp = par ? "^{(p)}" : "", q = ind ? "^{(p)}" : "";
+  const blocks = [];
+  // input
+  if (!par) {
+    const obs = s.nobs < s.N ? "\\bm u_n[\\mathcal O]" : "\\bm u_n";
+    const tex = s.npar
+      ? String.raw`\tilde{\bm u}_n = \left[\frac{${obs} - \bm s}{\bm d};\ \frac{\bm p - \bm s_p}{\bm d_p}\right]`
+      : String.raw`\tilde{\bm u}_n = \frac{${obs} - \bm s}{\bm d}`;
+    blocks.push(["Input", tex, (s.nobs < s.N ? `in which 𝒪 holds the ${s.nobs} observed sites of ${s.N}; ` : "")
+      + `<b>s</b> and <b>d</b> are the mean and the range (maximum minus minimum) of each input over the training record, applied element by element`
+      + (s.npar ? `, and <b>p</b> holds the ${s.npar} parameter${s.npar > 1 ? "s" : ""}` : "") + "."]);
+  } else if (!ind) {
+    blocks.push(["Input", String.raw`\tilde{\bm u}_n = \frac{\bm u_n - s}{d}`,
+      "in which the shift, <i>s</i>, and the scale, <i>d</i>, are single numbers, computed from all the sites together, because the patches share <b>W</b><sub>in</sub>."]);
+  } else {
+    blocks.push(["Input", String.raw`\tilde{\bm u}_n^{(p)} = \frac{\bm u_n[\mathcal I^{(p)}] - \bm s^{(p)}}{\bm d^{(p)}}`,
+      "every patch normalizes its own window with its own shift and scale."]);
+  }
+  blocks.push(["Input noise (training inputs only)", s.noise > 1e-9
+    ? String.raw`\bm u_n \leftarrow \bm u_n + \bm\epsilon_n,\qquad \bm\epsilon_n \sim \mathcal N\!\left(\bm 0,\ \eta^2\,\mathrm{diag}(\bm\sigma_u^2)\right),\qquad \eta = ${fmt(s.noise)}`
+    : String.raw`\eta = ${fmt(s.noise)}\ \ (\text{negligible})`,
+    "in which <b>σ</b><sub>u</sub> is the standard deviation of each input over the training record. The targets of the ridge regression stay clean."]);
+  // reservoir
+  const a = s.search.leak_rate ? (ind ? "\\alpha^{(p)}" : "\\alpha") : fmt(s.leak_rate);
+  const sg = s.search.sigma_in ? (ind ? "\\sigma_\\mathrm{in}^{(p)}" : "\\sigma_\\mathrm{in}") : fmt(s.sigma_in);
+  const rh = s.search.rho ? (ind ? "\\rho^{(p)}" : "\\rho") : fmt(s.rho);
+  const uin = par ? String.raw`\tilde{\bm u}_n[\mathcal I^{(p)}]` : (s.npar && !s.pir ? String.raw`\tilde{\bm u}_n[\mathcal O]` : String.raw`\tilde{\bm u}_n`);
+  const arg = String.raw`${sg}\,\mathbf W_\mathrm{in}${q}[${uin};\, b_\mathrm{in}] + ${rh}\,\mathbf W${q}\,\bm r${pp}_n`;
+  const plain = !s.search.leak_rate && s.leak_rate >= 0.999;
+  const upd = plain ? String.raw`\bm r${pp}_{n+1} = \tanh\!\left(${arg}\right)`
+    : String.raw`\bm r${pp}_{n+1} = \left(1-${a}\right)\bm r${pp}_n + ${a}\,\tanh\!\left(${arg}\right)`;
+  const win = s.periodic ? "taken modulo N on the periodic domain" : "zero outside the domain";
+  blocks.push(["Reservoir", upd + (par ? String.raw`,\qquad p = 0,\dots,${P - 1}` : ""),
+    (par ? `in which 𝓘<sup>(p)</sup> = {pG − H, …, pG + G + H − 1} is the window of patch p (G = ${s.G}, H = ${s.H}), ${win}; ` : "")
+    + `<b>r</b>${par ? "<sup>(p)</sup>" : ""} has ${s.Nu} units; <b>W</b><sub>in</sub>${ind ? "<sup>(p)</sup>" : ""} is ${s.Nu} × ${s.nin + 1} (${s.win}`
+    + `${s.win === "sparse" && s.npar && !par ? ", dense on the parameter columns" : ""}); <b>W</b>${ind ? "<sup>(p)</sup>" : ""} is ${s.Nu} × ${s.Nu} with about ${s.connect} connections per unit, scaled to unit spectral radius; `
+    + `b<sub>in</sub> = 0.1` + (plain ? "; α = 1 is the plain update." : ".")
+    + (s.npar && !s.pir ? " The parameter columns of <b>W</b><sub>in</sub> are zero." : "")]);
+  // readout
+  const extra = s.read === "u" ? String.raw`;\, \tilde{\bm u}_n` : s.read === "p" ? String.raw`;\, \tilde{\bm p}` : "";
+  const outv = par ? String.raw`\hat{\bm u}_{n+1}[\mathcal P^{(p)}]` : String.raw`\hat{\bm u}_{n+1}`;
+  const rows = s.Nu + 1 + s.readRows, cols = ind ? s.G + 2 * s.H : par ? s.G : s.N;
+  blocks.push(["Readout", String.raw`${outv} = \mathbf W_\mathrm{out}^{${ind ? "(p)" : ""}\top}\,\bar{\bm r}${pp}_{n+1},\qquad \bar{\bm r}${pp}_{n+1} = \left[\bm r${pp}_{n+1}${extra};\, b_\mathrm{out}\right]`,
+    (par ? `in which 𝓟<sup>(p)</sup> = {pG, …, pG + G − 1} are the sites of patch p; ` : "")
+    + `<b>W</b><sub>out</sub>${ind ? "<sup>(p)</sup>" : ""} is ${rows} × ${cols}`
+    + (ind ? `: the network of patch p forecasts its whole window, and the parallel network keeps the ${s.G} columns of the sites of the patch` : "")
+    + "; b<sub>out</sub> = 1."]);
+  // washout
+  blocks.push(["Washout (open loop)", String.raw`\bm r${pp}_0 = \bm 0,\qquad \bm r${pp}_{n+1} = \bm F\!\left(\bm r${pp}_n,\ \tilde{\bm u}_n\right),\qquad n = 0,\dots,N_\mathrm{wash}-1 = ${s.Nwash - 1}`,
+    `in which <b>F</b> is the reservoir update above, driven by the data. The washout synchronizes the reservoir with the data before the regression rows, before every closed-loop validation run and before every forecast (${s.Nwash} steps, ${+(s.Nwash * s.dtE).toPrecision(4)} time units).`]);
+  // ridge regression
+  const beta = s.search.tikh ? "\\beta" : fmt(s.tikh);
+  const last = s.Nt - 1, nrows = Math.max(0, s.Nt - s.Nwash);
+  const target = par ? (ind ? String.raw`\bm u_{n+1}[\mathcal I^{(p)}]` : String.raw`\bm u_{n+1}[\mathcal P^{(p)}]`) : String.raw`\bm u_{n+1}`;
+  const sums = par && !ind ? String.raw`\sum_{p=0}^{${P - 1}}\sum_{n=N_\mathrm{wash}}^{${last}}` : String.raw`\sum_{n=N_\mathrm{wash}}^{${last}}`;
+  blocks.push(["Training: ridge regression", String.raw`\mathbf W_\mathrm{out}${q} = \Big(${sums}\bar{\bm r}${pp}_{n+1}\bar{\bm r}^{${par ? "(p)" : ""}\top}_{n+1} + ${beta}\,\mathbf I\Big)^{-1}${sums}\bar{\bm r}${pp}_{n+1}\,${target}^{\top}`,
+    `on the training and validation record after the washout: ${par && !ind ? `${P} × ${nrows} = ${(P * nrows).toLocaleString()}` : nrows.toLocaleString()} rows`
+    + (par && !ind ? ", one per patch and step, which share one readout" : "")
+    + (ind ? `, one regression per patch; each keeps the columns of the sites of its patch` : "")
+    + (s.search.tikh ? `. β is selected from {${s.tikh_range.map((v) => v.toExponential(0)).join(", ")}} at every evaluation of the search.` : `.`)]);
+  // hyperparameter selection
+  if (s.bo && s.dims.length) {
+    const sym = { rho: "\\rho", sigma_in: "\\log_{10}\\sigma_\\mathrm{in}", leak_rate: "\\alpha" };
+    const theta = s.dims.map((k) => sym[k]).join(",\\ ");
+    const box = s.dims.map((k) => `[${fmt(s[k + "_range"][0])},\\,${fmt(s[k + "_range"][1])}]`).join("\\times");
+    const metricTex = s.metric === "nMSE"
+      ? String.raw`m(\bm u, \hat{\bm u}) = \frac{\operatorname{mean}\,(\hat{\bm u} - \bm u)^2}{\operatorname{mean}\,\bm u^2}`
+      : String.raw`m(\bm u, \hat{\bm u}) = \log_{10}\frac{\operatorname{mean}\,|\hat{\bm u} - \bm u|}{\operatorname{mean}\,\bm d}`;
+    const inner = String.raw`\frac{1}{K}\sum_{k=0}^{K-1} m\!\left(\bm u[\mathcal V_k],\ \hat{\bm u}[\mathcal V_k]\right)`;
+    const J = s.search.tikh ? String.raw`J(\bm\theta) = \min_{\beta}\ ${inner}` : String.raw`J(\bm\theta) = ${inner}`;
+    const f = foldGeometry(s);
+    blocks.push(["Hyperparameter selection", String.raw`\begin{gathered}\bm\theta^\star = \arg\min_{\bm\theta \in \Theta} J(\bm\theta),\qquad \bm\theta = (${theta}),\qquad \Theta = ${box},\\ ${J},\qquad ${metricTex}\end{gathered}`,
+      `in which 𝒱<sub>k</sub> is the k-th validation interval of ${s.Nval} steps, forecast in closed loop; ${f.how} `
+      + (s.metric === "nMSE" ? "A diverged run scores 10<sup>6</sup>. " : "<b>d</b> is the range of the reference; a diverged run scores 10. ")
+      + `Gaussian-process Bayesian optimization evaluates J at a grid of ${f.ngridEff}<sup>${s.dims.length}</sup> = ${f.ngridEff ** s.dims.length} points and then up to ${s.nfe} evaluations in total` + (ind ? ", once per patch, on the record of its own window." : ".")]);
+  } else if (s.bo) {
+    blocks.push(["Hyperparameter selection", String.raw`\text{only } \beta \text{ is searched}`,
+      "the package needs at least one of ρ, σ<sub>in</sub> or α in the search; with β alone, <code>train()</code> raises an error. Fix β or search another hyperparameter."]);
+  } else {
+    blocks.push(["Hyperparameter selection", String.raw`\rho = ${fmt(s.rho)},\quad \sigma_\mathrm{in} = ${fmt(s.sigma_in)},\quad \beta = ${fmt(s.tikh)},\quad \alpha = ${fmt(s.leak_rate)}`,
+      s.nseeds > 1 ? "no search: the hyperparameters are fixed; the validation objective scores each realization once." : "no search: the hyperparameters are fixed and no validation runs."]);
+  }
+  if (s.nseeds > 1) {
+    const J = s.bo && s.dims.length ? String.raw`J^{[\ell]}\!\left(\bm\theta^{\star[\ell]}\right)` : String.raw`J^{[\ell]}`;
+    blocks.push(["Realizations of the random matrices", String.raw`\mathbf W_\mathrm{in}^{[\ell]},\ \mathbf W^{[\ell]}\ \text{from seed } ${s.seed} + \ell,\quad \ell = 0,\dots,${s.nseeds - 1},\qquad \ell^\star = \arg\min_{\ell}\ ${J}`,
+      `every realization ℓ draws its own <b>W</b><sub>in</sub> and <b>W</b> and is trained in its own process`
+      + (s.bo && s.dims.length ? ", with its own hyperparameter search; its score is the minimum of the search" : ", with the fixed hyperparameters; its score is one evaluation of the validation objective")
+      + `. The network keeps realization ℓ<sup>⋆</sup>, and <code>seed_scores</code> stores every score` + (s.ind ? "; independent patches keep the best realization of each patch." : ".")]);
+  }
+  // forecast
+  const fb = s.nobs < s.N ? String.raw`\hat{\bm u}_{n+1}[\mathcal O]` : String.raw`\hat{\bm u}_{n+1}`;
+  blocks.push(["Forecast (closed loop)", String.raw`\tilde{\bm u}_{n+1} = \frac{${fb} - \bm s}{\bm d}${s.npar ? String.raw`\ \ \text{with } \tilde{\bm p} \text{ appended}` : ""}`,
+    "after a washout on the data, every forecast is the input of the next step" + (s.nobs < s.N ? "; only the observed sites are fed back, but every site is forecast." : ".")]);
+  return blocks;
+}
+
+function renderEquations(s) {
+  const el = $("eqs");
+  el.innerHTML = "";
+  for (const [title, tex, where] of equations(s)) {
+    const d = document.createElement("div");
+    d.className = "eq";
+    d.innerHTML = `<h4>${title}</h4><div class="tex"></div><div class="where">${where}</div>`;
+    const t = d.querySelector(".tex");
+    if (window.katex) katex.render(tex, t, { displayMode: true, throwOnError: false });
+    else t.textContent = tex;
+    el.append(d);
+  }
+}
+
+/* ---------- validation folds, as validation.py places them ---------- */
+function foldGeometry(s) {
+  const Nt = s.Nt, Nw = s.Nwash, Nv = s.Nval, F = s.folds;
+  const ngridEff = s.dims.length ? Math.max(1, Math.min(s.ngrid, Math.floor(s.nfe ** (1 / s.dims.length) + 1e-9))) : s.ngrid;
+  const out = { folds: [], ngridEff, ok: true, msg: "" };
+  if (s.strat === "RVC_Noise") {
+    const usable = Nt - Nw - Nv;
+    if (usable < 0) return { ...out, ok: false, msg: "The record is too short for one washout and one validation interval: reduce N_wash or t_val." };
+    const K = Math.min(F, usable + 1), step = K > 1 ? Math.floor(usable / (K - 1)) : 0;
+    for (let k = 0; k < K; k++) {
+      const p0 = k * step;
+      out.folds.push({ train: [[Nw, Nt]], wash: [p0, p0 + Nw], val: [p0 + Nw, p0 + Nw + Nv] });
+    }
+    out.how = "the readout is trained once on all the rows, and each run starts from <b>r</b> = 0, washed out on the N<sub>wash</sub> steps before its interval (recycle validation).";
+  } else {
+    const n = Nt - Nw, st = s.fstep || Nv;
+    if (n < Nv + 1) return { ...out, ok: false, msg: "The record after the washout is shorter than one validation interval plus one step: reduce N_wash or t_val." };
+    if (s.strat === "SSV") {
+      out.folds.push({ train: [[Nw, Nw + n - Nv]], val: [Nw + n - Nv, Nw + n] });
+      out.how = "one split: the readout is trained on the rows before the last interval.";
+    } else if (s.strat === "WFV") {
+      const K = Math.max(1, Math.min(F, 1 + Math.floor((n - 1 - Nv) / st))), m = n - (K - 1) * st - Nv;
+      for (let k = 0; k < K; k++) out.folds.push({ train: [[Nw + k * st, Nw + k * st + m]], val: [Nw + k * st + m, Nw + k * st + m + Nv] });
+      out.how = `a training window of ${m} rows walks forward by ${st} steps, and each fold retrains the readout on its window and validates on the interval after it.`;
+    } else {
+      const K = Math.max(1, Math.min(F, 1 + Math.floor((n - Nv) / st))), o = n - (K - 1) * st - Nv;
+      for (let k = 0; k < K; k++) {
+        const v0 = Nw + o + k * st, v1 = v0 + Nv;
+        out.folds.push({ train: [[Nw, v0], [v1, Nw + n]], val: [v0, v1] });
+      }
+      out.how = "each fold retrains the readout on all the rows outside its interval and validates on it (leave one interval out).";
+    }
+    out.how += " The reservoir enters each interval from the open-loop pass over the preceding data.";
+  }
+  if (out.folds.length < F) out.msg = `Only ${out.folds.length} of the ${F} requested folds fit.`;
+  return out;
+}
+
+function drawFolds(s) {
+  const f = foldGeometry(s), svg = $("folds-svg");
+  const W = 600, L = 92, Rm = 14, rowH = 15, gap = 6, top = 22;
+  const X = (i) => L + (W - L - Rm) * i / Math.max(1, s.Nt);
+  const wash = css("--wash"), out = css("--out"), val = css("--val"), mute = css("--text-muted"), sec = css("--text-secondary"), grid = css("--grid");
+  let b = "";
+  const bar = (i0, i1, yy, col, op = 1) => { if (i1 > i0) b += `<rect x="${X(i0)}" y="${yy}" width="${Math.max(0.8, X(i1) - X(i0))}" height="${rowH}" fill="${col}" opacity="${op}" rx="2"/>`; };
+  const lab = (str, yy) => { b += `<text x="${L - 8}" y="${yy + rowH - 4}" font-size="11" fill="${sec}" text-anchor="end">${str}</text>`; };
+  lab("record", top);
+  bar(0, s.Nt, top, grid);
+  bar(0, Math.min(s.Nwash, s.Nt), top, wash);
+  bar(s.Nwash, s.Ntr, top, out, 0.55);
+  bar(s.Ntr - 1, s.Nt, top, val, 0.45);
+  b += `<text x="${X(Math.min(s.Ntr, s.Nt))}" y="${top - 6}" font-size="10" fill="${mute}" text-anchor="middle">t_train | t_val</text>`;
+  let yy = top + rowH + gap + 8;
+  if (((s.bo && s.dims.length) || s.nseeds > 1) && f.ok) {
+    f.folds.forEach((fd, k) => {
+      lab(`fold ${k}`, yy);
+      bar(0, s.Nt, yy, grid);
+      fd.train.forEach(([i0, i1]) => bar(i0, i1, yy, out, 0.8));
+      if (fd.wash) bar(fd.wash[0], fd.wash[1], yy, wash);
+      bar(fd.val[0], fd.val[1], yy, val);
+      yy += rowH + gap;
+    });
+  } else {
+    b += `<text x="${L}" y="${yy + 11}" font-size="11.5" fill="${sec}">${!f.ok ? f.msg : s.bo ? "No folds: the search needs ρ, σ_in or α." : "No search, no validation folds."}</text>`;
+    yy += rowH + gap;
+  }
+  for (let t = 0; t <= 4; t++) {
+    const i = Math.round(s.Nt * t / 4), x = X(i);
+    b += `<line x1="${x}" x2="${x}" y1="${yy}" y2="${yy + 4}" stroke="${mute}"/><text x="${x}" y="${yy + 15}" font-size="10" fill="${mute}" text-anchor="middle">${i}</text>`;
+  }
+  b += `<text x="${(L + W - Rm) / 2}" y="${yy + 29}" font-size="10.5" fill="${sec}" text-anchor="middle">ESN step (input rows of the training record)</text>`;
+  svg.setAttribute("viewBox", `0 0 ${W} ${yy + 36}`);
+  svg.innerHTML = b;
+  $("foldSub").innerHTML = `The training record has ${s.Ntr.toLocaleString()} training and ${s.Nval.toLocaleString()} validation steps of ${+s.dtE.toPrecision(4)} time units`
+    + ` (${s.Nt.toLocaleString()} input rows). ` + ((s.bo && s.dims.length) || s.nseeds > 1 ? `Each row below is one fold of ${s.strat}. ${f.msg}` : "");
+  return f;
+}
+
+/* ---------- code ---------- */
+const py = (v) => (typeof v === "boolean" ? (v ? "True" : "False") : typeof v === "string" ? `'${v}'` : Array.isArray(v) ? `[${v.map(py).join(", ")}]` : String(+v.toPrecision(6)));
+const pyTuple = (v) => `(${v.map(py).join(", ")})`;
+function code(s) {
+  const kw = [["dt", s.dt], ["upsample", s.ups], ["N_units", s.Nu], ["N_wash", s.Nwash], ["t_train", s.ttrain], ["t_val", s.tval]];
+  const opt = (k, v, d) => { if (JSON.stringify(v) !== JSON.stringify(d)) kw.push([k, v]); };
+  opt("noise", s.noise, DEFAULTS.noise);
+  opt("connect", s.connect, DEFAULTS.connect);
+  if (s.seed !== 0 || s.nseeds > 1) kw.push(["seed", s.seed]);
+  if (s.win !== "sparse") kw.push(["Win_type", s.win]);
+  if (s.par) {
+    kw.push(["patch_size", s.G], ["halo", s.H]);
+    if (!s.periodic) kw.push(["periodic", false]);
+    if (s.ind) kw.push(["shared", false]);
+  } else {
+    if (s.nobs < s.N) kw.push(["observed_idx", `RAW:np.round(np.linspace(0, ${s.N - 1}, ${s.nobs})).astype(int)`]);
+    if (s.npar) {
+      kw.push(["input_parameters", "RAW:params"]);
+      if (!s.pir) kw.push(["param_in_reservoir", false]);
+    }
+    if (s.read === "u") kw.push(["readout_input", true]);
+    if (s.read === "p") kw.push(["readout_input", "params"]);
+  }
+  const hp = ["rho", "sigma_in", "tikh", "leak_rate"].filter((k) => s.search[k]);
+  kw.push(["hyperparameters_to_optimize", hp]);
+  for (const k of ["rho", "sigma_in", "tikh", "leak_rate"]) {       // always explicit: searched range or fixed value
+    if (s.search[k]) kw.push([`${k}_range`, s[k + "_range"]]); else kw.push([k, s[k]]);
+  }
+  if (s.bo) {
+    opt("N_func_evals", s.nfe, DEFAULTS.N_func_evals);
+    opt("N_grid", s.ngrid, DEFAULTS.N_grid);
+    if (s.strat !== "SSV") opt("N_folds", s.folds, DEFAULTS.N_folds);
+    if (s.fstep && (s.strat === "WFV" || s.strat === "KFV")) kw.push(["val_fold_step", s.fstep]);
+    if (s.metric === "nMSE") kw.push(["validation_metric", "RAW:validation.nMSE"]);
+  }
+  const val = (k, v) => (typeof v === "string" && v.startsWith("RAW:") ? v.slice(4)
+    : k.endsWith("_range") && k !== "tikh_range" ? pyTuple(v) : py(v));
+  const lines = ["import numpy as np", `from echostatenetwork import EchoStateNetwork${s.metric === "nMSE" && s.bo ? ", validation" : ""}`, "",
+    `data = ...                          # (Nt, ${s.N}) record, time step dt = ${py(s.dt)}`];
+  if (s.npar) lines.push(`params = ...                        # (${s.npar}, L) parameter values, one column per segment`);
+  lines.push("", "esn = EchoStateNetwork(data[:1].T,");
+  kw.forEach(([k, v], i) => lines.push(`                       ${k}=${val(k, v)}${i < kw.length - 1 ? "," : ")"}`));
+  const targs = ["data"];
+  if (s.strat !== "RVC_Noise" && (s.bo || s.nseeds > 1)) targs.push(`validation_strategy=EchoStateNetwork._${s.strat}`);
+  if (s.nseeds > 1) targs.push(`n_seeds=${s.nseeds}`);
+  lines.push(`esn.train(${targs.join(", ")})`);
+  if (s.nseeds > 1) lines.push(`print(esn.seed, esn.seed_scores)          # kept realization and the score of every seed`);
+  lines.push("",
+    `# forecast: open-loop washout on ${s.Nwash} steps of data, then closed loop`,
+    "r = np.zeros((esn.N_r, 1))",
+    `for u_in in wash:                   # wash: (${s.Nwash}, ${s.N}) data before the forecast`,
+    "    u, r = esn.step(esn.outputs_to_inputs(u_in[:, None]), r)",
+    "forecast = []",
+    "for _ in range(n_steps):",
+    "    forecast.append(u[:, 0])",
+    "    u, r = esn.step(esn.outputs_to_inputs(u), r)");
+  return lines.join("\n");
+}
+
+/* ---------- tiles and warnings ---------- */
+function render() {
+  syncControls();
+  const s = settings();
+  drawArch(s);
+  $("archSub").textContent = radio("view") === "unfolded"
+    ? "The network unrolled over the steps n of a forecast: the washout drives the reservoir with the data (magenta), then every forecast is fed back as the next input."
+    : "Input strip (left) and output strip (right), one cell per site. Each brace marks the window that a reservoir reads; with the parallel layout, each cell is hatched with the pattern of every reservoir that reads or forecasts it.";
+  renderEquations(s);
+  const f = drawFolds(s);
+  $("code").textContent = code(s);
+  const rows = s.Nu + 1 + s.readRows, cols = s.par ? (s.ind ? s.G + 2 * s.H : s.G) : s.N;
+  $("t-steps").textContent = `${s.Nwash} / ${s.Ntr} / ${s.Nval}`;
+  $("t-stepsU").textContent = `ESN step ${+s.dtE.toPrecision(4)} time units`;
+  $("t-nr").textContent = (s.P * s.Nu).toLocaleString();
+  $("t-nrU").textContent = s.par ? `${s.P} reservoirs of ${s.Nu} units` : "one reservoir";
+  $("t-w").textContent = (rows * cols * (s.ind ? s.P : 1)).toLocaleString();
+  $("t-wU").textContent = `${rows} × ${cols}` + (s.ind ? ` per patch, × ${s.P}` : s.par ? ", shared by the patches" : "");
+  if (s.bo && s.dims.length) {
+    $("t-bo").textContent = `${s.dims.length}-D, ${s.nfe}` + (s.nseeds > 1 ? ` \u00d7 ${s.nseeds}` : "");
+    $("t-boU").textContent = `evaluations, initial grid ${f.ngridEff}^${s.dims.length}` + (s.ind ? `; ${s.P} searches` : "") + (s.nseeds > 1 ? `; one search per realization` : "");
+    const runs = f.ok ? f.folds.length * (s.search.tikh ? s.tikh_range.length : 1) : 0;
+    $("t-runs").textContent = runs.toLocaleString();
+    $("t-runsU").textContent = `per evaluation (${f.ok ? f.folds.length : 0} fold${f.folds.length === 1 ? "" : "s"}${s.search.tikh ? ` × ${s.tikh_range.length} β` : ""}); ${(runs * s.nfe * (s.ind ? s.P : 1) * s.nseeds).toLocaleString()} in all` + (s.nseeds > 1 ? `, over ${s.nseeds} realizations` : "");
+  } else {
+    $("t-bo").textContent = "none";
+    $("t-boU").textContent = s.bo ? "β alone cannot be searched" : "fixed hyperparameters";
+    const once = s.nseeds > 1 && f.ok ? f.folds.length * s.nseeds : 0;
+    $("t-runs").textContent = once.toLocaleString();
+    $("t-runsU").textContent = once ? `one evaluation per realization (${f.folds.length} folds × ${s.nseeds})` : "no validation";
+  }
+  $("p-val").style.opacity = (s.bo && s.dims.length) || s.nseeds > 1 ? 1 : 0.45;
+  $("valNote").innerHTML = s.strat === "RVC_Noise" ? "Chaotic recycle validation, the default." : s.strat === "SSV" ? "One split; N_folds does not apply."
+    : "The fold step defaults to N<sub>val</sub>; a step of about one Lyapunov time gives overlapping, chaotic folds.";
+  $("r-folds").classList.toggle("off", s.strat === "SSV");
+  $("r-step").classList.toggle("off", !(s.strat === "WFV" || s.strat === "KFV"));
+  const warn = [];
+  if (s.bo && !s.dims.length) warn.push("Searching the Tikhonov factor alone raises an error in <code>train()</code> (<a href=\"https://github.com/andreanovoa/EchoStateNetwork/issues/1\" target=\"_blank\" rel=\"noopener\">issue #1</a>): add ρ, σ<sub>in</sub> or α to the search, or fix β.");
+  if (s.bo && s.dims.length && !f.ok) warn.push(f.msg);
+  if (s.Nwash >= s.Ntr) warn.push("The washout is longer than the training record: reduce N<sub>wash</sub> or increase t<sub>train</sub>.");
+  if (s.Nval < 1) warn.push("t<sub>val</sub> is shorter than one ESN step.");
+  if (s.dims.some((k) => s[k + "_range"][0] >= s[k + "_range"][1])) warn.push("A search range has its lower bound above its upper bound.");
+  $("warn").innerHTML = warn.join("<br>");
+  $("warn").style.display = warn.length ? "block" : "none";
+}
+
+(function init() {
+  document.querySelectorAll("input, select").forEach((el) => el.addEventListener("input", render));
+  $("copy").onclick = async () => {
+    try { await navigator.clipboard.writeText($("code").textContent); $("copy").textContent = "Copied"; }
+    catch { $("copy").textContent = "Select and copy"; }
+    setTimeout(() => { $("copy").textContent = "Copy"; }, 1500);
+  };
+  matchMedia("(prefers-color-scheme: dark)").addEventListener("change", render);
+  addEventListener("message", (e) => {             // the docs page passes its own palette down
+    const t = e.data && e.data.esnBuilderTheme;
+    if (t !== "dark" && t !== "light") return;
+    document.documentElement.dataset.theme = t;
+    render();
+  });
+  render();
+  if (parent !== window) {
+    let posted = 0;
+    const post = () => {
+      const h = document.body.scrollHeight + 24;
+      if (Math.abs(h - posted) < 4) return;
+      posted = h;
+      parent.postMessage({ esnBuilderHeight: h }, "*");
+    };
+    post();
+    new ResizeObserver(post).observe(document.body);
+  }
+})();
+</script>
+</body>
+</html>

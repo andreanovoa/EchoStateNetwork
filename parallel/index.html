@@ -1,0 +1,1327 @@
+
+<!doctype html>
+<html lang="en" class="no-js">
+  <head>
+    
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width,initial-scale=1">
+      
+        <meta name="description" content="Echo state networks / reservoir computing in pure numpy">
+      
+      
+      
+        <link rel="canonical" href="https://andreanovoa.github.io/EchoStateNetwork/parallel/">
+      
+      
+        <link rel="prev" href="../validation/">
+      
+      
+        <link rel="next" href="../demo/esn/">
+      
+      
+        
+      
+      
+      <link rel="icon" href="../assets/images/favicon.png">
+      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.7.7">
+    
+    
+      
+        <title>Parallel echo state network - echostatenetwork</title>
+      
+    
+    
+      <link rel="stylesheet" href="../assets/stylesheets/main.ec1eaa64.min.css">
+      
+        
+        <link rel="stylesheet" href="../assets/stylesheets/palette.ab4e12ef.min.css">
+      
+      
+
+
+    
+    
+      
+    
+    
+      
+        
+        
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+        <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Roboto:300,300i,400,400i,700,700i%7CRoboto+Mono:400,400i,700,700i&display=fallback">
+        <style>:root{--md-text-font:"Roboto";--md-code-font:"Roboto Mono"}</style>
+      
+    
+    
+      <link rel="stylesheet" href="../assets/_mkdocstrings.css">
+    
+    <script>__md_scope=new URL("..",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
+    
+      
+
+    
+    
+  </head>
+  
+  
+    
+    
+      
+    
+    
+    
+    
+    <body dir="ltr" data-md-color-scheme="default" data-md-color-primary="deep-purple" data-md-color-accent="indigo">
+  
+    
+    <input class="md-toggle" data-md-toggle="drawer" type="checkbox" id="__drawer" autocomplete="off">
+    <input class="md-toggle" data-md-toggle="search" type="checkbox" id="__search" autocomplete="off">
+    <label class="md-overlay" for="__drawer"></label>
+    <div data-md-component="skip">
+      
+        
+        <a href="#parallel-echo-state-network" class="md-skip">
+          Skip to content
+        </a>
+      
+    </div>
+    <div data-md-component="announce">
+      
+    </div>
+    
+    
+      
+
+  
+
+<header class="md-header md-header--shadow" data-md-component="header">
+  <nav class="md-header__inner md-grid" aria-label="Header">
+    <a href=".." title="echostatenetwork" class="md-header__button md-logo" aria-label="echostatenetwork" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    <label class="md-header__button md-icon" for="__drawer">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M3 6h18v2H3zm0 5h18v2H3zm0 5h18v2H3z"/></svg>
+    </label>
+    <div class="md-header__title" data-md-component="header-title">
+      <div class="md-header__ellipsis">
+        <div class="md-header__topic">
+          <span class="md-ellipsis">
+            echostatenetwork
+          </span>
+        </div>
+        <div class="md-header__topic" data-md-component="header-topic">
+          <span class="md-ellipsis">
+            
+              Parallel echo state network
+            
+          </span>
+        </div>
+      </div>
+    </div>
+    
+      
+        <form class="md-header__option" data-md-component="palette">
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="(prefers-color-scheme: light)" data-md-color-scheme="default" data-md-color-primary="deep-purple" data-md-color-accent="indigo"  aria-label="Switch to dark mode"  type="radio" name="__palette" id="__palette_0">
+    
+      <label class="md-header__button md-icon" title="Switch to dark mode" for="__palette_1" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a4 4 0 0 0-4 4 4 4 0 0 0 4 4 4 4 0 0 0 4-4 4 4 0 0 0-4-4m0 10a6 6 0 0 1-6-6 6 6 0 0 1 6-6 6 6 0 0 1 6 6 6 6 0 0 1-6 6m8-9.31V4h-4.69L12 .69 8.69 4H4v4.69L.69 12 4 15.31V20h4.69L12 23.31 15.31 20H20v-4.69L23.31 12z"/></svg>
+      </label>
+    
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="(prefers-color-scheme: dark)" data-md-color-scheme="slate" data-md-color-primary="deep-purple" data-md-color-accent="indigo"  aria-label="Switch to light mode"  type="radio" name="__palette" id="__palette_1">
+    
+      <label class="md-header__button md-icon" title="Switch to light mode" for="__palette_0" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 18c-.89 0-1.74-.2-2.5-.55C11.56 16.5 13 14.42 13 12s-1.44-4.5-3.5-5.45C10.26 6.2 11.11 6 12 6a6 6 0 0 1 6 6 6 6 0 0 1-6 6m8-9.31V4h-4.69L12 .69 8.69 4H4v4.69L.69 12 4 15.31V20h4.69L12 23.31 15.31 20H20v-4.69L23.31 12z"/></svg>
+      </label>
+    
+  
+</form>
+      
+    
+    
+      <script>var palette=__md_get("__palette");if(palette&&palette.color){if("(prefers-color-scheme)"===palette.color.media){var media=matchMedia("(prefers-color-scheme: light)"),input=document.querySelector(media.matches?"[data-md-color-media='(prefers-color-scheme: light)']":"[data-md-color-media='(prefers-color-scheme: dark)']");palette.color.media=input.getAttribute("data-md-color-media"),palette.color.scheme=input.getAttribute("data-md-color-scheme"),palette.color.primary=input.getAttribute("data-md-color-primary"),palette.color.accent=input.getAttribute("data-md-color-accent")}for(var[key,value]of Object.entries(palette.color))document.body.setAttribute("data-md-color-"+key,value)}</script>
+    
+    
+    
+      
+      
+        <label class="md-header__button md-icon" for="__search">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        </label>
+        <div class="md-search" data-md-component="search" role="dialog">
+  <label class="md-search__overlay" for="__search"></label>
+  <div class="md-search__inner" role="search">
+    <form class="md-search__form" name="search">
+      <input type="text" class="md-search__input" name="query" aria-label="Search" placeholder="Search" autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false" data-md-component="search-query" required>
+      <label class="md-search__icon md-icon" for="__search">
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
+      </label>
+      <nav class="md-search__options" aria-label="Search">
+        
+        <button type="reset" class="md-search__icon md-icon" title="Clear" aria-label="Clear" tabindex="-1">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+        </button>
+      </nav>
+      
+    </form>
+    <div class="md-search__output">
+      <div class="md-search__scrollwrap" tabindex="0" data-md-scrollfix>
+        <div class="md-search-result" data-md-component="search-result">
+          <div class="md-search-result__meta">
+            Initializing search
+          </div>
+          <ol class="md-search-result__list" role="presentation"></ol>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+      
+    
+    
+      <div class="md-header__source">
+        <a href="https://github.com/andreanovoa/EchoStateNetwork" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
+  </div>
+  <div class="md-source__repository">
+    andreanovoa/EchoStateNetwork
+  </div>
+</a>
+      </div>
+    
+  </nav>
+  
+</header>
+    
+    <div class="md-container" data-md-component="container">
+      
+      
+        
+          
+        
+      
+      <main class="md-main" data-md-component="main">
+        <div class="md-main__inner md-grid">
+          
+            
+              
+              <div class="md-sidebar md-sidebar--primary" data-md-component="sidebar" data-md-type="navigation" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+
+
+<nav class="md-nav md-nav--primary" aria-label="Navigation" data-md-level="0">
+  <label class="md-nav__title" for="__drawer">
+    <a href=".." title="echostatenetwork" class="md-nav__button md-logo" aria-label="echostatenetwork" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    echostatenetwork
+  </label>
+  
+    <div class="md-nav__source">
+      <a href="https://github.com/andreanovoa/EchoStateNetwork" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
+  </div>
+  <div class="md-source__repository">
+    andreanovoa/EchoStateNetwork
+  </div>
+</a>
+    </div>
+  
+  <ul class="md-nav__list" data-md-scrollfix>
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href=".." class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Home
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../getting-started/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Getting started
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../training/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Training and forecasting
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../validation/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Validation strategies
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+    
+  
+  
+  
+    <li class="md-nav__item md-nav__item--active">
+      
+      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
+      
+      
+        
+      
+      
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Parallel echo state network
+  
+
+    
+  </span>
+  
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
+      
+      <a href="./" class="md-nav__link md-nav__link--active">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Parallel echo state network
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+      
+        
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#the-model" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        The model
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#how-the-halo-couples-the-patches" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        How the halo couples the patches
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#shared-matrices" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Shared matrices
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#independent-patches" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Independent patches
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#domain-boundaries" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Domain boundaries
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#positions-for-data-assimilation" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Positions for data assimilation
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#when-to-employ-the-parallel-layout" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        When to employ the parallel layout
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#usage" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Usage
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#limitations" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Limitations
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#references" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        References
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../demo/esn/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Live demo: building an ESN
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../api/esn/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    API reference
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_8" >
+        
+          
+          <label class="md-nav__link" for="__nav_8" id="__nav_8_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Tutorial notebooks
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_8_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_8">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Tutorial notebooks
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="https://github.com/andreanovoa/EchoStateNetwork/blob/master/tutorials/01_echo_state_network.ipynb" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    EchoStateNetwork class
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="https://github.com/andreanovoa/EchoStateNetwork/blob/master/tutorials/02_parametric_esn.ipynb" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Parametric ESN
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="https://github.com/andreanovoa/EchoStateNetwork/blob/master/tutorials/03_leaky_esn.ipynb" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Leaky-integrator ESN
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="https://github.com/andreanovoa/EchoStateNetwork/blob/master/tutorials/04_validation_strategies.ipynb" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Validation strategies
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="https://github.com/andreanovoa/EchoStateNetwork/blob/master/tutorials/05_parallel_esn_kuramoto_sivashinsky.ipynb" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Parallel ESN on Kuramoto–Sivashinsky
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="https://github.com/andreanovoa/EchoStateNetwork/blob/master/tutorials/06_esn_architectures.ipynb" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Architectures of the ESN
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+  </ul>
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+            
+              
+              <div class="md-sidebar md-sidebar--secondary" data-md-component="sidebar" data-md-type="toc" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#the-model" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        The model
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#how-the-halo-couples-the-patches" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        How the halo couples the patches
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#shared-matrices" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Shared matrices
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#independent-patches" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Independent patches
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#domain-boundaries" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Domain boundaries
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#positions-for-data-assimilation" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Positions for data assimilation
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#when-to-employ-the-parallel-layout" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        When to employ the parallel layout
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#usage" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Usage
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#limitations" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Limitations
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#references" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        References
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+          
+          
+            <div class="md-content" data-md-component="content">
+              
+              <article class="md-content__inner md-typeset">
+                
+                  
+
+
+  
+  
+
+
+<h1 id="parallel-echo-state-network">Parallel echo state network</h1>
+<p>A spatially extended system, such as the Lorenz-96 model on a ring of 40 sites
+or a discretized partial differential equation, has a state with many
+components that interact locally. A single reservoir that reads the whole state
+needs more units as the number of sites grows, and its readout couples every
+unit with every site. The parallel layout of Pathak et al. (2018) replaces the
+single reservoir with one reservoir per patch of neighbouring sites. Each
+reservoir reads its patch and a halo of sites on either side, and predicts only
+its patch. The term comes from domain decomposition, in which the halo, or ghost
+region, is the copy of the data of the neighbouring subdomains that each process
+stores locally, so that it can compute independently; here, the halo is the copy
+of the neighbouring sites that each reservoir reads. Pathak et al. (2018) call it
+a buffer region, of <span class="arithmatex">\(l\)</span> sites. Vlachas et al. (2020) employ the same layout for reservoirs and for
+recurrent networks trained by backpropagation, on the Lorenz-96 and
+Kuramoto–Sivashinsky systems.</p>
+<p>In <code>EchoStateNetwork</code>, the layout is an option of the constructor: <code>patch_size</code>
+sets the number of sites of a patch, <code>halo</code> the number of sites read on either
+side, <code>periodic</code> the treatment of the domain boundaries, and <code>shared</code> whether the
+patches share their matrices and hyperparameters (the default) or are
+independent. Without <code>patch_size</code> (the default, <code>None</code>), the network has one
+reservoir. The
+<a href="https://github.com/andreanovoa/EchoStateNetwork/blob/master/tutorials/05_parallel_esn_kuramoto_sivashinsky.ipynb">Kuramoto–Sivashinsky tutorial</a>
+compares a global network, a parallel network with shared matrices and a local
+network with independent patches.</p>
+<h2 id="the-model">The model</h2>
+<p>The state <span class="arithmatex">\(\mathbf{u}\)</span> has <span class="arithmatex">\(N\)</span> sites (<code>N_dim</code>). With patches of <span class="arithmatex">\(G\)</span> sites
+(<code>patch_size</code>), the domain splits into <span class="arithmatex">\(P = N/G\)</span> patches (<code>N_patches</code>),
+numbered <span class="arithmatex">\(p = 0, \dots, P-1\)</span> as in the code. Patch <span class="arithmatex">\(p\)</span> predicts the sites
+<span class="arithmatex">\(\mathcal{P}_p = \{pG, \dots, pG + G - 1\}\)</span> and reads the window
+<span class="arithmatex">\(\mathcal{I}_p = \{pG - H, \dots, pG + G + H - 1\}\)</span>, which adds a halo of <span class="arithmatex">\(H\)</span>
+sites (<code>halo</code>) on either side of the patch. One step advances the reservoir of
+every patch and reads out the sites of the patch,</p>
+<div class="arithmatex">\[
+\mathbf{r}_{p,n+1} = (1-\alpha)\,\mathbf{r}_{p,n} + \alpha \tanh\!\big(
+\sigma_\mathrm{in} \mathbf{W}_\mathrm{in} [\tilde{\mathbf{u}}_n[\mathcal{I}_p];\, b_\mathrm{in}]
++ \rho\, \mathbf{W} \mathbf{r}_{p,n} \big), \qquad
+\mathbf{u}_{n+1}[\mathcal{P}_p] = \mathbf{W}_\mathrm{out}^\top [\mathbf{r}_{p,n+1};\, b_\mathrm{out}],
+\]</div>
+<p>where <span class="arithmatex">\(\mathbf{r}_{p,n}\)</span> is the state of the reservoir of patch <span class="arithmatex">\(p\)</span> at step
+<span class="arithmatex">\(n\)</span>, with <span class="arithmatex">\(N_\mathrm{units}\)</span> units (<code>N_units</code>); <span class="arithmatex">\(\tilde{\mathbf{u}}_n[\mathcal{I}_p]\)</span>
+is the normalized input at the sites of the window; and the other symbols are
+those of the <a href="../training/#the-model">single reservoir</a>. The input matrix
+<span class="arithmatex">\(\mathbf{W}_\mathrm{in}\)</span> has <span class="arithmatex">\(G + 2H + 1\)</span> columns (the sites of a window and
+the bias), and the readout <span class="arithmatex">\(\mathbf{W}_\mathrm{out}\)</span> has <span class="arithmatex">\(G\)</span> columns (the
+sites of a patch). The state of the network stacks the reservoirs in patch
+order, <span class="arithmatex">\(\mathbf{r} = [\mathbf{r}_0; \dots; \mathbf{r}_{P-1}]\)</span>, with
+<span class="arithmatex">\(N_r = P N_\mathrm{units}\)</span> rows (<code>N_r</code>). This is the array that <code>step(u, r)</code>
+advances, for one member or for an ensemble of members stored as columns.</p>
+<p>One patch that covers the whole domain without a halo (<span class="arithmatex">\(G = N\)</span>, <span class="arithmatex">\(H = 0\)</span>) is
+the single reservoir.</p>
+<h2 id="how-the-halo-couples-the-patches">How the halo couples the patches</h2>
+<p>Without a halo (<span class="arithmatex">\(H = 0\)</span>), each reservoir reads only its own patch, so the
+patches evolve independently, and the network cannot represent the coupling
+between neighbouring sites. With a halo, the windows of neighbouring patches
+overlap. In closed loop, the forecast of each patch enters the windows of its
+neighbours at the next step, so information crosses the domain at up to
+<span class="arithmatex">\(G + H - 1\)</span> sites per step. The halo needs to cover at least the range of the
+coupling in the governing equations: otherwise, the one-step forecast of a site
+at the edge of a patch misses inputs on which its time derivative depends. For
+example, in Lorenz-96 the time derivative of site <span class="arithmatex">\(i\)</span> depends on the sites
+<span class="arithmatex">\(i-2\)</span> to <span class="arithmatex">\(i+1\)</span>, so <span class="arithmatex">\(H \geq 2\)</span>.</p>
+<h2 id="shared-matrices">Shared matrices</h2>
+<p>All patches share <span class="arithmatex">\(\mathbf{W}_\mathrm{in}\)</span>, <span class="arithmatex">\(\mathbf{W}\)</span> and
+<span class="arithmatex">\(\mathbf{W}_\mathrm{out}\)</span>, as the kernel of a convolution is shared across
+positions. This is valid for a system that is invariant under a shift of the
+sites, such as Lorenz-96 with uniform forcing or the Kuramoto–Sivashinsky
+equation with periodic boundary conditions, because the map from the window of
+a patch to the next state of the patch is then the same for every patch. The
+reservoirs still predict different values, because each one reads a different
+window and carries a different state. On a ring, shifting the input and the
+reservoir state by one patch shifts the forecast by one patch.</p>
+<p>The shared readout is fitted by the ridge regression of
+<a href="../training/#training"><code>train()</code></a> on all the patches at once: each time step
+provides <span class="arithmatex">\(P\)</span> samples, one per patch, each mapping the state of a reservoir to
+the sites of its patch. The readout has as many weights as the readout of one
+patch, <span class="arithmatex">\((N_\mathrm{units} + 1) G\)</span>, but <span class="arithmatex">\(P\)</span> times more samples. The input
+normalization (<code>norm</code>, <code>shift</code>) takes one value for all the sites, computed
+from the samples of all the sites together, because the patches share
+<span class="arithmatex">\(\mathbf{W}_\mathrm{in}\)</span> and must see their windows in the same units.</p>
+<p>Hyperparameter selection works as for a single reservoir: every
+<a href="../validation/">validation strategy</a> of this package scores closed-loop
+forecasts of the whole network, and the strategies that retrain the readout per
+fold (<code>SSV</code>, <code>WFV</code>, <code>KFV</code>) pool the patches in the same way.</p>
+<p>Shared matrices are the default because, for a system that is invariant under a
+shift of the sites, they lose no generality and save data. First, by
+symmetry, the optimal hyperparameters are the same for every patch, so one
+search on all the patches estimates them, whereas <span class="arithmatex">\(P\)</span> independent searches cost
+<span class="arithmatex">\(P\)</span> times more and each one sees <span class="arithmatex">\(P\)</span> times fewer samples. Second, the shared
+readout is fitted on <span class="arithmatex">\(P\)</span> samples per time step, i.e. on <span class="arithmatex">\(P\)</span> times more samples
+per readout weight than the readout of one independent patch.</p>
+<h2 id="independent-patches">Independent patches</h2>
+<p>With <code>shared=False</code>, every patch has its own network, in <code>patches</code>: a list of
+<span class="arithmatex">\(P\)</span> <code>EchoStateNetwork</code> objects, one per patch, each of which reads and forecasts
+the window of its patch. Each patch has its own random realization of
+<span class="arithmatex">\(\mathbf{W}_\mathrm{in}\)</span> and <span class="arithmatex">\(\mathbf{W}\)</span>, its own readout, its own
+hyperparameters (<span class="arithmatex">\(\rho\)</span>, <span class="arithmatex">\(\sigma_\mathrm{in}\)</span>, the Tikhonov factor and
+<code>leak_rate</code>) and its own normalization. The matrices and the hyperparameters
+always go per patch together; there is no partly shared combination. One step
+of the parallel network advances the network of every patch with the update in
+<a href="#the-model">the model</a>, in which <span class="arithmatex">\(\mathbf{W}_\mathrm{in}\)</span>, <span class="arithmatex">\(\mathbf{W}\)</span>,
+<span class="arithmatex">\(\mathbf{W}_\mathrm{out}\)</span>, <span class="arithmatex">\(\sigma_\mathrm{in}\)</span>, <span class="arithmatex">\(\rho\)</span> and <span class="arithmatex">\(\alpha\)</span> take the
+values of patch <span class="arithmatex">\(p\)</span>.</p>
+<p><code>train()</code> trains the network of every patch on the record of its own window,
+with the validation strategy and the Bayesian optimization of the package: one
+hyperparameter search and one ridge regression per patch, each on the samples of
+its own patch. The network of a patch forecasts its whole window, so that the
+record of the window trains it as a single reservoir; the parallel network keeps
+the readout columns of the sites of the patch, which are the ridge solution for
+these sites alone, because the ridge regression decouples the output columns.
+The validation forecasts of a patch feed back only the sites of the patch and
+take the halo from the data, and the validation error scores only the sites of
+the patch, so that the search of one patch does not depend on the other
+patches. With <code>train(n_seeds=m)</code>, every patch keeps the best of its own <span class="arithmatex">\(m\)</span>
+reservoir realizations.</p>
+<p>The normalization is per patch: each network normalizes every position of its
+window with its own shift and scale, because its input matrix is its own and
+nothing requires a common scale. With shared matrices, by contrast, one shift
+and one scale serve all the sites.</p>
+<p>Independent patches suit systems whose local dynamics vary in space, e.g. with
+an inhomogeneous forcing, walls or inlets, or sensors of different quality, in
+which the map from the window to the next state of the patch differs between
+patches. The price is <span class="arithmatex">\(P\)</span> hyperparameter searches, <span class="arithmatex">\(P\)</span> times more readout
+weights, and <span class="arithmatex">\(P\)</span> times fewer samples per readout weight than with shared
+matrices.</p>
+<h2 id="domain-boundaries">Domain boundaries</h2>
+<p>On a periodic domain (<code>periodic=True</code>, the default), the sites lie on a ring and
+the windows of the first and last patches wrap around. The window of a patch
+must not exceed the ring, <span class="arithmatex">\(G + 2H \leq N\)</span>.</p>
+<p>On a non-periodic domain (<code>periodic=False</code>), the windows of the patches at the
+boundaries extend outside the domain. These positions are padded with zero in
+normalized units, which is the training mean of the data, and they are marked
+with <span class="arithmatex">\(-1\)</span> in <code>patch_sites</code>. The padding keeps the windows of equal width, which
+the shared input matrix requires. A non-periodic domain is not invariant under
+a shift of the sites near its boundaries, so the shared matrices are an
+approximation there, and independent patches (<code>shared=False</code>) let the patches at
+the boundaries learn their own dynamics.</p>
+<p>In both cases, <code>patch_size</code> divides the number of sites.</p>
+<h2 id="positions-for-data-assimilation">Positions for data assimilation</h2>
+<p>Covariance localization in data assimilation tapers the covariance between two
+state components with the distance between them, which requires a position for
+every component. The rows of a single reservoir have no position: through the
+reservoir matrix, every unit depends on every site, and the readout maps every
+unit to every site. With the parallel layout, every reservoir row belongs to
+one patch, which reads only its window. <code>state_positions</code>
+returns the position, in units of sites, of every row of the state
+<span class="arithmatex">\([\mathbf{u}; \mathbf{r}]\)</span>: output <span class="arithmatex">\(i\)</span> lies at site <span class="arithmatex">\(i\)</span>, and every row of
+<span class="arithmatex">\(\mathbf{r}_p\)</span> lies at the centre of patch <span class="arithmatex">\(p\)</span>, <span class="arithmatex">\(pG + (G-1)/2\)</span>. On a ring, the
+positions are periodic with period <span class="arithmatex">\(N\)</span>. These are the positions that a local
+ensemble transform Kalman filter requires, e.g. the <code>state_positions</code> argument
+of biasda, with <code>loc_period</code> equal to <span class="arithmatex">\(N\)</span> on a ring.</p>
+<h2 id="when-to-employ-the-parallel-layout">When to employ the parallel layout</h2>
+<ul>
+<li>High-dimensional, spatially extended systems with local coupling, in which
+  the sites of the state are ordered in space. At a fixed reservoir size per
+  patch, the cost of one step and of the training grows linearly with the
+  number of sites.</li>
+<li>Data assimilation with covariance localization, which needs the positions of
+  the reservoir rows.</li>
+</ul>
+<p>The layout does not suit a state without a spatial order, such as the three
+variables of Lorenz-63 or the coefficients of a proper orthogonal
+decomposition.</p>
+<h2 id="usage">Usage</h2>
+<div class="highlight"><pre><span></span><code><span class="kn">import</span><span class="w"> </span><span class="nn">numpy</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">np</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">echostatenetwork</span><span class="w"> </span><span class="kn">import</span> <span class="n">EchoStateNetwork</span>
+
+<span class="n">X</span> <span class="o">=</span> <span class="n">lorenz96_record</span>                    <span class="c1"># (Nt, 40): 40 sites on a ring, time step 0.02</span>
+
+<span class="n">esn</span> <span class="o">=</span> <span class="n">EchoStateNetwork</span><span class="p">(</span><span class="n">X</span><span class="p">[:</span><span class="mi">1</span><span class="p">]</span><span class="o">.</span><span class="n">T</span><span class="p">,</span> <span class="n">dt</span><span class="o">=</span><span class="mf">0.02</span><span class="p">,</span> <span class="n">upsample</span><span class="o">=</span><span class="mi">1</span><span class="p">,</span>
+                       <span class="n">N_units</span><span class="o">=</span><span class="mi">300</span><span class="p">,</span>    <span class="c1"># units of each reservoir</span>
+                       <span class="n">patch_size</span><span class="o">=</span><span class="mi">2</span><span class="p">,</span>   <span class="c1"># G: sites that each reservoir predicts</span>
+                       <span class="n">halo</span><span class="o">=</span><span class="mi">3</span><span class="p">,</span>         <span class="c1"># H: sites read on either side of the patch</span>
+                       <span class="n">periodic</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span>  <span class="c1"># the sites lie on a ring</span>
+                       <span class="n">t_train</span><span class="o">=</span><span class="mf">200.0</span><span class="p">,</span> <span class="n">t_val</span><span class="o">=</span><span class="mf">40.0</span><span class="p">)</span>
+<span class="n">esn</span><span class="o">.</span><span class="n">train</span><span class="p">(</span><span class="n">X</span><span class="p">)</span>                           <span class="c1"># one readout, fitted on the 20 patches at once</span>
+
+<span class="n">r</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">zeros</span><span class="p">((</span><span class="n">esn</span><span class="o">.</span><span class="n">N_r</span><span class="p">,</span> <span class="mi">1</span><span class="p">))</span>             <span class="c1"># 20 reservoirs of 300 units, stacked: 6000 rows</span>
+<span class="k">for</span> <span class="n">u_in</span> <span class="ow">in</span> <span class="n">wash</span><span class="p">:</span>                      <span class="c1"># open-loop washout on observed data</span>
+    <span class="n">u</span><span class="p">,</span> <span class="n">r</span> <span class="o">=</span> <span class="n">esn</span><span class="o">.</span><span class="n">step</span><span class="p">(</span><span class="n">u_in</span><span class="p">[:,</span> <span class="kc">None</span><span class="p">],</span> <span class="n">r</span><span class="p">)</span>
+
+<span class="n">forecast</span> <span class="o">=</span> <span class="p">[]</span>
+<span class="k">for</span> <span class="n">_</span> <span class="ow">in</span> <span class="nb">range</span><span class="p">(</span><span class="n">n_steps</span><span class="p">):</span>               <span class="c1"># closed-loop forecast</span>
+    <span class="n">u</span><span class="p">,</span> <span class="n">r</span> <span class="o">=</span> <span class="n">esn</span><span class="o">.</span><span class="n">step</span><span class="p">(</span><span class="n">esn</span><span class="o">.</span><span class="n">outputs_to_inputs</span><span class="p">(</span><span class="n">u</span><span class="p">),</span> <span class="n">r</span><span class="p">)</span>
+    <span class="n">forecast</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="n">u</span><span class="p">[:,</span> <span class="mi">0</span><span class="p">])</span>
+
+<span class="n">positions</span> <span class="o">=</span> <span class="n">esn</span><span class="o">.</span><span class="n">state_positions</span>        <span class="c1"># (40 + 6000,): sites of the rows of [u; r]</span>
+</code></pre></div>
+<p>For an ensemble, <code>u</code> has shape <code>(N_dim, N_ens)</code> and <code>r</code> has shape
+<code>(N_r, N_ens)</code>; <code>Jacobian(u, r)</code> returns the open-loop Jacobian, whose rows of
+patch <span class="arithmatex">\(p\)</span> are non-zero only in the columns of its window.</p>
+<p>Independent patches take one more keyword; the state, the positions, <code>step</code>,
+the closed loop, the Jacobian and <code>to_arrays</code>/<code>from_arrays</code> work as with shared
+matrices.</p>
+<div class="highlight"><pre><span></span><code><span class="n">local</span> <span class="o">=</span> <span class="n">EchoStateNetwork</span><span class="p">(</span><span class="n">X</span><span class="p">[:</span><span class="mi">1</span><span class="p">]</span><span class="o">.</span><span class="n">T</span><span class="p">,</span> <span class="n">dt</span><span class="o">=</span><span class="mf">0.02</span><span class="p">,</span> <span class="n">upsample</span><span class="o">=</span><span class="mi">1</span><span class="p">,</span> <span class="n">N_units</span><span class="o">=</span><span class="mi">300</span><span class="p">,</span>
+                         <span class="n">patch_size</span><span class="o">=</span><span class="mi">2</span><span class="p">,</span> <span class="n">halo</span><span class="o">=</span><span class="mi">3</span><span class="p">,</span> <span class="n">shared</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span>
+                         <span class="n">t_train</span><span class="o">=</span><span class="mf">200.0</span><span class="p">,</span> <span class="n">t_val</span><span class="o">=</span><span class="mf">40.0</span><span class="p">)</span>
+<span class="n">local</span><span class="o">.</span><span class="n">train</span><span class="p">(</span><span class="n">X</span><span class="p">)</span>                         <span class="c1"># 20 searches and 20 ridge regressions, one per patch</span>
+<span class="n">local</span><span class="o">.</span><span class="n">patches</span><span class="p">[</span><span class="mi">0</span><span class="p">]</span><span class="o">.</span><span class="n">rho</span><span class="p">,</span> <span class="n">local</span><span class="o">.</span><span class="n">patches</span><span class="p">[</span><span class="mi">0</span><span class="p">]</span><span class="o">.</span><span class="n">Win</span>     <span class="c1"># hyperparameters and matrices of patch 0</span>
+</code></pre></div>
+<table>
+<thead>
+<tr>
+<th>Keyword or attribute</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>patch_size</code></td>
+<td>sites <span class="arithmatex">\(G\)</span> of a patch; <code>None</code> (default) for one reservoir</td>
+</tr>
+<tr>
+<td><code>halo</code></td>
+<td>sites <span class="arithmatex">\(H\)</span> read on either side of a patch (default 0)</td>
+</tr>
+<tr>
+<td><code>periodic</code></td>
+<td>the sites lie on a ring (default <code>True</code>); <code>False</code> pads the windows</td>
+</tr>
+<tr>
+<td><code>shared</code></td>
+<td>the patches share matrices and hyperparameters (default <code>True</code>); <code>False</code> for independent patches</td>
+</tr>
+<tr>
+<td><code>N_units</code></td>
+<td>units of each reservoir</td>
+</tr>
+<tr>
+<td><code>N_patches</code></td>
+<td>number of patches, <span class="arithmatex">\(P = N/G\)</span></td>
+</tr>
+<tr>
+<td><code>N_r</code></td>
+<td>rows of the reservoir state, <span class="arithmatex">\(P N_\mathrm{units}\)</span></td>
+</tr>
+<tr>
+<td><code>patch_sites</code></td>
+<td><code>(N_patches, G + 2H)</code> sites of each window, <span class="arithmatex">\(-1\)</span> outside a non-periodic domain</td>
+</tr>
+<tr>
+<td><code>state_positions</code></td>
+<td><code>(N_dim + N_r,)</code> position of every row of <span class="arithmatex">\([\mathbf{u}; \mathbf{r}]\)</span></td>
+</tr>
+<tr>
+<td><code>Win</code>, <code>W</code>, <code>Wout</code></td>
+<td>shared matrices, <code>(N_units, G + 2H + 1)</code>, <code>(N_units, N_units)</code>, <code>(N_units + 1, G)</code></td>
+</tr>
+<tr>
+<td><code>patches</code></td>
+<td>with <code>shared=False</code>: one <code>EchoStateNetwork</code> per patch, with its own matrices and hyperparameters</td>
+</tr>
+</tbody>
+</table>
+<h2 id="limitations">Limitations</h2>
+<ul>
+<li>The layout raises a <code>ValueError</code> when <code>patch_size</code> does not divide the number
+  of sites, when the window exceeds a periodic domain, when it is combined with
+  <code>input_parameters</code>, <code>readout_input</code> or partial observability (<code>observed_idx</code>),
+  and when <code>shared=False</code> is set without <code>patch_size</code>.</li>
+<li>With independent patches, <code>Win</code>, <code>W</code> and <code>Wout</code> of the parallel network raise
+  an <code>AttributeError</code> that points to <code>patches[p]</code>, and its <code>rho</code>, <code>sigma_in</code> and
+  <code>tikh</code> are the starting values passed to every patch: the selected values live
+  in <code>patches[p]</code>. Training plots are not drawn, and one step loops over the
+  patches, so it is slower than with shared matrices when there are many
+  patches.</li>
+<li>Validation strategies outside this package that do not call the closed-loop
+  hook of the package (<code>_closed_loop_input</code>) run the validation forecast of an
+  independent patch closed on its whole window, halo included.</li>
+<li>Code outside this package that sizes the reservoir state with <code>N_units</code>
+  (e.g. a custom validation strategy) needs <code>N_r</code> instead; <code>step</code> raises a
+  <code>ValueError</code> that says so.</li>
+</ul>
+<h2 id="references">References</h2>
+<p>Pathak, J., Hunt, B., Girvan, M., Lu, Z., &amp; Ott, E. (2018). Model-free
+prediction of large spatiotemporally chaotic systems from data: a reservoir
+computing approach. <em>Physical Review Letters</em>, 120, 024102.
+<a href="https://doi.org/10.1103/PhysRevLett.120.024102">doi:10.1103/PhysRevLett.120.024102</a></p>
+<p>Vlachas, P. R., Pathak, J., Hunt, B. R., Sapsis, T. P., Girvan, M., Ott, E., &amp;
+Koumoutsakos, P. (2020). Backpropagation algorithms and reservoir computing in
+recurrent neural networks for the forecasting of complex spatiotemporal
+dynamics. <em>Neural Networks</em>, 126, 191-217.
+<a href="https://doi.org/10.1016/j.neunet.2020.02.016">doi:10.1016/j.neunet.2020.02.016</a></p>
+
+
+
+
+
+
+
+
+
+
+
+
+                
+              </article>
+            </div>
+          
+          
+<script>var target=document.getElementById(location.hash.slice(1));target&&target.name&&(target.checked=target.name.startsWith("__tabbed_"))</script>
+        </div>
+        
+      </main>
+      
+        <footer class="md-footer">
+  
+  <div class="md-footer-meta md-typeset">
+    <div class="md-footer-meta__inner md-grid">
+      <div class="md-copyright">
+  
+  
+    Made with
+    <a href="https://squidfunk.github.io/mkdocs-material/" target="_blank" rel="noopener">
+      Material for MkDocs
+    </a>
+  
+</div>
+      
+    </div>
+  </div>
+</footer>
+      
+    </div>
+    <div class="md-dialog" data-md-component="dialog">
+      <div class="md-dialog__inner md-typeset"></div>
+    </div>
+    
+    
+    
+      
+      
+      <script id="__config" type="application/json">{"annotate": null, "base": "..", "features": ["navigation.sections", "content.code.copy"], "search": "../assets/javascripts/workers/search.2c215733.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": null}</script>
+    
+    
+      <script src="../assets/javascripts/bundle.d7400e89.min.js"></script>
+      
+        <script src="https://unpkg.com/mathjax@3/es5/tex-mml-chtml.js"></script>
+      
+    
+  </body>
+</html>
