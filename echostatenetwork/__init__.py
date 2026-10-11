@@ -10,6 +10,6 @@ Shared by the qlrom (qlESN families) and romda (ESN_model, ESN_bias) packages.
 from . import validation
 from .esn import EchoStateNetwork
 
-__version__ = "0.2.2"
+__version__ = "0.2.3"
 
 __all__ = ["EchoStateNetwork", "validation"]
