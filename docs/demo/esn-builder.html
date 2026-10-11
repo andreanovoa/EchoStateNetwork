@@ -40,7 +40,8 @@
   }
   .layout { display: grid; grid-template-columns: minmax(0, 1fr); gap: 14px; }
   .controls { columns: 310px; column-gap: 14px; }   /* the controls sit in columns above the figures */
-  .controls > .panel { break-inside: avoid; margin: 0 0 14px; }
+  .controls > .panel, .controls > .group { break-inside: avoid; margin: 0 0 14px; }
+  .group > .panel + .panel { margin-top: 14px; }
   .panel { background: var(--surface-1); border: 1px solid var(--border); border-radius: 10px; padding: 14px; }
   .stack { display: grid; gap: 14px; align-content: start; }
   h2 { font-size: 15px; margin: 0 0 2px; font-weight: 600; }
@@ -161,6 +162,7 @@
       <div class="row" id="r-nfe"><span>Evaluations, <code>N_func_evals</code></span> <input id="nfe" type="number" step="1" min="1" value="20"></div>
       <div class="row" id="r-ngrid"><span>Initial grid per axis, <code>N_grid</code></span> <input id="ngrid" type="number" step="1" min="1" value="4"></div>
     </div>
+    <div class="group">
     <div class="panel" id="p-val">
       <h3>Validation</h3>
       <div class="row"><span>Strategy</span> <div class="seg" role="radiogroup" aria-label="Validation strategy">
@@ -178,6 +180,17 @@
         </div>
       </div>
       <div class="note" id="valNote"></div>
+    </div>
+    <div class="panel">
+      <h3>Data split and validation folds</h3>
+      <p class="sub" id="foldSub"></p>
+      <svg id="folds-svg" role="img" aria-label="Training record and validation folds"></svg>
+      <div class="legend">
+        <span><i class="sw" style="background: var(--wash)"></i> washout (open loop)</span>
+        <span><i class="sw" style="background: var(--out)"></i> rows of the ridge regression</span>
+        <span><i class="sw" style="background: var(--val)"></i> closed-loop validation</span>
+      </div>
+    </div>
     </div>
   </aside>
 
@@ -204,16 +217,6 @@
       <h2>Equations</h2>
       <p class="sub">The equations that <code>train()</code> and the forecast solve with the current settings.</p>
       <div id="eqs"></div>
-    </div>
-    <div class="panel">
-      <h2>Data split and validation folds</h2>
-      <p class="sub" id="foldSub"></p>
-      <svg id="folds-svg" role="img" aria-label="Training record and validation folds"></svg>
-      <div class="legend">
-        <span><i class="sw" style="background: var(--wash)"></i> washout (open loop)</span>
-        <span><i class="sw" style="background: var(--out)"></i> rows of the ridge regression</span>
-        <span><i class="sw" style="background: var(--val)"></i> closed-loop validation</span>
-      </div>
     </div>
     <div class="panel">
       <div class="head"><h2>Code</h2><button id="copy">Copy</button></div>
@@ -690,7 +693,7 @@ function foldGeometry(s) {
 
 function drawFolds(s) {
   const f = foldGeometry(s), svg = $("folds-svg");
-  const W = 600, L = 92, Rm = 14, rowH = 15, gap = 6, top = 22;
+  const W = Math.max(260, svg.parentElement.clientWidth - 30), L = 52, Rm = 14, rowH = 15, gap = 6, top = 22;
   const X = (i) => L + (W - L - Rm) * i / Math.max(1, s.Nt);
   const wash = css("--wash"), out = css("--out"), val = css("--val"), mute = css("--text-muted"), sec = css("--text-secondary"), grid = css("--grid");
   let b = "";
@@ -722,6 +725,7 @@ function drawFolds(s) {
   }
   b += `<text x="${(L + W - Rm) / 2}" y="${yy + 29}" font-size="10.5" fill="${sec}" text-anchor="middle">ESN step (input rows of the training record)</text>`;
   svg.setAttribute("viewBox", `0 0 ${W} ${yy + 36}`);
+  svg.setAttribute("width", W);
   svg.innerHTML = b;
   $("foldSub").innerHTML = `The training record has ${s.Ntr.toLocaleString()} training and ${s.Nval.toLocaleString()} validation steps of ${+s.dtE.toPrecision(4)} time units`
     + ` (${s.Nt.toLocaleString()} input rows). ` + ((s.bo && s.dims.length) || s.nseeds > 1 ? `Each row below is one fold of ${s.strat}. ${f.msg}` : "");
@@ -841,6 +845,7 @@ function render() {
     setTimeout(() => { $("copy").textContent = "Copy"; }, 1500);
   };
   matchMedia("(prefers-color-scheme: dark)").addEventListener("change", render);
+  addEventListener("resize", render);
   addEventListener("message", (e) => {             // the docs page passes its own palette down
     const t = e.data && e.data.esnBuilderTheme;
     if (t !== "dark" && t !== "light") return;
