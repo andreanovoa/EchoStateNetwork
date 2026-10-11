@@ -211,7 +211,10 @@ def draw_esn(esn, ax=None, strategy='RVC_Noise', title=None):
                     ha='center', va='bottom', fontsize=8, color=PAR)
     if esn.readout_input is True:
         x_b, y_low = x_tip + 0.5, y_res - radius - 0.3
-        _route(ax, [(x_b, y_res), (x_b, y_low), (x_join, y_low), (x_join, y_res)], INP)
+        # dashed, as every skip connection; the head is drawn solid on its own (a dashed head is unreadable)
+        ax.plot([x_b, x_b, x_join, x_join], [y_res, y_low, y_low, y_res - 0.12], color=INP, lw=1.6,
+                ls=(0, (4, 3)), solid_joinstyle='miter')
+        _arrow(ax, (x_join, y_res - 0.12), (x_join, y_res), INP, lw=1.6)
         carried = r';\,\tilde{\mathbf{p}}' if n_param and esn.param_in_reservoir else ''
         ax.text(0.5 * (x_b + x_join), y_low - 0.06, r'input skip: $\mathbf{W}_\mathrm{out}$ reads '
                 rf'$[\mathbf{{r}};\,\tilde{{\mathbf{{u}}}}_n{carried}]$', ha='center', va='top',
