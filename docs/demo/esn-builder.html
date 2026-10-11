@@ -322,6 +322,12 @@ const HATCH = [
 const sub = (s) => `<tspan dy="3" font-size="0.72em">${s}</tspan><tspan dy="-3"> </tspan>`;
 const sup = (s) => `<tspan dy="-5" font-size="0.72em">${s}</tspan><tspan dy="5"> </tspan>`;
 const B = (s) => `<tspan font-weight="700">${s}</tspan>`;
+// subscript stacked under a superscript: SVG cannot stack, so step back by the superscript's width
+// ponytail: width estimated from the glyph classes, exact enough for "(p)" and "(0)".."(9)"
+const subsup = (sb, sp, size) => {
+  const w = [...sp].reduce((a, ch) => a + ("()".includes(ch) ? 0.33 : 0.5), 0) * 0.72 * size;
+  return `<tspan dy="-5" font-size="0.72em">${sp}</tspan><tspan dx="${-w.toFixed(1)}" dy="8" font-size="0.72em">${sb}</tspan><tspan dy="-3"> </tspan>`;
+};
 
 function glyph(cx, cy, R, col, mk, ink, bg) {
   let g = `<circle cx="${cx}" cy="${cy}" r="${R}" fill="${bg}" stroke="${ink}" stroke-width="1.1"/>`;
@@ -389,7 +395,7 @@ function drawUnfolded(s) {
       for (const o of [8, 4]) b += `<circle cx="${c.x + o}" cy="${yRes - o}" r="${R}" fill="${bg}" stroke="${ink}" stroke-width="1" opacity="${o === 8 ? 0.35 : 0.6}"/>`;
     }
     b += glyph(c.x, yRes, R, s.ind ? NET[0] : res, s.ind ? "a-net0" : "a-res", ink, bg);
-    labels += text(c.x + R + 4, yRes - R + 2, `${B("r")}${par ? sup("(p)") : ""}${sub(n + 1)}`, ink, 10.5, "start");
+    labels += text(c.x + R + 4, yRes - R + 2, `${B("r")}${par ? subsup(n + 1, "(p)", 10.5) : sub(n + 1)}`, ink, 10.5, "start");
     b += line([[c.x, yRes - R - 2], [c.x, yOut + BH / 2]], out, "u-out");
     const discarded = c.wash && n < Nw - 1;
     b += box(c.x, yOut, discarded ? mute : out, `${B("\u00fb")}${sub(n + 1)}`, discarded);
