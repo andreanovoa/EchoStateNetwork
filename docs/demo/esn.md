@@ -63,7 +63,7 @@ $\mathbf{W}_\mathrm{in}$ and $\mathbf{W}$, with the seed of the first one
 realization in its own process, with its own hyperparameter search, and keeps the
 realization with the lowest validation score. The sparse input matrix
 (`'sparse'`, the class default) connects each unit to one column of
-$[\tilde{\bm u}_n;\, b_\mathrm{in}]$, so only about one unit in $N_\mathrm{in}+1$ sees
+$[\tilde{\boldsymbol u}_n;\, b_\mathrm{in}]$, so only about one unit in $N_\mathrm{in}+1$ sees
 the input bias. The other units are odd in the input, because the tanh is odd, and a
 reservoir of such units can learn a mirror image of the attractor (Herteux & Räth,
 2020). The dense bias column (`'sparse_dense_bias'`) keeps one input column per unit
@@ -107,7 +107,7 @@ the readout, the washout, the ridge regression for the readout, the hyperparamet
 selection with the validation objective of the chosen strategy, and the closed-loop
 forecast. A fixed hyperparameter appears as its value, so that each equation reads as the
 code solves it; for example, a fixed leak rate of one removes the leak from the reservoir
-update. The patch index is a superscript, $\bm{r}^{(p)}$.
+update. The patch index is a superscript, $\boldsymbol{r}^{(p)}$.
 
 **Data split and validation folds.** The training record, to scale, with its washout,
 its training and its validation steps, and one row per validation fold, placed as
