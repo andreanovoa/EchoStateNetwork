@@ -170,8 +170,22 @@ class EchoStateNetwork:
     # saturation penalty (0 = off). See qlroms' segment strategies for the rationale --
     # a saturated reservoir scores well over a short probe and fails over a long forecast.
     saturation_penalty = 0.0
+    # stability gate of the recycle validation (RVC_Noise): with stability_steps > 0, every
+    # Tikhonov candidate also runs one closed loop of that many steps, and its fold-mean score
+    # rises by stability_penalty when the loop leaves the attractor (non-finite, or beyond 3x
+    # the largest |y| of the data) or the standard deviation of any output leaves
+    # stability_band times that of the data. The short folds score the accuracy, the long loop
+    # the stability (two-stage validation, as in Lu et al. 2018; Platt et al. 2022).
+    stability_steps = 0
+    stability_band = (0.8, 1.2)
+    stability_penalty = 1.0
     N_func_evals = 20
     N_grid = 4
+    # Bayesian optimization: bho_noise is the GP noise ('gaussian' learns a white-noise level,
+    # which suits the noisy validation score); grid_midpoints puts the initial grid at the
+    # midpoints of N_grid equal cells, so that no initial point lies on the boundary
+    bho_noise = 1e-10
+    grid_midpoints = False
     N_initial_rand = 0
     N_units = 100
     # False silences train()'s reporting
@@ -2052,7 +2066,7 @@ class EchoStateNetwork:
         gp_estimator = GPR(kernel=kernel_,
                            normalize_y=True,
                            n_restarts_optimizer=3,
-                           noise=1e-10,
+                           noise=self.bho_noise,
                            random_state=10)
 
         # Perform Bayesian Optimization
@@ -2112,7 +2126,8 @@ class EchoStateNetwork:
         param_grid, search_space = [], []
         for hyper_param in parameters:
             range_ = getattr(self, self._hp_range_attr(hyper_param))  # type: tuple[float,float]
-            param_grid.append(np.linspace(*range_, n_grid_eff))
+            param_grid.append(np.linspace(*range_, 2 * n_grid_eff + 1)[1::2] if self.grid_midpoints
+                              else np.linspace(*range_, n_grid_eff))
             search_space.append(Real(*range_, name=hyper_param))
 
         # The first n_grid_eff^len(parameters) points are from grid search

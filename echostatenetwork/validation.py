@@ -41,6 +41,33 @@ def nMSE(case, Y_true, Y_pred, norm=None):
 
 
 
+def unstable(case, U_wtv, Y_wtv, Wout_tik):
+    """1.0 for each Tikhonov candidate whose closed loop of `stability_steps` steps, after a
+    washout at the start of the first segment, leaves the attractor (non-finite, or beyond
+    3x the largest |y| of the data) or whose output standard deviations leave
+    `stability_band` times those of the data; else 0.0. The gate of RVC_Noise."""
+    Y = np.concatenate([np.asarray(y) for y in Y_wtv])
+    bound, std = 3 * np.abs(Y).max(), Y.std(axis=0)
+    lo, hi = case.stability_band
+    out = np.zeros(len(Wout_tik))
+    for j, W in enumerate(Wout_tik):
+        case.Wout = W
+        r = np.zeros((case.N_r, 1))
+        for u_in in U_wtv[0][:case.N_wash]:
+            u, r = case.step(u_in, r)
+        Z = np.empty((case.stability_steps, Y.shape[1]))
+        for k in range(case.stability_steps):
+            u, r = case.step(case.outputs_to_inputs(full_state=u), r)
+            Z[k] = u[:, 0]
+            if not np.isfinite(Z[k]).all() or np.abs(Z[k]).max() > bound:
+                out[j] = 1.0
+                break
+        else:
+            ratio = Z.std(axis=0) / std
+            out[j] = float(not (lo < ratio.min() and ratio.max() < hi))
+    return out
+
+
 def RVC_Noise(x, case, U_wtv, Y_wtv, tikh_opt, hp_names, print_convergence=True):
     """
     Implements Chaotic Recycle Validation for hyperparameter optimization.
@@ -162,6 +189,9 @@ def RVC_Noise(x, case, U_wtv, Y_wtv, tikh_opt, hp_names, print_convergence=True)
         raise ValueError('No segment is long enough to hold a single validation '
                           'fold (need >= N_wash+N_val steps); reduce t_val or N_wash.')
     case.n_folds_realized = n_looop   # surfaced by training_summary()
+
+    if getattr(case, 'stability_steps', 0) and getattr(case, '_forecast_sites', None) is None:
+        nMAE += case.stability_penalty * n_looop * unstable(case, U_wtv, Y_wtv, Wout_tik)
 
     # select and save the optimal tikhonov and noise level in the targets
     a = nMAE.argmin()

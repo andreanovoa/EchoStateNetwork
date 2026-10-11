@@ -680,3 +680,23 @@ def test_dense_bias_column_and_unregularized_bias_row():
     esn.regularize_bias_out = False
     assert np.allclose(np.diag(esn._regularized(LHS, 0.5)), [1.5] * (esn._n_readout - 1) + [1.0])
     assert np.allclose(LHS, np.eye(esn._n_readout))                     # a copy: the input is untouched
+
+
+def test_bho_midpoint_grid_noise_and_stability_gate():
+    # grid_midpoints: no initial point on the boundary; bho_noise reaches the GP; the stability gate
+    # penalizes a candidate whose long closed loop blows up, and not one that stays bounded
+    from echostatenetwork import validation
+    rng = np.random.default_rng(0)
+    t = np.arange(600) * 0.05
+    data = np.stack([np.sin(t), np.cos(t), np.sin(2 * t)], axis=1)[None] + 0.01 * rng.normal(size=(1, 600, 3))
+    esn = EchoStateNetwork(data[0].T, dt=1, N_units=40, upsample=1, t_train=400, t_val=50, t_test=50, N_wash=10,
+                           hyperparameters_to_optimize=['rho', 'sigma_in', 'tikh'], N_grid=2, N_func_evals=6,
+                           grid_midpoints=True, bho_noise='gaussian', stability_steps=200, seed=0)
+    esn.train(data, plot_training=False)
+    init = np.array(esn.bo_results['x_iters'][:4])                    # the 2 x 2 initial grid (rho, sigma_in)
+    for k, (lo, hi) in enumerate((esn.rho_range, esn.sigma_in_range)):
+        assert np.all((init[:, k] > lo) & (init[:, k] < hi))
+    U, Y, *_ = esn._split_and_format_data(data)
+    W = esn.Wout
+    flags = validation.unstable(esn, U, Y, np.stack([W, 1e3 * W]))
+    assert flags[1] == 1.0
