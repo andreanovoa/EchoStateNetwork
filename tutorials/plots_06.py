@@ -172,6 +172,14 @@ def draw_esn(esn, ax=None, strategy='RVC_Noise', title=None):
         color = NET[p % len(NET)] if ind else RES
         x_res = X_RES
         _arrow(ax, (x_tip, y_tip), (x_res - radius, y_res), INP)
+        # input bias: from above into a junction of the input arrow, solid when every unit sees it,
+        # dashed when the sparse Win gives it to the few units whose one connection is the bias column
+        x_bias, stub = x_tip + 0.5, min(0.3, 0.8 * G * CELL)
+        ax.plot([x_bias, x_bias], [y_res + stub, y_res + 0.07], color='k', lw=1.1, zorder=6,
+                ls=(0, (2, 2)) if esn.Win_type == 'sparse' else '-')
+        ax.plot(x_bias, y_res, 'D', ms=5, mfc='white', mec='k', mew=1.1, zorder=7)
+        if p == 0:
+            ax.text(x_bias, y_res + stub + 0.03, r'$b_\mathrm{in}$', ha='center', va='bottom', fontsize=7)
         sup = f'^{{({p})}}' if ind else ''
         ax.text(0.5 * (x_tip + x_res - radius), y_res - 0.08, rf'$\mathbf{{W}}_\mathrm{{in}}{sup}$',
                 ha='center', va='top', fontsize=8, color=INP, zorder=6,
@@ -202,7 +210,7 @@ def draw_esn(esn, ax=None, strategy='RVC_Noise', title=None):
         x_p, y_p = _brace(ax, X_IN + WIDTH / 2 + 0.06, _y(param_rows[0]) - CELL / 2,
                           _y(param_rows[-1]) + CELL / 2, PAR)
         if esn.param_in_reservoir:
-            x_junc = x_tip + 0.3
+            x_junc = x_tip + 0.25
             _route(ax, [(x_p, y_p), (x_junc, y_p), (x_junc, y_res + 0.07)], PAR)
             ax.plot(x_junc, y_res, 'D', ms=5, mfc='white', mec='k', mew=1.2, zorder=7)
         if esn.readout_input == 'params' or (esn.readout_input is True and not esn.param_in_reservoir):
@@ -210,7 +218,7 @@ def draw_esn(esn, ax=None, strategy='RVC_Noise', title=None):
             ax.text(X_RES, y_p + 0.05, r'$\mathbf{W}_\mathrm{out}$ reads $\tilde{\mathbf{p}}$',
                     ha='center', va='bottom', fontsize=8, color=PAR)
     if esn.readout_input is True:
-        x_b, y_low = x_tip + 0.5, y_res - radius - 0.3
+        x_b, y_low = x_tip + 0.75, y_res - radius - 0.3
         # dashed, as every skip connection; the head is drawn solid on its own (a dashed head is unreadable)
         ax.plot([x_b, x_b, x_join, x_join], [y_res, y_low, y_low, y_res - 0.12], color=INP, lw=1.6,
                 ls=(0, (4, 3)), solid_joinstyle='miter')
