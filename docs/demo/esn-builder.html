@@ -39,6 +39,7 @@
     font: 14px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
   }
   .layout { display: grid; grid-template-columns: minmax(0, 1fr); gap: 14px; }
+  #G { width: 180px; }
   .controls { columns: 310px; column-gap: 14px; }   /* the controls sit in columns above the figures */
   .controls > .panel, .controls > .group { break-inside: avoid; margin: 0 0 14px; }
   .group > .panel + .panel { margin-top: 14px; }
@@ -283,7 +284,7 @@ function syncControls() {
   for (let g = 1; g <= N; g++) if (N % g === 0) divisors.push(g);
   const sel = $("G"), prev = +sel.value;
   if (sel.options.length !== divisors.length || [...sel.options].some((o, i) => +o.value !== divisors[i])) {
-    sel.innerHTML = divisors.map((g) => `<option value="${g}">${g} (${N / g} patches)</option>`).join("");
+    sel.innerHTML = divisors.map((g) => `<option value="${g}">${g}, i.e. ${N / g} parallel ESNs</option>`).join("");
     const pick = divisors.includes(prev) ? prev : divisors[Math.floor(divisors.length / 2)];
     sel.value = pick;
   }
@@ -326,14 +327,15 @@ const HATCH = [
   (c) => `<path d="M0,3 h6" stroke="${c}" stroke-width="0.8"/>`,
   (c) => `<circle cx="3" cy="3" r="1.6" fill="none" stroke="${c}" stroke-width="0.6"/>`,
 ];
-const sub = (s) => `<tspan dy="3" font-size="0.72em">${s}</tspan><tspan dy="-3"> </tspan>`;
-const sup = (s) => `<tspan dy="-5" font-size="0.72em">${s}</tspan><tspan dy="5"> </tspan>`;
+const FS = 1.3;                                   // font scale of the architecture drawings
+const sub = (s) => `<tspan dy="${3 * FS}" font-size="0.72em">${s}</tspan><tspan dy="${-3 * FS}"> </tspan>`;
+const sup = (s) => `<tspan dy="${-5 * FS}" font-size="0.72em">${s}</tspan><tspan dy="${5 * FS}"> </tspan>`;
 const B = (s) => `<tspan font-weight="700">${s}</tspan>`;
 // subscript stacked under a superscript: SVG cannot stack, so step back by the superscript's width
 // ponytail: width estimated from the glyph classes, exact enough for "(p)" and "(0)".."(9)"
 const subsup = (sb, sp, size) => {
   const w = [...sp].reduce((a, ch) => a + ("()".includes(ch) ? 0.33 : 0.5), 0) * 0.72 * size;
-  return `<tspan dy="-5" font-size="0.72em">${sp}</tspan><tspan dx="${-w.toFixed(1)}" dy="8" font-size="0.72em">${sb}</tspan><tspan dy="-3"> </tspan>`;
+  return `<tspan dy="${-5 * FS}" font-size="0.72em">${sp}</tspan><tspan dx="${-w.toFixed(1)}" dy="${8 * FS}" font-size="0.72em">${sb}</tspan><tspan dy="${-3 * FS}"> </tspan>`;
 };
 
 function glyph(cx, cy, R, col, mk, ink, bg) {
@@ -372,19 +374,19 @@ function drawUnfolded(s) {
   marker("u-inp", inp, 5); marker("u-out", out, 5); marker("u-ink", ink, 5); marker("a-res", res, 3.2);
   NET.forEach((col, i) => marker("a-net" + i, col, 3.2));
   const line = (pts, col, mk, w = 1.5, dash = "") => `<polyline points="${pts.map((p) => p.join(",")).join(" ")}" fill="none" stroke="${col}" stroke-width="${w}"${dash ? ` stroke-dasharray="${dash}"` : ""}${mk ? ` marker-end="url(#${mk})"` : ""}/>`;
-  const text = (x, y, str, col, size = 10.5, anchor = "middle") => `<text x="${x}" y="${y}" fill="${col}" font-size="${size}" text-anchor="${anchor}" font-family="STIX Two Text, Times New Roman, serif" paint-order="stroke" stroke="${bg}" stroke-width="3" stroke-linejoin="round">${str}</text>`;
+  const text = (x, y, str, col, size = 10.5, anchor = "middle") => `<text x="${x}" y="${y}" fill="${col}" font-size="${size * FS}" text-anchor="${anchor}" font-family="STIX Two Text, Times New Roman, serif" paint-order="stroke" stroke="${bg}" stroke-width="3" stroke-linejoin="round">${str}</text>`;
   let labels = "";
   const box = (x, y, col, label, dashed) => `<rect x="${x - BW / 2}" y="${y - BH / 2}" width="${BW}" height="${BH}" rx="3" fill="${bg}" stroke="${col}" stroke-width="1.5"${dashed ? ' stroke-dasharray="3,2"' : ""}/>` + text(x, y + 4, label, col, 11);
   const washCols = cols.filter((c) => c.wash), clCols = cols.filter((c) => !c.wash);
   const band = (cs, col, op, label) => {
     if (!cs.length) return;
     const x0 = cs[0].x - cs[0].w / 2 + 3, x1 = cs[cs.length - 1].x + cs[cs.length - 1].w / 2 - 3;
-    b += `<rect x="${x0}" y="${yBand}" width="${x1 - x0}" height="20" rx="4" fill="${col}" opacity="${op}"/>` + text((x0 + x1) / 2, yBand + 14, label, sec, 10.5);
+    b += `<rect x="${x0}" y="${yBand}" width="${x1 - x0}" height="22" rx="4" fill="${col}" opacity="${op}"/>` + text((x0 + x1) / 2, yBand + 15.5, label, sec, 9.5);
   };
   band(washCols, wash, 0.45, `washout: open loop on the data, N${sub("wash")} = ${Nw} steps`);
   band(clCols, inp, 0.18, "forecast: closed loop");
   b += text(14, yRes + 4, `${B("r")}${sub(0)} = ${B("0")}`, ink, 11, "start");
-  b += line([[52, yRes], [cols[0].x - R - 2, yRes]], ink, "u-ink");
+  b += line([[66, yRes], [cols[0].x - R - 2, yRes]], ink, "u-ink");
   const par = s.par, obsNote = s.nobs < s.N ? "[𝒪]" : "";
   const inLabel = (n, w) => (w ? `${B("u")}${sub(n)}` : `${B("\u0169")}${sub(n)}${obsNote}`) + (s.npar && s.pir ? `; ${B("p\u0303")}` : "");
   cols.forEach((c, i) => {
@@ -408,7 +410,7 @@ function drawUnfolded(s) {
       for (const o of [8, 4]) b += `<circle cx="${c.x + o}" cy="${yRes - o}" r="${R}" fill="${bg}" stroke="${ink}" stroke-width="1" opacity="${o === 8 ? 0.35 : 0.6}"/>`;
     }
     b += glyph(c.x, yRes, R, s.ind ? NET[0] : res, s.ind ? "a-net0" : "a-res", ink, bg);
-    labels += text(c.x + R + 4, yRes - R + 2, `${B("r")}${par ? subsup(n + 1, "(p)", 10.5) : sub(n + 1)}`, ink, 10.5, "start");
+    labels += text(c.x + R + 4, yRes - R + 2, `${B("r")}${par ? subsup(n + 1, "(p)", 10.5 * FS) : sub(n + 1)}`, ink, 10.5, "start");
     b += line([[c.x, yRes - R - 2], [c.x, yOut + BH / 2]], out, "u-out");
     const discarded = c.wash && n < Nw - 1;
     b += box(c.x, yOut, discarded ? mute : out, `${B("\u00fb")}${sub(n + 1)}`, discarded);
@@ -468,7 +470,7 @@ function drawArch(s) {
   const line = (pts, col, mk, w = 1.6, dash = "") =>
     `<polyline points="${pts.map((p) => p.join(",")).join(" ")}" fill="none" stroke="${col}" stroke-width="${w}" stroke-linejoin="miter"${dash ? ` stroke-dasharray="${dash}"` : ""}${mk ? ` marker-end="url(#${mk})"` : ""}/>`;
   const text = (x, yy, str, col, size = 10, anchor = "middle") =>
-    `<text x="${x}" y="${yy}" fill="${col}" font-size="${size}" text-anchor="${anchor}" font-family="STIX Two Text, Times New Roman, serif">${str}</text>`;
+    `<text x="${x}" y="${yy}" fill="${col}" font-size="${size * FS}" text-anchor="${anchor}" font-family="STIX Two Text, Times New Roman, serif">${str}</text>`;
   const brace = (x, y0, y1, w, col) => {
     const ym = (y0 + y1) / 2;
     body += `<path d="M${x},${y0} C${x + w},${y0} ${x},${ym} ${x + w},${ym} C${x},${ym} ${x + w},${y1} ${x},${y1}" fill="none" stroke="${col}" stroke-width="1.4"/>`;
@@ -478,7 +480,7 @@ function drawArch(s) {
     const yy = y(row) - C / 2;
     body += `<rect x="${x - CW / 2}" y="${yy}" width="${CW}" height="${C}" fill="${bg}" stroke="${col}" stroke-width="0.9"${dashed ? ' stroke-dasharray="2,1.5"' : ""}/>`;
     for (const h of hatches) body += `<rect x="${x - CW / 2 + 0.8}" y="${yy + 0.8}" width="${CW - 1.6}" height="${C - 1.6}" fill="url(#${h})"/>`;
-    if (label && C >= 6) body += text(x - CW / 2 - 3, y(row) + Math.min(3.5, C / 3), label, col, Math.min(9, C + 1), "end");
+    if (label && C >= 6) body += text(x - CW / 2 - 3, y(row) + Math.min(3.5, C / 3), label, col, Math.min(9, (C + 1) / FS), "end");
   };
   const windows = Array.from({ length: P }, (_, p) => [p * G - H, p * G + G + H - 1]);
   const reads = new Map();
@@ -506,14 +508,14 @@ function drawArch(s) {
     body += line([[xTip, yRes], [XRES - R, yRes]], inp, "a-inp");
     body += line([[XRES + R, yRes], [xOtip, yRes]], out, "a-out");
     // input bias: from above into a junction of the input arrow; dashed when the sparse Win gives it to a few units
-    const xBias = xTip + 24, stub = Math.min(14, Math.max(6, 0.8 * G * C));
+    const xBias = xTip + 30, stub = Math.min(14, Math.max(6, 0.8 * G * C));
     body += line([[xBias, yRes - stub], [xBias, yRes - 4]], ink, "", 1.1, s.win === "sparse" ? "2,2" : "");
     body += `<path d="M${xBias},${yRes - 4} l4,4 l-4,4 l-4,-4 z" fill="${bg}" stroke="${ink}" stroke-width="1.1"/>`;
     if (label || p === 0) body += text(xBias, yRes - stub - 3, `b${sub("in")}`, ink, 9);
-    const supP = ind ? sup(`(${p})`) : "";
+    const scr = (lo) => (ind ? subsup(lo, `(${p})`, 10 * FS) : sub(lo));   // patch superscript over the subscript
     if (label || p === 0) {
-      body += text((xTip + XRES - R) / 2 + 14, yRes - 4, `${B("W")}${sub("in")}${supP}`, inp, 10);
-      body += text((XRES + R + xOtip) / 2, yRes - 4, `${B("W")}${sub("out")}${supP}`, out, 10);
+      body += text((xTip + XRES - R) / 2 + 14, yRes - 4, `${B("W")}${scr("in")}`, inp, 10);
+      body += text((XRES + R + xOtip) / 2, yRes - 4, `${B("W")}${scr("out")}`, out, 10);
     }
     const col = ind ? NET[p % NET.length] : res;
     body += glyph(XRES, yRes, R, col, ind ? "a-net" + (p % NET.length) : "a-res", ink, bg);
@@ -541,7 +543,7 @@ function drawArch(s) {
   }
   let bottom = y(Math.max(...reads.keys())) + C / 2;
   if (s.read === "u") {                           // input skip: down, right, up into the readout arrow
-    const xb = xTip + 40, yLow = yRes + R + 16;
+    const xb = xTip + 46, yLow = yRes + R + 16;
     body += line([[xb, yRes], [xb, yLow], [xJoin, yLow], [xJoin, yRes + 1]], inp, "a-inp", 1.4, "4,3");
     const carried = s.npar && s.pir ? `; ${B("p̃")}` : "";
     body += text((xb + xJoin) / 2, yLow + 12, `input skip: ${B("W")}${sub("out")} reads [${B("r")}; ${B("ũ")}${sub("n")}${carried}]`, inp, 9);
