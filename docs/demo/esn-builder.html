@@ -139,10 +139,12 @@
       <div class="row"><span>Seed of the first realization</span> <input id="seed" type="number" step="1" min="0" value="0"></div>
       <div class="note">With more than one realization, <code>train()</code> trains each one in its own process and keeps the one with the lowest validation score.</div>
       <div class="row"><span>Input matrix</span> <div class="seg" role="radiogroup" aria-label="Input matrix">
-          <input type="radio" name="win" id="win-sparse" value="sparse" checked><label for="win-sparse">sparse</label>
+          <input type="radio" name="win" id="win-sparse" value="sparse"><label for="win-sparse">sparse</label>
+          <input type="radio" name="win" id="win-sdb" value="sparse_dense_bias" checked><label for="win-sdb">dense bias</label>
           <input type="radio" name="win" id="win-dense" value="dense"><label for="win-dense">dense</label>
         </div>
       </div>
+      <div class="note" id="winNote"></div>
     </div>
     <div class="panel">
       <h3>Hyperparameters</h3>
@@ -298,6 +300,11 @@ function syncControls() {
   for (const id of ["r-obs", "r-par", "r-pir", "r-read"]) $(id).classList.toggle("off", par);
   for (const id of ["nobs", "npar", "pir", "read-r", "read-u", "read-p"]) $(id).disabled = par;
   if (!par) { $("read-p").disabled = +$("npar").value === 0; $("pir").disabled = +$("npar").value === 0; }
+  $("winNote").innerHTML = {
+    sparse: "Each unit reads one column of [ũ; b<sub>in</sub>], so only about one unit in N<sub>in</sub> + 1 sees the input bias. The other units are odd in the input, r(−ũ) ≈ −r(ũ), and the network can learn a mirror image of the attractor (Herteux &amp; Räth 2020). This is the class default.",
+    sparse_dense_bias: "Each unit reads one input column, and every unit sees the input bias (<code>Win_type='sparse_dense_bias'</code>). The bias breaks the odd symmetry of the tanh reservoir in every unit, r(−ũ) ≠ −r(ũ), so the network cannot fit a mirror image of the attractor (Herteux &amp; Räth 2020).",
+    dense: "Every unit reads every input column and the bias.",
+  }[radio("win")];
   $("inNote").textContent = par ? "The parallel layout reads and forecasts every site, without parameters or input skip." : "";
   for (const [k, ids] of [["rho", ["lo-rho", "hi-rho", "v-rho"]], ["sigma", ["lo-sigma", "hi-sigma", "v-sigma"]],
     ["tikh", ["g-tikh", "v-tikh"]], ["alpha", ["lo-alpha", "hi-alpha", "v-alpha"]]]) {
@@ -389,8 +396,14 @@ function drawUnfolded(s) {
     }
     const n = c.n, first = i === 0;
     // input, reservoir, output
-    b += box(c.x, yIn, c.wash ? dat : inp, inLabel(n, c.wash));
-    b += line([[c.x, yIn - BH / 2], [c.x, yRes + R + 2]], inp, "u-inp");
+    if (c.wash) {
+      b += box(c.x, yIn, dat, inLabel(n, true));
+      b += line([[c.x, yIn - BH / 2], [c.x, yRes + R + 2]], inp, "u-inp");
+    }
+    const yB = yRes + R + 22;                     // input bias: from the right into a junction of the input arrow
+    b += line([[c.x + 16, yB], [c.x + 4, yB]], ink, "", 1.1, s.win === "sparse" ? "2,2" : "");
+    b += `<path d="M${c.x},${yB - 4} l4,4 l-4,4 l-4,-4 z" fill="${bg}" stroke="${ink}" stroke-width="1.1"/>`;
+    if (first) labels += text(c.x + 18, yB + 3, `b${sub("in")}`, ink, 10, "start");
     if (par) {
       for (const o of [8, 4]) b += `<circle cx="${c.x + o}" cy="${yRes - o}" r="${R}" fill="${bg}" stroke="${ink}" stroke-width="1" opacity="${o === 8 ? 0.35 : 0.6}"/>`;
     }
@@ -408,15 +421,15 @@ function drawUnfolded(s) {
     // input skip: left, up, right into the readout arrow (the arrow rotated with the column)
     if (s.read === "u") {
       const xs = c.x - BW / 2 - 8, yj = (yRes - R + yOut + BH / 2) / 2;
-      b += line([[c.x - BW / 2, yIn], [xs, yIn], [xs, yj], [c.x - 1, yj]], inp, "u-inp", 1.1, "3,2");
+      b += line([[c.wash ? c.x - BW / 2 : c.x - 1, yIn], [xs, yIn], [xs, yj], [c.x - 1, yj]], inp, "u-inp", 1.1, "3,2");
     }
     // closed loop: the forecast is the next input
     if (next && (!c.wash || n === Nw - 1)) {
       const xv = c.x + BW / 2 + 9;
       if (next.n === null) b += line([[c.x + BW / 2, yOut], [next.x - 12, yOut]], inp, "", 1.5, "3,2");
-      else {                                      // right, down, right, up into the bottom of the next input
+      else {                                      // right, down, right, up into the bottom of the next reservoir
         const yLow = yIn + BH / 2 + 12;
-        b += line([[c.x + BW / 2, yOut], [xv, yOut], [xv, yLow], [next.x, yLow], [next.x, yIn + BH / 2 + 1]], inp, "u-inp");
+        b += line([[c.x + BW / 2, yOut], [xv, yOut], [xv, yLow], [next.x, yLow], [next.x, yRes + R + 2]], inp, "u-inp");
       }
     }
     labels += text(c.x, yIn + BH / 2 + 30, `n = ${n}`, sec, 10.5);
@@ -492,6 +505,11 @@ function drawArch(s) {
     [xOtip] = brace(XOUT - CW / 2 - 3, y(p * G) - C / 2, y(p * G + G - 1) + C / 2, -6, out);
     body += line([[xTip, yRes], [XRES - R, yRes]], inp, "a-inp");
     body += line([[XRES + R, yRes], [xOtip, yRes]], out, "a-out");
+    // input bias: from above into a junction of the input arrow; dashed when the sparse Win gives it to a few units
+    const xBias = xTip + 24, stub = Math.min(14, Math.max(6, 0.8 * G * C));
+    body += line([[xBias, yRes - stub], [xBias, yRes - 4]], ink, "", 1.1, s.win === "sparse" ? "2,2" : "");
+    body += `<path d="M${xBias},${yRes - 4} l4,4 l-4,4 l-4,-4 z" fill="${bg}" stroke="${ink}" stroke-width="1.1"/>`;
+    if (label || p === 0) body += text(xBias, yRes - stub - 3, `b${sub("in")}`, ink, 9);
     const supP = ind ? sup(`(${p})`) : "";
     if (label || p === 0) {
       body += text((xTip + XRES - R) / 2 + 14, yRes - 4, `${B("W")}${sub("in")}${supP}`, inp, 10);
@@ -523,7 +541,7 @@ function drawArch(s) {
   }
   let bottom = y(Math.max(...reads.keys())) + C / 2;
   if (s.read === "u") {                           // input skip: down, right, up into the readout arrow
-    const xb = xTip + 30, yLow = yRes + R + 16;
+    const xb = xTip + 40, yLow = yRes + R + 16;
     body += line([[xb, yRes], [xb, yLow], [xJoin, yLow], [xJoin, yRes + 1]], inp, "a-inp", 1.4, "4,3");
     const carried = s.npar && s.pir ? `; ${B("p̃")}` : "";
     body += text((xb + xJoin) / 2, yLow + 12, `input skip: ${B("W")}${sub("out")} reads [${B("r")}; ${B("ũ")}${sub("n")}${carried}]`, inp, 9);
@@ -583,8 +601,8 @@ function equations(s) {
   const win = s.periodic ? "taken modulo N on the periodic domain" : "zero outside the domain";
   blocks.push(["Reservoir", upd + (par ? String.raw`,\qquad p = 0,\dots,${P - 1}` : ""),
     (par ? `in which 𝓘<sup>(p)</sup> = {pG − H, …, pG + G + H − 1} is the window of patch p (G = ${s.G}, H = ${s.H}), ${win}; ` : "")
-    + `<b>r</b>${par ? "<sup>(p)</sup>" : ""} has ${s.Nu} units; <b>W</b><sub>in</sub>${ind ? "<sup>(p)</sup>" : ""} is ${s.Nu} × ${s.nin + 1} (${s.win}`
-    + `${s.win === "sparse" && s.npar && !par ? ", dense on the parameter columns" : ""}); <b>W</b>${ind ? "<sup>(p)</sup>" : ""} is ${s.Nu} × ${s.Nu} with about ${s.connect} connections per unit, scaled to unit spectral radius; `
+    + `<b>r</b>${par ? "<sup>(p)</sup>" : ""} has ${s.Nu} units; <b>W</b><sub>in</sub>${ind ? "<sup>(p)</sup>" : ""} is ${s.Nu} × ${s.nin + 1} (${{ sparse: "sparse: one column per unit, so about one unit in " + (s.nin + 1) + " sees b<sub>in</sub>", sparse_dense_bias: "sparse with a dense bias column: one input column per unit, and b<sub>in</sub> in every unit", dense: "dense" }[s.win]}`
+    + `${s.win !== "dense" && s.npar && !par ? ", dense on the parameter columns" : ""}); <b>W</b>${ind ? "<sup>(p)</sup>" : ""} is ${s.Nu} × ${s.Nu} with about ${s.connect} connections per unit, scaled to unit spectral radius; `
     + `b<sub>in</sub> = 0.1` + (plain ? "; α = 1 is the plain update." : ".")
     + (s.npar && !s.pir ? " The parameter columns of <b>W</b><sub>in</sub> are zero." : "")]);
   // readout

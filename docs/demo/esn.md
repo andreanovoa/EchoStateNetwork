@@ -57,12 +57,18 @@ the state), the number of physical parameters appended to the input
 (`readout_input`), and the level of the noise added to the training inputs (`noise`).
 
 **Reservoir.** The number of units of each reservoir (`N_units`), the number of
-connections per unit (`connect`), whether the input matrix is sparse or dense
-(`Win_type`), and the number of realizations of the random matrices,
+connections per unit (`connect`), the input matrix (`Win_type`), and the number of realizations of the random matrices,
 $\mathbf{W}_\mathrm{in}$ and $\mathbf{W}$, with the seed of the first one
 (`train(n_seeds=...)`, `seed`). With more than one realization, `train()` trains every
 realization in its own process, with its own hyperparameter search, and keeps the
-realization with the lowest validation score.
+realization with the lowest validation score. The sparse input matrix
+(`'sparse'`, the class default) connects each unit to one column of
+$[\tilde{\bm u}_n;\, b_\mathrm{in}]$, so only about one unit in $N_\mathrm{in}+1$ sees
+the input bias. The other units are odd in the input, because the tanh is odd, and a
+reservoir of such units can learn a mirror image of the attractor (Herteux & Räth,
+2020). The dense bias column (`'sparse_dense_bias'`) keeps one input column per unit
+but gives the bias to every unit, which breaks this symmetry, so the builder selects
+it by default. The dense matrix (`'dense'`) connects every unit to every column.
 
 **Hyperparameters.** For each of the spectral radius, $\rho$, the input scaling,
 $\sigma_\mathrm{in}$, the Tikhonov factor, $\beta$, and the leak rate, $\alpha$: either a
@@ -90,7 +96,8 @@ site. Each brace marks the window that a reservoir reads. With the parallel layo
 cell is hatched with the pattern of each reservoir that reads or forecasts it, and the
 windows of the first and last patches wrap around a periodic domain (dashed copies of the
 sites) or read zeros outside a non-periodic one (grey cells). Unobserved sites are grey.
-Parameters enter from above, in orange, at a junction of the input arrow or directly into
+The input bias, $b_\mathrm{in}$, joins each input arrow from above at a junction,
+dashed when the sparse input matrix gives it to only a few units. Parameters enter from above, in orange, at a junction of the input arrow or directly into
 the readout arrow. The arrow that leaves the input arrow downwards and enters the readout
 arrow from below is the input skip, the loop above a reservoir marks a leak rate below one,
 and independent patches draw their networks in different colours.
@@ -135,5 +142,7 @@ the parallel layout on the Kuramoto–Sivashinsky equation.
 - Pathak, J., Hunt, B., Girvan, M., Lu, Z., & Ott, E. (2018). Model-free prediction of
   large spatiotemporally chaotic systems from data: a reservoir computing approach.
   *Physical Review Letters*, 120, 024102.
+- Herteux, J., & Räth, C. (2020). Breaking symmetries of the reservoir equations in
+  echo state networks. *Chaos*, 30, 123142.
 - Racca, A., & Magri, L. (2021). Robust optimization and validation of echo state
   networks for learning chaotic dynamics. *Neural Networks*, 142, 252–268.
