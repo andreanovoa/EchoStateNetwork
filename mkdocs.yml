@@ -31,10 +31,14 @@ markdown_extensions:
       generic: true
 
 extra_javascript:
+  - js/mathjax.js
   - https://unpkg.com/mathjax@3/es5/tex-mml-chtml.js
 
 plugins:
   - search
+  - mkdocs-jupyter:            # the executed notebooks, rendered as they are (never re-run)
+      execute: false
+      include: ["tutorials/*.ipynb"]
   - mkdocstrings:
       handlers:
         python:
@@ -54,9 +58,9 @@ nav:
   - "Live demo: building an ESN": demo/esn.md
   - API reference: api/esn.md
   - Tutorial notebooks:
-      - EchoStateNetwork class: https://github.com/andreanovoa/EchoStateNetwork/blob/master/tutorials/01_echo_state_network.ipynb
-      - Parametric ESN: https://github.com/andreanovoa/EchoStateNetwork/blob/master/tutorials/02_parametric_esn.ipynb
-      - Leaky-integrator ESN: https://github.com/andreanovoa/EchoStateNetwork/blob/master/tutorials/03_leaky_esn.ipynb
-      - Validation strategies: https://github.com/andreanovoa/EchoStateNetwork/blob/master/tutorials/04_validation_strategies.ipynb
-      - Parallel ESN on Kuramoto–Sivashinsky: https://github.com/andreanovoa/EchoStateNetwork/blob/master/tutorials/05_parallel_esn_kuramoto_sivashinsky.ipynb
-      - Architectures of the ESN: https://github.com/andreanovoa/EchoStateNetwork/blob/master/tutorials/06_esn_architectures.ipynb
+      - EchoStateNetwork class: tutorials/01_echo_state_network.ipynb
+      - Parametric ESN: tutorials/02_parametric_esn.ipynb
+      - Leaky-integrator ESN: tutorials/03_leaky_esn.ipynb
+      - Validation strategies: tutorials/04_validation_strategies.ipynb
+      - Parallel ESN on Kuramoto–Sivashinsky: tutorials/05_parallel_esn_kuramoto_sivashinsky.ipynb
+      - Architectures of the ESN: tutorials/06_esn_architectures.ipynb

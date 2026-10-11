@@ -126,15 +126,15 @@ validation runs per evaluation and in total, which set the cost of `train()`.
 ## Where to go next
 
 The tutorials train each architecture on data:
-[tutorial 01](https://github.com/andreanovoa/EchoStateNetwork/blob/master/tutorials/01_echo_state_network.ipynb)
+[tutorial 01](../tutorials/01_echo_state_network.ipynb)
 a single reservoir with full and partial observation,
-[tutorial 02](https://github.com/andreanovoa/EchoStateNetwork/blob/master/tutorials/02_parametric_esn.ipynb)
+[tutorial 02](../tutorials/02_parametric_esn.ipynb)
 a parametric network,
-[tutorial 03](https://github.com/andreanovoa/EchoStateNetwork/blob/master/tutorials/03_leaky_esn.ipynb)
+[tutorial 03](../tutorials/03_leaky_esn.ipynb)
 a leaky integrator,
-[tutorial 04](https://github.com/andreanovoa/EchoStateNetwork/blob/master/tutorials/04_validation_strategies.ipynb)
+[tutorial 04](../tutorials/04_validation_strategies.ipynb)
 the validation strategies, and
-[tutorial 05](https://github.com/andreanovoa/EchoStateNetwork/blob/master/tutorials/05_parallel_esn_kuramoto_sivashinsky.ipynb)
+[tutorial 05](../tutorials/05_parallel_esn_kuramoto_sivashinsky.ipynb)
 the parallel layout on the Kuramoto–Sivashinsky equation.
 
 ## References

@@ -34,7 +34,7 @@ observed data) followed by closed-loop prediction is shown end to end in the
 
 Pass `input_parameters` (shape `(N_param, L)`, one parameter vector per training
 segment) to condition the reservoir on a physical parameter — see the
-[parametric ESN tutorial](https://github.com/andreanovoa/EchoStateNetwork/blob/master/tutorials/02_parametric_esn.ipynb).
+[parametric ESN tutorial](tutorials/02_parametric_esn.ipynb).
 
 ## Parallel ESN
 

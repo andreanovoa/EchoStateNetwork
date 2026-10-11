@@ -21,7 +21,7 @@ where $\tilde{\mathbf{u}} = (\mathbf{u} - \texttt{shift}) / \texttt{norm}$ is
 the shift-and-scale normalized input (set from the training data range by
 default), $b_\mathrm{in}, b_\mathrm{out}$ are symmetry-breaking biases, and
 $\alpha$ = `leak_rate` (the default $\alpha = 1$ is the plain tanh update; see
-the [leaky-ESN tutorial](https://github.com/andreanovoa/EchoStateNetwork/blob/master/tutorials/03_leaky_esn.ipynb)).
+the [leaky-ESN tutorial](tutorials/03_leaky_esn.ipynb)).
 The hyperparameters that matter are the effective spectral radius `rho`, the
 input scaling `sigma_in`, and the Tikhonov regularization `tikh` — all three
 selected by validation (below).
@@ -29,7 +29,7 @@ selected by validation (below).
 For a *parametric* ESN, `input_parameters` appends parameter columns to the
 input, densely connected through $\mathbf{W}_\mathrm{in}$ — one reservoir
 conditioned on a physical parameter
-([tutorial 02](https://github.com/andreanovoa/EchoStateNetwork/blob/master/tutorials/02_parametric_esn.ipynb)).
+([tutorial 02](tutorials/02_parametric_esn.ipynb)).
 With partial observability, `observed_idx` selects which components of the
 full state are fed back as inputs.
 
@@ -60,7 +60,7 @@ and runs four steps:
     ![Bayesian hyperparameter search landscape](img/bho_landscape.png)
 
     *Validation-error landscape over `(rho, sigma_in)` from
-    [tutorial 01](https://github.com/andreanovoa/EchoStateNetwork/blob/master/tutorials/01_echo_state_network.ipynb):
+    [tutorial 01](tutorials/01_echo_state_network.ipynb):
     markers are the evaluated points (initial grid + gp-hedge acquisitions),
     the star the selected optimum. `plot_training=True` produces this figure.*
 4. **Solve** the ridge regression for $\mathbf{W}_\mathrm{out}$ on the full
@@ -118,6 +118,6 @@ metric across components use `compute_nMAE(Y_true, Y_pred, norm=...)`, the
 range-normalized mean absolute error used throughout training and validation.
 
 See the
-[EchoStateNetwork tutorial](https://github.com/andreanovoa/EchoStateNetwork/blob/master/tutorials/01_echo_state_network.ipynb)
+[EchoStateNetwork tutorial](tutorials/01_echo_state_network.ipynb)
 for the full workflow on Lorenz 63, and the
 [API reference](api/esn.md) for every attribute and method.

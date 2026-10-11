@@ -16,23 +16,23 @@ bias-aware data assimilation).
 
 ## Tutorials
 
-- [The EchoStateNetwork class](https://github.com/andreanovoa/EchoStateNetwork/blob/master/tutorials/01_echo_state_network.ipynb)
+- [The EchoStateNetwork class](tutorials/01_echo_state_network.ipynb)
   — train an ESN on the Lorenz 63 system, with full and partial observability.
-- [Parametric ESN](https://github.com/andreanovoa/EchoStateNetwork/blob/master/tutorials/02_parametric_esn.ipynb)
+- [Parametric ESN](tutorials/02_parametric_esn.ipynb)
   — one reservoir conditioned on a physical parameter, forecasting at unseen
   parameter values.
-- [Leaky-integrator ESN](https://github.com/andreanovoa/EchoStateNetwork/blob/master/tutorials/03_leaky_esn.ipynb)
+- [Leaky-integrator ESN](tutorials/03_leaky_esn.ipynb)
   — the leak-rate hyperparameter and when it helps.
-- [Validation strategies](https://github.com/andreanovoa/EchoStateNetwork/blob/master/tutorials/04_validation_strategies.ipynb)
+- [Validation strategies](tutorials/04_validation_strategies.ipynb)
   — SSV/WFV/KFV/recycle validation compared live on Lorenz 63, including
   seeded ensembles with `train(n_seeds=...)`; see also
   [Validation strategies](validation.md).
-- [Parallel ESN on Kuramoto–Sivashinsky](https://github.com/andreanovoa/EchoStateNetwork/blob/master/tutorials/05_parallel_esn_kuramoto_sivashinsky.ipynb)
+- [Parallel ESN on Kuramoto–Sivashinsky](tutorials/05_parallel_esn_kuramoto_sivashinsky.ipynb)
   — a global network, a parallel network with shared matrices and a local
   network with independent patches, compared on closed-loop forecasts,
   long-term statistics and training cost; see also
   [Parallel echo state network](parallel.md).
-- [Architectures of the ESN](https://github.com/andreanovoa/EchoStateNetwork/blob/master/tutorials/06_esn_architectures.ipynb)
+- [Architectures of the ESN](tutorials/06_esn_architectures.ipynb)
   — drawings of the architectures that the constructor keywords build (inputs,
   parameters, input skip, leak rate, parallel layout, hyperparameter search),
   as a gallery and as an interactive explorer.

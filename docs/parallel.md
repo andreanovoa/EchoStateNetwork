@@ -21,7 +21,7 @@ side, `periodic` the treatment of the domain boundaries, and `shared` whether th
 patches share their matrices and hyperparameters (the default) or are
 independent. Without `patch_size` (the default, `None`), the network has one
 reservoir. The
-[Kuramoto–Sivashinsky tutorial](https://github.com/andreanovoa/EchoStateNetwork/blob/master/tutorials/05_parallel_esn_kuramoto_sivashinsky.ipynb)
+[Kuramoto–Sivashinsky tutorial](tutorials/05_parallel_esn_kuramoto_sivashinsky.ipynb)
 compares a global network, a parallel network with shared matrices and a local
 network with independent patches.
 

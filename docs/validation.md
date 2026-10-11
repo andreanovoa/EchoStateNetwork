@@ -55,7 +55,7 @@ that selection rule: the kept member consistently lands in the ensemble's best
 half on test error, usually the best quarter.
 
 See the
-[validation strategies tutorial](https://github.com/andreanovoa/EchoStateNetwork/blob/master/tutorials/04_validation_strategies.ipynb)
+[validation strategies tutorial](tutorials/04_validation_strategies.ipynb)
 for a live comparison on Lorenz 63.
 
 ## Reference
