@@ -38,8 +38,9 @@
     margin: 0; padding: 16px; background: var(--plane); color: var(--text-primary);
     font: 14px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
   }
-  .layout { display: grid; grid-template-columns: 350px minmax(0, 1fr); gap: 14px; align-items: start; }
-  @media (max-width: 900px) { .layout { grid-template-columns: minmax(0, 1fr); } }
+  .layout { display: grid; grid-template-columns: minmax(0, 1fr); gap: 14px; }
+  .controls { columns: 310px; column-gap: 14px; }   /* the controls sit in columns above the figures */
+  .controls > .panel { break-inside: avoid; margin: 0 0 14px; }
   .panel { background: var(--surface-1); border: 1px solid var(--border); border-radius: 10px; padding: 14px; }
   .stack { display: grid; gap: 14px; align-content: start; }
   h2 { font-size: 15px; margin: 0 0 2px; font-weight: 600; }
@@ -61,10 +62,10 @@
   .seg input:checked + label { background: var(--accent); color: #fff; }
   .seg input:focus-visible + label { outline: 2px solid var(--accent); outline-offset: -2px; }
   .seg input:disabled + label { cursor: not-allowed; opacity: .5; }
-  .hp { display: grid; grid-template-columns: 44px 1fr; gap: 3px 8px; align-items: center; font-size: 12.5px; margin: 10px 0; color: var(--text-secondary); }
+  .hp { display: grid; grid-template-columns: 38px 1fr; gap: 3px 6px; align-items: center; font-size: 12.5px; margin: 10px 0; color: var(--text-secondary); }
   .hp .sym { grid-row: span 2; color: var(--text-primary); font-weight: 600; }
   .hp label { display: flex; gap: 4px; align-items: center; flex-wrap: wrap; }
-  .hp input[type=number], .hp input[type=text] { width: 58px; padding: 4px 7px; }
+  .hp input[type=number], .hp input[type=text] { width: 54px; padding: 4px 6px; }
   .hp input[type=number] { -moz-appearance: textfield; appearance: textfield; }
   .hp input[type=number]::-webkit-inner-spin-button, .hp input[type=number]::-webkit-outer-spin-button { -webkit-appearance: none; margin: 0; }
   .hp input.wide { flex: 1; min-width: 150px; }
@@ -92,7 +93,7 @@
 </head>
 <body>
 <div class="layout" id="app">
-  <aside class="stack">
+  <aside class="controls">
     <div class="panel">
       <h3>Data</h3>
       <div class="row"><span>Sites (state size), N<sub>dim</sub></span> <b id="NdimV"></b><input id="Ndim" type="range" min="2" max="64" step="1" value="12"></div>
