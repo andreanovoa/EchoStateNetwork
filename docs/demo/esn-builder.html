@@ -138,7 +138,6 @@
       <div class="row"><span>Connections per unit (<code>connect</code>)</span> <input id="connect" type="number" step="1" min="1" value="3"></div>
       <div class="row"><span>Realizations of W<sub>in</sub> and W, <code>n_seeds</code></span> <input id="nseeds" type="number" step="1" min="1" value="1"></div>
       <div class="row"><span>Seed of the first realization</span> <input id="seed" type="number" step="1" min="0" value="0"></div>
-      <div class="note">With more than one realization, <code>train()</code> trains each one in its own process and keeps the one with the lowest validation score.</div>
       <div class="row"><span>Input matrix</span> <div class="seg" role="radiogroup" aria-label="Input matrix">
           <input type="radio" name="win" id="win-sparse" value="sparse"><label for="win-sparse">sparse</label>
           <input type="radio" name="win" id="win-sdb" value="sparse_dense_bias" checked><label for="win-sdb">dense bias</label>
@@ -301,11 +300,6 @@ function syncControls() {
   for (const id of ["r-obs", "r-par", "r-pir", "r-read"]) $(id).classList.toggle("off", par);
   for (const id of ["nobs", "npar", "pir", "read-r", "read-u", "read-p"]) $(id).disabled = par;
   if (!par) { $("read-p").disabled = +$("npar").value === 0; $("pir").disabled = +$("npar").value === 0; }
-  $("winNote").innerHTML = {
-    sparse: "Each unit reads one column of [ũ; b<sub>in</sub>], so only about one unit in N<sub>in</sub> + 1 sees the input bias. The other units are odd in the input, r(−ũ) ≈ −r(ũ), and the network can learn a mirror image of the attractor (Herteux &amp; Räth 2020). This is the class default.",
-    sparse_dense_bias: "Each unit reads one input column, and every unit sees the input bias (<code>Win_type='sparse_dense_bias'</code>). The bias breaks the odd symmetry of the tanh reservoir in every unit, r(−ũ) ≠ −r(ũ), so the network cannot fit a mirror image of the attractor (Herteux &amp; Räth 2020).",
-    dense: "Every unit reads every input column and the bias.",
-  }[radio("win")];
   $("inNote").textContent = par ? "The parallel layout reads and forecasts every site, without parameters or input skip." : "";
   for (const [k, ids] of [["rho", ["lo-rho", "hi-rho", "v-rho"]], ["sigma", ["lo-sigma", "hi-sigma", "v-sigma"]],
     ["tikh", ["g-tikh", "v-tikh"]], ["alpha", ["lo-alpha", "hi-alpha", "v-alpha"]]]) {
