@@ -2,6 +2,7 @@
 
 [![DOI](https://img.shields.io/badge/DOI-10.5281%2Fzenodo.23266679-blue.svg)](https://doi.org/10.5281/zenodo.23266679)
 [![PyPI](https://img.shields.io/pypi/v/echostatenetwork)](https://pypi.org/project/echostatenetwork/)
+[![Docs](https://img.shields.io/badge/docs-latest-blue)](https://andreanovoa.github.io/EchoStateNetwork/)
 
 Echo state networks / reservoir computing in pure numpy. One class,
 `EchoStateNetwork`: ridge-regression training with chaotic recycle validation
@@ -14,8 +15,8 @@ reservoir row, which covariance localization requires; see the
 [parallel ESN page](https://andreanovoa.github.io/EchoStateNetwork/parallel/).
 
 This is the single shared reservoir core behind
-[`qlrom`](https://github.com/andreanovoa/qlrom) (quantized-local ESN families) and
-[`romda`](https://github.com/andreanovoa/romda) (real-time ESN forecasting and
+[`qlroms`](https://andreanovoa.github.io/qlroms-docs/) (quantized-local ESN families) and
+[`romda`](https://github.com/andreanovoa/real-time-bias-aware-DA) (real-time ESN forecasting and
 bias-aware data assimilation).
 
 Documentation: <https://andreanovoa.github.io/EchoStateNetwork/>
