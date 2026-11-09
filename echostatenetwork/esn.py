@@ -223,6 +223,9 @@ class EchoStateNetwork:
     leak_rate_range = (0.1, 1.0)
 
     # Dense parameter columns can swamp the reservoir if the raw values are not rescaled.
+    # optimize_parameter_normalization: True searches the shift and scale of every parameter column with the other
+    # hyperparameters (param_shift_range, param_norm_range); 'data' normalizes them like the state (norm_method over
+    # the training values), before the search; False leaves them raw.
     optimize_parameter_normalization = False
     param_shift_range = (-1.0, 1.0)
     param_norm_range = (0.1, 10.0)
@@ -1944,14 +1947,22 @@ class EchoStateNetwork:
             # search already tuned them: re-formatting after train() (e.g. to slice
             # validation data) must not clobber the tuned values and leave a raw
             # parameter swamping the reservoir.
-            if (self.optimize_parameter_normalization and getattr(self, '_norm', None) is not None
+            mode = self.optimize_parameter_normalization
+            if isinstance(mode, str) and mode == 'data':
+                # the parameter columns normalized like the state (norm_method over the training values), before
+                # the search: sigma_in then scales state and parameters alike, and the search keeps its dimensions
+                params = (np.concatenate([u[:, N_obs:] for u in U_wtv], axis=0) if is_ragged
+                          else np.asarray(U_wtv)[..., N_obs:N_obs + N_param])
+                norm_param, shift_param = (np.ravel(v) for v in EchoStateNetwork._set_norm(
+                    np.reshape(params, (1, -1, N_param)), method=self.norm_method))
+            elif (mode and getattr(self, '_norm', None) is not None
                     and self._norm.size == N_obs + N_param):
                 norm_param, shift_param = self._norm[-N_param:], self._shift[-N_param:]
             else:
                 norm_param, shift_param = np.ones(N_param), np.zeros(N_param)
             norm_obs = np.concatenate([norm_obs, norm_param])
             shift_obs = np.concatenate([shift_obs, shift_param])
-            if self.optimize_parameter_normalization:
+            if mode and not isinstance(mode, str):
                 # tune shift/norm per parameter via the same BO loop as rho/sigma_in/tikh,
                 # instead of leaving them fixed at identity (see class docstring above).
                 # Size param_shift_range/param_norm_range from the real, final

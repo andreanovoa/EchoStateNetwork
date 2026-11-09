@@ -753,3 +753,18 @@ def test_stability_starts_cover_every_segment_evenly():
     assert [l for l, _ in validation._stability_starts(Case, U)] == [0, 2, 4]
     Case.stability_starts = 7
     assert [l for l, _ in validation._stability_starts(Case, U)] == list(range(7))
+
+
+def test_parameter_columns_normalized_like_the_state():
+    """optimize_parameter_normalization='data': the parameter columns take the shift and scale of norm_method over
+    the training values, and the search keeps its own hyperparameters only."""
+    rng = np.random.default_rng(2)
+    data = rng.normal(size=(3, 80, 2))
+    esn = EchoStateNetwork(data[0].T, dt=1, N_units=20, upsample=1, t_train=50, t_val=10, t_test=10, N_wash=5,
+                           hyperparameters_to_optimize=['rho'], N_grid=2, N_func_evals=2, N_folds=2, seed=0,
+                           input_parameters=np.array([[2.0, 4.0, 8.0]]), optimize_parameter_normalization='data',
+                           norm_method='range')
+    esn.train(data, plot_training=False)
+    np.testing.assert_allclose(esn.norm[-1], 6.0)                 # range of the training values, 8 - 2
+    np.testing.assert_allclose(esn.shift[-1], 14.0 / 3)           # their mean (equal segments)
+    assert esn.hyperparameters_to_optimize == ['rho']
