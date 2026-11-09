@@ -440,3 +440,50 @@ def test_errors_of_the_parallel_api():
     esn = _random_parallel(N_dim=8, patch_size=2, halo=1)
     with pytest.raises(ValueError, match='N_r'):
         esn.step(np.zeros((8, 1)), np.zeros((esn.N_units, 1)))
+
+
+@pytest.mark.parametrize('patch', [None, 2])
+def test_sigma_param_scales_the_parameter_columns(patch, tmp_path):
+    """sigma_param equal to sigma_in is the network without it; another value changes only the parameter input, and
+    the Jacobian (parameter columns included) matches finite differences; the value survives npz."""
+    kw = dict(N_dim=8, patch_size=patch, halo=1 if patch else 0, input_parameters=np.array([[0.5]]))
+    if patch is None:
+        kw.pop('patch_size'); kw.pop('halo')
+        esn = EchoStateNetwork(np.zeros((8, 1)), dt=1, N_units=10, upsample=1, seed=0, sigma_in=0.5,
+                               input_parameters=np.array([[0.5]]))
+        esn._generate_W_Win(seed=0)
+        esn.Wout = np.random.default_rng(0).normal(size=(11, 8))
+    else:
+        esn = _random_parallel(**kw)
+    rng = np.random.default_rng(3)
+    esn.norm, esn.shift = rng.uniform(0.5, 2.0, 9), rng.normal(size=9)
+    u, r = rng.normal(size=(9, 2)), 0.1 * rng.normal(size=(esn.N_r, 2))
+    base = esn.step(u, r)
+    esn.sigma_param = esn.sigma_in
+    for a, b in zip(esn.step(u, r), base):
+        np.testing.assert_allclose(a, b, rtol=1e-12, atol=1e-14)
+    esn.sigma_param = 2.0
+    assert not np.allclose(esn.step(u, r)[1], base[1])
+    J = esn.Jacobian(u, r)
+    eps, J_fd = 1e-5, np.zeros_like(J)
+    for j in range(9):
+        up, um = u.copy(), u.copy()
+        up[j] += eps
+        um[j] -= eps
+        J_fd[:, j] = (esn.step(up, r)[0] - esn.step(um, r)[0]) / (2 * eps)
+    np.testing.assert_allclose(J, J_fd, rtol=1e-6, atol=1e-8)
+    p = tmp_path / 'esn.npz'
+    np.savez_compressed(p, **esn.to_arrays())
+    assert EchoStateNetwork.from_arrays(np.load(p, allow_pickle=False)).sigma_param == 2.0
+
+
+def test_sigma_param_is_searched():
+    rng = np.random.default_rng(4)
+    data = rng.normal(size=(2, 120, 4)).cumsum(axis=1) * 0.1
+    esn = EchoStateNetwork(data[0].T, dt=1, N_units=20, upsample=1, t_train=80, t_val=20, t_test=20, N_wash=5,
+                           N_folds=2, N_grid=2, N_func_evals=8, seed=0, input_parameters=np.array([[0.0, 1.0]]),
+                           optimize_parameter_normalization='data', sigma_param_range=(-2, 0),
+                           hyperparameters_to_optimize=['rho', 'sigma_in', 'sigma_param', 'tikh'])
+    esn.train(data, plot_training=False)
+    assert esn.bo_results['hp_names'] == ['rho', 'sigma_in', 'sigma_param']
+    assert 10 ** -2 <= esn.sigma_param <= 1.0

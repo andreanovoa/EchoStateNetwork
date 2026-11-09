@@ -217,6 +217,10 @@ class EchoStateNetwork:
     rho_range = (.8, 1.05)
     sigma_in = 10 ** -3
     sigma_in_range = (-5, -1)
+    # sigma_param: the input scaling of the input_parameters columns of Win, searched (log10) over sigma_param_range
+    # like sigma_in when listed in hyperparameters_to_optimize; None scales them with sigma_in
+    sigma_param = None
+    sigma_param_range = (-3, 0.477)
     tikh = 1e-12
     tikh_range = [1e-8, 1e-10, 1e-12, 1e-16]
     leak_rate = 1.0
@@ -792,6 +796,9 @@ class EchoStateNetwork:
 
         Win_1 = self.Win[:, :self.N_dim_in]  # type: Union[csr_matrix, np.ndarray]
         g = self.sigma_in * 1.0 / norm
+        if self.sigma_param is not None and self.input_parameters is not None:
+            n_par = self._n_param(self.input_parameters)
+            g[self.N_dim_in - n_par:] = self.sigma_param / norm[self.N_dim_in - n_par:]
 
         if issparse(Win_1):
             # .multiply returns a COO matrix: convert back to CSR for efficient products
@@ -899,6 +906,14 @@ class EchoStateNetwork:
         # Augment input with bias
         bias_in = self.bias_in * np.ones((1, u_norm.shape[-1]))
         u_aug = np.concatenate((u_norm, bias_in))
+        if self.sigma_param is not None and self.input_parameters is not None:
+            # the parameter rows scaled by sigma_param instead of sigma_in (the product below applies sigma_in)
+            n_par = self._n_param(self.input_parameters)
+            first = self._n_in - n_par
+            ratio = np.asarray(self.sigma_param, dtype=float) / np.asarray(self.sigma_in, dtype=float)
+            if ratio.ndim and self.patch_size is not None:       # per-member values: the patches are columns
+                ratio = np.tile(ratio, self.N_patches)
+            u_aug[first:first + n_par] = u_aug[first:first + n_par] * ratio
 
         # Forecast the reservoir state (leaky-integrator; leak_rate=1 -> plain tanh)
         x_tanh = np.tanh(self.sigma_in * self.Win.dot(u_aug) + self.rho * self.W.dot(r))
@@ -1149,7 +1164,8 @@ class EchoStateNetwork:
         np.add.at(J, (rows, np.maximum(sites, 0)[:, np.newaxis, :]), blocks)
         if n_window < self._n_in:          # input_parameters: every patch reads them
             J[:, self.N_dim:] = np.einsum('jg,pjm,jk,k->pgkm', self.Wout[:self.N_units], tt,
-                                          self.sigma_in * Win_1[:, n_window:], 1. / self.norm[self.N_dim:],
+                                          (self.sigma_in if self.sigma_param is None else self.sigma_param)
+                                          * Win_1[:, n_window:], 1. / self.norm[self.N_dim:],
                                           optimize=True).reshape(self.N_dim, -1, N_ens)
         return J[..., 0] if N_ens == 1 else J
 
@@ -1349,6 +1365,7 @@ class EchoStateNetwork:
         else:
             data = f"{self.N_train}+{self.N_val} train+val steps, {s['n_test']} test"
         hp_names = ('rho', 'sigma_in', 'tikh') + \
+            (('sigma_param',) if self.sigma_param is not None else ()) + \
             (('leak_rate',) if self.leak_rate != 1.0 else ())
         hps = ', '.join(f'{name}={self._get_hyperparam(name):.3g}' for name in hp_names)
         # realized fold count of the last validation run (strategies may cap or
@@ -1395,6 +1412,7 @@ class EchoStateNetwork:
         out = dict(N_dim=self.N_dim, N_units=self.N_units, N_wash=self.N_wash,
                    upsample=self.upsample, seed=self.seed, dt_ESN=self.dt_ESN,
                    rho=self.rho, sigma_in=self.sigma_in, tikh=self.tikh,
+                   **({} if self.sigma_param is None else dict(sigma_param=self.sigma_param)),
                    leak_rate=self.leak_rate, noise=self.noise,
                    Win_type=self.Win_type, norm_method=self.norm_method,
                    noise_type=self.noise_type, readout_input=str(self.readout_input),
@@ -1451,6 +1469,7 @@ class EchoStateNetwork:
                   upsample=upsample, Win_type=s('Win_type'),
                   norm_method=s('norm_method'), noise_type=s('noise_type'),
                   noise=f('noise'), rho=f('rho'), sigma_in=f('sigma_in'),
+                  **({'sigma_param': f('sigma_param')} if 'sigma_param' in arrays else {}),
                   tikh=f('tikh'), leak_rate=f('leak_rate'),
                   observed_idx=np.asarray(arrays['observed_idx']),
                   input_parameters=ip,
@@ -2005,7 +2024,7 @@ class EchoStateNetwork:
         """
         N_obs = len(self.observed_idx)
         for hp, name in zip(params, names):
-            if name == 'sigma_in':
+            if name in ('sigma_in', 'sigma_param'):
                 setattr(self, name, 10 ** hp)
             elif name.startswith('param_shift_'):
                 self._shift[N_obs + int(name.removeprefix('param_shift_'))] = hp
