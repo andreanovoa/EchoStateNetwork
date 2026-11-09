@@ -42,13 +42,18 @@ def nMSE(case, Y_true, Y_pred, norm=None):
 
 
 def _stability_starts(case, U_wtv):
-    """(segment, step) of the `stability_starts` washouts of the stability gate: evenly spaced in every segment,
-    taken in turn from the segments (the first is the start of the first segment, the gate of a single start)."""
+    """(segment, step) of the `stability_starts` washouts of the stability gate. The starts are shared out evenly
+    over the segments that hold a washout (with fewer starts than segments, the segments are taken evenly over the
+    list, so the last regimes of a parametric network are tested too), evenly spaced within each segment, and taken
+    in turn from the segments; the first is the start of the first segment, the gate of a single start."""
     n = max(1, int(getattr(case, 'stability_starts', 1)))
-    per_segment = [[(l, int(p)) for p in np.linspace(0, len(U_l) - case.N_wash, -(-n // len(U_wtv)), endpoint=False)]
-                   if len(U_l) >= case.N_wash else [] for l, U_l in enumerate(U_wtv)]
-    order = [s for k in range(max(map(len, per_segment))) for seg in per_segment for s in seg[k:k + 1]]
-    return order[:n]
+    usable = [l for l, U_l in enumerate(U_wtv) if len(U_l) >= case.N_wash]
+    segment = [usable[i * len(usable) // n] for i in range(n)]         # segment of each start, evenly over the list
+    per_segment = {l: [(l, int(p)) for p in np.linspace(0, len(U_wtv[l]) - case.N_wash, segment.count(l),
+                                                         endpoint=False)] for l in dict.fromkeys(segment)}
+    order = [st for k in range(max(map(len, per_segment.values()))) for seg in per_segment.values()
+             for st in seg[k:k + 1]]
+    return order
 
 
 def unstable(case, U_wtv, Y_wtv, Wout_tik):

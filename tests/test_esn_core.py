@@ -741,3 +741,15 @@ def test_stability_gate_compares_each_loop_with_its_own_record():
     esn.stability_steps, esn.stability_starts = 200, 2
     assert [l for l, _ in validation._stability_starts(esn, U)] == [0, 1]
     assert validation.unstable(esn, U, Y, esn.Wout[None])[0] == 0.0
+
+
+def test_stability_starts_cover_every_segment_evenly():
+    """Fewer starts than segments: the starts are spread over the list of segments, not the first ones only."""
+    from echostatenetwork import validation
+
+    class Case:
+        N_wash, stability_starts = 5, 3
+    U = [np.zeros((50, 2))] * 7
+    assert [l for l, _ in validation._stability_starts(Case, U)] == [0, 2, 4]
+    Case.stability_starts = 7
+    assert [l for l, _ in validation._stability_starts(Case, U)] == list(range(7))
