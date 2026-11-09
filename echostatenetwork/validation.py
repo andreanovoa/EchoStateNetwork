@@ -58,18 +58,21 @@ def _stability_starts(case, U_wtv):
 
 def unstable(case, U_wtv, Y_wtv, Wout_tik):
     """1.0 for each Tikhonov candidate whose closed loop of `stability_steps` steps, after a washout, leaves the
-    attractor (non-finite, or beyond 3x the largest |y| of the data) or whose output standard deviations leave
-    `stability_band` times those of the record of its washout, from any of `stability_starts` washouts spread over
+    attractor (non-finite, or beyond 3x the largest |y| of the data) or whose standard deviation, the root mean square
+    over the outputs, leaves `stability_band` times that of the record of its washout, from any of `stability_starts` washouts spread over
     the records (`_stability_starts`; advanced together, as the columns of one ensemble); else 0.0. The gate of
     RVC_Noise. One start tests one trajectory only: a network that leaves the attractor from other states passes it.
     Each loop is compared with its own record: the records of a parametric network (one per regime) differ in
-    amplitude, so a band around the pooled records rejects correct loops."""
+    amplitude, so a band around the pooled records rejects correct loops. The band holds for the root mean square
+    over the outputs, not for every output: on a record of tens of Lyapunov times, the standard deviation of a single
+    output is uncertain by some ten per cent, and the worst of many outputs leaves a band of 20% around correct
+    loops."""
     Y = np.concatenate([np.asarray(y) for y in Y_wtv])
     bound = 3 * np.abs(Y).max()
     lo, hi = case.stability_band
     starts = _stability_starts(case, U_wtv)
-    std = np.stack([np.asarray(Y_wtv[l]).reshape(len(Y_wtv[l]), -1).std(axis=0) for l, _ in starts],
-                   axis=1)                                                # (N_dim, n_starts): the record of each start
+    rms = lambda y: np.sqrt(np.mean(np.var(y, axis=0), axis=0))         # RMS over the outputs of their std
+    std = np.array([rms(np.asarray(Y_wtv[l]).reshape(len(Y_wtv[l]), -1)) for l, _ in starts])   # (n_starts,)
     U_wash = np.stack([np.asarray(U_wtv[l])[p:p + case.N_wash].reshape(case.N_wash, -1) for l, p in starts],
                       axis=-1)                                              # (N_wash, N_dim_in, n_starts)
     original = case.input_parameters
@@ -90,7 +93,7 @@ def unstable(case, U_wtv, Y_wtv, Wout_tik):
                     out[j] = 1.0
                     break
             else:
-                ratio = Z.std(axis=0) / std                                # (N_dim, n_starts)
+                ratio = rms(Z) / std                                       # (n_starts,)
                 out[j] = float(not (lo < ratio.min() and ratio.max() < hi))
     finally:
         case.input_parameters = original

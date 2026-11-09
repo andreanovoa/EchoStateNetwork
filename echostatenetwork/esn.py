@@ -173,8 +173,8 @@ class EchoStateNetwork:
     # stability gate of the recycle validation (RVC_Noise): with stability_steps > 0, every
     # Tikhonov candidate also runs closed loops of that many steps, and its fold-mean score
     # rises by stability_penalty when a loop leaves the attractor (non-finite, or beyond 3x
-    # the largest |y| of the data) or the standard deviation of any output leaves
-    # stability_band times that of the data. The short folds score the accuracy, the long loop
+    # the largest |y| of the data) or its standard deviation (the RMS over the outputs) leaves
+    # stability_band times that of its record. The short folds score the accuracy, the long loop
     # the stability (two-stage validation, as in Lu et al. 2018; Platt et al. 2022).
     # stability_starts: the number of washouts, spread over the training record, from which the loop runs; the
     # candidate fails if any loop fails (1: the start of the first segment only)
