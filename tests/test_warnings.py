@@ -102,7 +102,7 @@ def test_attribute_that_the_network_does_not_hold_yet_is_ignored():
 
 
 def test_readout_is_computed_by_train():
-    # train computes Wout, so the keyword has no effect, on a trained network as well (before, silently)
+    # train computes Wout, so the keyword has no effect and warns, on a trained network as well
     esn = EchoStateNetwork(DATA.T, **QUICK)
     Wout = np.zeros((QUICK['N_units'] + 1, DATA.shape[1]))
     with pytest.warns(UserWarning, match=re.escape("['Wout'] are computed by train and are ignored")) as rec:
@@ -164,6 +164,14 @@ def test_a_trained_network_that_is_not_trained_again_still_names_the_keyword():
         warnings.simplefilter('always')
         esn.train(DATA, plot_training=False, typo_key=1)
     assert len(_ignored(rec)) == 1 and any('not trained again' in str(w.message) for w in rec)
+
+
+def test_a_subclass_that_is_not_trained_again_is_named_in_the_warning():
+    esn = _WithOption(DATA.T, **QUICK)
+    esn.train(DATA, plot_training=False)
+    with pytest.warns(UserWarning, match=re.escape('_WithOption.train: the network is already trained and is not '
+                                                   'trained again; pass force=True')):
+        esn.train(DATA, plot_training=False)
 
 
 def test_one_warning_per_line_of_the_caller():
@@ -285,14 +293,14 @@ def test_warnings_of_direct_calls_point_at_the_caller():
     assert [(w.filename, w.lineno) for w in [*rec, *again, *alias, *test]] == [(__file__, line) for line in lines]
 
 
-# ------------------------------------------------------------------------------- round 1 of the review (issue #7)
+# ---------------------------------------- methods, read-only properties and the options of subclasses (issue #7)
 class _WithOption(EchoStateNetwork):
     """A subclass with an option of its own, which a plain EchoStateNetwork does not hold."""
     my_option = 0
 
 
 def test_keywords_that_name_a_method_or_a_read_only_property_are_ignored():
-    # before, copy=1 replaced the method silently, and trained=True raised an AttributeError
+    # a keyword that names a method (copy) or a read-only property (trained) is not set, with one warning
     with pytest.warns(UserWarning) as rec:
         line = _next_line()
         esn = EchoStateNetwork(DATA.T, **QUICK, copy=1, trained=True)
@@ -304,7 +312,7 @@ def test_keywords_that_name_a_method_or_a_read_only_property_are_ignored():
     esn.train(DATA, plot_training=False)
     with warnings.catch_warnings(record=True) as rec:
         warnings.simplefilter('always')
-        # before, patch_sites raised a ValueError (its getter, called by hasattr) instead of the warning below
+        # a getter that raises (patch_sites without patches) does not prevent the warning
         assert esn.train(DATA, plot_training=False, patch_sites=None, N_train=5) is None
     (w,) = _ignored(rec)
     assert "['N_train', 'patch_sites'] are read-only properties of the network" in str(w.message)
@@ -317,8 +325,21 @@ def test_the_hint_names_the_parameters_of_train():
         esn.train(DATA, plot_training=False, n_seed=2)
 
 
+def test_the_hint_suggests_dt_ESN_for_dt():
+    # dt is a parameter of the constructor only: train sets the time step of the data with dt_ESN = dt * upsample
+    esn = EchoStateNetwork(DATA.T, **QUICK)
+    esn.train(DATA, plot_training=False)
+    match = re.escape("keyword(s) ['dt'] are not attributes of the network and are ignored (did you mean 'dt_ESN' "
+                      "for 'dt'? train sets the time step of the data, dt, with dt_ESN = dt * upsample.)")
+    with pytest.warns(UserWarning, match=match):
+        esn.train(DATA, plot_training=False, dt=0.5, force=True)
+    assert esn.dt_physical == 1
+    esn.train(DATA, plot_training=False, dt_ESN=0.5 * esn.upsample, t_train=60, t_val=15, force=True)
+    assert esn.dt_physical == 0.5 and esn.N_train == 120
+
+
 def test_the_hint_suggests_only_options():
-    # before, 'trained' for 'traned': a read-only property, which the keyword cannot set either
+    # the hint names options only: not 'trained', a read-only property, for 'traned'
     with pytest.warns(UserWarning) as rec:
         EchoStateNetwork(DATA.T, dt=1, traned=True)
     (w,) = _ignored(rec)
@@ -333,7 +354,7 @@ class _CallableOption(EchoStateNetwork):
 
 
 def test_an_option_that_a_subclass_holds_as_a_callable_is_set_by_train():
-    # before, train took validation_metric for a method of the subclass and ignored it with a warning
+    # an option that the subclass holds as a staticmethod is set by train, without a warning
     esn = _CallableOption(DATA.T, **QUICK)
     with warnings.catch_warnings():
         warnings.simplefilter('error')
@@ -344,7 +365,8 @@ def test_an_option_that_a_subclass_holds_as_a_callable_is_set_by_train():
 
 
 def test_an_option_of_a_subclass_stays_on_the_network_with_independent_patches():
-    # before, the networks of the patches received it and warned that it is ignored, although it was set
+    # an option of the subclass stays on the parallel network: the networks of the patches neither receive it nor
+    # warn
     esn = _WithOption(DATA.T, **QUICK, patch_size=2, halo=1, shared=False)
     with warnings.catch_warnings():
         warnings.simplefilter('error')
@@ -362,7 +384,7 @@ def test_the_matrices_of_independent_patches_are_held_by_the_patches():
 
 
 def test_code_run_by_exec_without_a_module_name_still_warns():
-    # before, warn_explicit(module=None) dropped the warning
+    # code run by exec, whose globals have no module name, still warns
     with warnings.catch_warnings(record=True) as rec:
         warnings.simplefilter('always')
         exec('EchoStateNetwork(Y, N_unit=3)', {'EchoStateNetwork': EchoStateNetwork, 'Y': DATA.T})
@@ -395,7 +417,7 @@ def _fails_after_WFV(*args, **kwargs):
 
 
 def test_the_warnings_of_a_failed_seed_are_issued_before_its_error():
-    # before, a seed that raised lost the warnings that it had collected
+    # the warnings that a failed seed collected are issued, at the caller, before its error
     esn = _series_esn()
     with warnings.catch_warnings(record=True) as rec:
         warnings.simplefilter('always')

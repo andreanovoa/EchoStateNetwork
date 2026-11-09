@@ -79,7 +79,9 @@ hyperparameters form `hyperparameters_to_optimize`. The Tikhonov factor alone ne
 budget, because one evaluation of the validation strategy selects $\beta$ from the grid,
 unless the network has parameters: `train` then also searches the shift and the scale of
 every parameter column (`optimize_parameter_normalization`, on by default with
-`input_parameters`) by Bayesian optimization, with the budget `N_func_evals`.
+`input_parameters`) by Bayesian optimization, with the budget `N_func_evals`, also when
+no hyperparameter is ticked. A search without $\beta$ keeps the fixed `tikh` at every
+evaluation.
 
 **Validation.** The strategy that scores every evaluation of the search: chaotic recycle
 validation (`RVC_Noise`, the default), single shot (`SSV`), walk forward (`WFV`) or

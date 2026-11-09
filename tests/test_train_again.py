@@ -47,9 +47,8 @@ def test_the_reservoir_is_kept_while_the_options_that_define_it_are_unchanged():
 
 
 def test_a_seed_alone_keeps_the_reservoir_and_warns():
-    # the user decided that train(force=True) keeps the reservoir, and the seed is not an option of the reservoir.
-    # Before round 2 of the review, a new seed drew a new reservoir for a network whose reservoir was drawn, but not
-    # for a network that holds the same matrices set by hand, which split the shared reservoir of a qlroms family
+    # the seed is not an option of the reservoir: train(seed=4, force=True) keeps the reservoir, warns, and leaves
+    # the attribute seed; a new network trained with seed=4 draws another reservoir
     esn = trained(t_train=120, t_val=30)
     W, Win = esn.W, esn.Win
     with pytest.warns(UserWarning, match=r'seed=4 is ignored: the network keeps its reservoir \(W, Win\), which'):
@@ -77,8 +76,8 @@ def test_the_first_train_keeps_a_reservoir_drawn_before_it_whatever_the_seed():
 @pytest.mark.parametrize('option', [dict(N_units=30), dict(connect=6), dict(Win_type='dense'),
                                     dict(Win_type='sparse_dense_bias'), dict(observed_idx=np.array([0, 2]))])
 def test_a_changed_option_draws_the_reservoir_that_a_new_network_draws(option):
-    # issue #7, item 1: before, N_units and observed_idx failed with "matmul: dimension mismatch", and connect and
-    # Win_type were ignored (the old W and Win were kept)
+    # issue #7, item 1: a changed option draws the reservoir, and fits the readout, that a new network with this
+    # option draws from the same seed
     esn = trained(t_train=120, t_val=30)
     esn.train(DATA, plot_training=False, force=True, **option)
     new = EchoStateNetwork(DATA.T, **{**QUICK, 't_train': 120, 't_val': 30, **option})
@@ -126,8 +125,8 @@ def test_matrices_set_by_hand_are_kept_while_the_options_of_the_network_are_unch
                                     dict(observed_idx=np.array([0, 2]))])
 def test_a_reservoir_without_a_record_follows_the_rule_of_a_drawn_one(option):
     # set by hand, by from_arrays or by echostatenetwork 0.2.3: the options of the network at the start of the call
-    # are those of the reservoir, and an option changed by the call draws a new one from the attribute seed. Before,
-    # connect and Win_type were ignored for such a reservoir (Win_type='dense' kept a sparse Win)
+    # are those of the reservoir, and an option changed by the call, connect and Win_type included, draws a new one
+    # from the attribute seed, with the type of Win of the new Win_type
     esn = trained(t_train=120, t_val=30)
     del esn.__dict__['_reservoir_key']
     W = esn.W
@@ -143,8 +142,8 @@ def test_a_reservoir_without_a_record_follows_the_rule_of_a_drawn_one(option):
                                     dict(seed=5, connect=6)])
 def test_networks_that_share_one_reservoir_keep_or_draw_the_same_one(option):
     # a qlroms family with share_reservoir=True: the first network draws the reservoir, the others hold its matrices,
-    # set by hand. Before round 2 of the review, connect, Win_type or a seed drew a new reservoir for the first
-    # network only; qlroms then gave every network that reservoir after their Wout were fitted on the old one
+    # set by hand. A seed alone keeps the one shared reservoir; a changed option draws the same new reservoir for
+    # every network of the family
     first = EchoStateNetwork(DATA.T, **QUICK, t_train=120, t_val=30)
     first._generate_W_Win()
     family = [first] + [EchoStateNetwork(DATA.T, **QUICK, t_train=120, t_val=30) for _ in range(2)]
@@ -162,8 +161,8 @@ def test_networks_that_share_one_reservoir_keep_or_draw_the_same_one(option):
 
 @pytest.mark.parametrize('matrix', ['W', 'Win'])
 def test_a_matrix_set_by_hand_after_a_new_N_units_is_kept_and_the_other_one_is_drawn(matrix):
-    # before, the rows of W alone decided: a new Win set by hand was dropped with the old W, and a new W set by hand
-    # with the old Win failed in the ridge regression
+    # the matrix set by hand for the new N_units is kept, and only the other one, whose shape no longer fits, is
+    # drawn again
     esn = trained(t_train=120, t_val=30)
     source = EchoStateNetwork(DATA.T, **{**QUICK, 'N_units': 20})
     source._generate_W_Win(seed=3)
@@ -196,7 +195,7 @@ def test_the_split_of_ragged_segments_is_inferred_again():
     segments = [DATA[a:b] for a, b in ((0, 80), (80, 170), (170, 270), (270, 380))]
     shorter = [segment[:40] for segment in segments]
     esn = trained(segments)
-    esn.train(shorter, plot_training=False, force=True)                 # before, t_val stayed that of the first call
+    esn.train(shorter, plot_training=False, force=True)                 # t_val inferred from the shorter segments
     assert split(esn) == split(trained(shorter))
 
 
@@ -230,7 +229,7 @@ def test_seeds_trained_again_are_the_same_seeds_on_new_data():
     esn.train(DATA, plot_training=False, n_seeds=3, seed=10)
     seeds, kept = sorted(esn.seed_scores), esn.seed
     esn.train(DATA[:200], plot_training=False, n_seeds=3, force=True)   # the split inferred again in the workers
-    assert sorted(esn.seed_scores) == seeds                             # before, 11, 12, 13: from the kept seed
+    assert sorted(esn.seed_scores) == seeds                             # not seeds counted from the kept seed
     assert split(esn) == split(trained(DATA[:200]))
     esn.train(DATA, plot_training=False, n_seeds=3, force=True)
     assert esn.seed == kept and sorted(esn.seed_scores) == seeds
@@ -273,10 +272,44 @@ def test_independent_patches_keep_their_networks_unless_the_layout_changes():
     assert esn._patches_key['seed'] == 3 and np.isfinite(esn.step(SITES[0], np.zeros(esn.N_r))[0]).all()
 
 
+def test_the_seed_warning_of_independent_patches_says_what_they_keep():
+    esn = EchoStateNetwork(SITES.T, shared=False, **PATCHES)
+    esn.train(SITES, plot_training=False)
+    seeds = [net.seed for net in esn.patches]
+    with pytest.warns(UserWarning, match=r'seed=3 is ignored: the networks of the patches keep their reservoirs and '
+                                         r'their seeds \(spawned from seed 0\); train spawns new seeds only when'):
+        esn.train(SITES, plot_training=False, seed=3, connect=3, force=True)          # connect unchanged
+    # an option that redraws the reservoirs: the networks keep their seeds, not their reservoirs
+    with pytest.warns(UserWarning, match=r'seed=3 is ignored: the networks of the patches keep their seeds \(spawned '
+                                         r'from seed 0\), from which they draw their new reservoirs;') as rec:
+        esn.train(SITES, plot_training=False, seed=3, N_units=8, force=True)
+    assert not any('keep their reservoirs' in str(w.message) for w in rec)
+    assert [net.seed for net in esn.patches] == seeds and all(net.W.shape == (8, 8) for net in esn.patches)
+
+
+def test_the_seed_warning_of_independent_patches_pickled_before_this_version():
+    # echostatenetwork 0.2.3 kept no record of the seed that the seeds of the patches were spawned from
+    esn = EchoStateNetwork(SITES.T, shared=False, **PATCHES)
+    esn.train(SITES, plot_training=False)
+    state = dict(vars(esn))
+    for name in ('_patches_key', '_patch_options_seen', '_inferred_split'):
+        del state[name]
+    for net in state['patches']:
+        del net.__dict__['_reservoir_key'], net.__dict__['_inferred_split']
+    old = EchoStateNetwork.__new__(EchoStateNetwork)
+    old.__setstate__(state)
+    Ws = [net.W for net in old.patches]
+    with pytest.warns(UserWarning, match=r'the networks of the patches keep their reservoirs and their seeds '
+                                         r'\(patches\[p\]\.seed\);') as rec:
+        old.train(SITES, plot_training=False, seed=3, force=True)
+    assert not any('seed None' in str(w.message) for w in rec)
+    assert all(net.W is W for net, W in zip(old.patches, Ws))
+
+
 @pytest.mark.parametrize('layout', [{}, dict(patch_size=2, halo=1), dict(patch_size=2, halo=1, shared=False)])
 def test_a_seed_alone_keeps_the_reservoir_in_every_layout(layout):
-    # before, train(seed=0, force=True) drew a new reservoir for a single network and for shared patches, and kept
-    # the networks of independent patches, whose seeds were spawned from the attribute seed 0
+    # a seed alone keeps the reservoir of a single network, of shared patches and of independent patches, with a
+    # warning
     esn = EchoStateNetwork(SITES.T, **{**PATCHES, **layout})
     esn.train(SITES, plot_training=False)
     reservoirs = [net.W for net in esn.patches] if esn.patches else [esn.W]
@@ -286,7 +319,7 @@ def test_a_seed_alone_keeps_the_reservoir_in_every_layout(layout):
 
 
 def test_the_first_train_keeps_the_networks_of_patches_built_before_it_whatever_the_seed():
-    # before, independent patches were built again for a seed other than the one they were spawned from
+    # networks of independent patches built before the first train are kept, whatever the seed given to train
     esn = EchoStateNetwork(SITES.T, shared=False, **PATCHES)
     esn._generate_W_Win()
     Ws = [net.W for net in esn.patches]
@@ -309,18 +342,18 @@ def test_independent_patches_take_the_split_and_the_metric_of_the_parallel_netwo
 def test_the_layout_switches_between_shared_and_independent_patches():
     esn = EchoStateNetwork(SITES.T, **PATCHES)
     esn.train(SITES, plot_training=False)
-    esn.train(SITES, plot_training=False, shared=False, force=True)     # before, an AttributeError in Wout
+    esn.train(SITES, plot_training=False, shared=False, force=True)     # from shared to independent patches
     assert esn.trained and len(esn.patches) == 4 and not hasattr(esn, '_W')
     esn.train(SITES, plot_training=False, shared=True, force=True)
     assert esn.trained and esn.patches is None and esn.W.shape == (12, 12)
     assert np.isfinite(esn.step(SITES[0], np.zeros(esn.N_r))[0]).all()
 
 
-# ------------------------------------------------------------------------------- round 1 of the review (issue #7)
+# ------------------------------------------- options set as attributes, the search, and a call that raises (issue #7)
 @pytest.mark.parametrize('name, value', [('N_units', 10), ('connect', 6), ('Win_type', 'dense')])
 def test_independent_patches_take_an_option_set_as_an_attribute(name, value):
-    # before, the networks of the patches kept N_units 12 and their reservoirs: step failed with "matmul: dimension
-    # mismatch", and connect and Win_type were ignored
+    # an option set as an attribute of the parallel network reaches the networks of the patches, which draw new
+    # reservoirs that fit it
     esn = EchoStateNetwork(SITES.T, shared=False, **PATCHES)
     esn.train(SITES, plot_training=False)
     Ws = [net.W for net in esn.patches]
@@ -345,7 +378,7 @@ def test_independent_patches_keep_their_own_search_unless_the_option_changes_on_
 
 def test_a_search_without_tikh_leaves_tikh_range():
     pytest.importorskip('skopt')                                         # a Bayesian search
-    # before, the search wrote tikh_range = [tikh], so that a later search over 'tikh' compared one value
+    # a search without 'tikh' keeps the fixed tikh and leaves tikh_range, which a later search over 'tikh' scans
     esn = trained(t_train=120, t_val=30, hyperparameters_to_optimize=['rho'], N_grid=2, N_func_evals=2,
                   tikh_range=[1e-6, 1e-9], tikh=1e-3)
     assert esn.tikh == 1e-3 and esn.tikh_range == [1e-6, 1e-9]
@@ -357,7 +390,8 @@ def test_a_search_without_tikh_leaves_tikh_range():
 
 def test_parameters_removed_by_train_leave_the_search_of_their_normalization():
     pytest.importorskip('skopt')                                         # a Bayesian search
-    # before, the names param_shift_0 and param_norm_0 stayed in hyperparameters_to_optimize: IndexError
+    # the names param_shift_0 and param_norm_0 leave hyperparameters_to_optimize with the parameters, or with
+    # optimize_parameter_normalization=False
     two = np.stack([DATA, DATA[::-1]])
     esn = EchoStateNetwork(DATA.T, **QUICK, t_train=120, t_val=30, input_parameters=np.array([[0.0, 1.0]]),
                            N_grid=1, N_func_evals=2)
@@ -392,7 +426,7 @@ def test_a_call_that_raises_leaves_the_network_as_it_was():
 
 
 def test_a_call_with_seeds_that_raises_leaves_the_inferred_split():
-    # before, the keywords and the split reset of the parent stayed: t_train and t_val None, training_summary raised
+    # a call with seeds that raises restores the keywords and the inferred split of the network
     esn = trained()
     summary = esn.training_summary()
     with warnings.catch_warnings(), pytest.raises(UserWarning, match='WFV: only'):
@@ -426,7 +460,7 @@ def test_a_network_pickled_before_this_version_keeps_its_dt_ESN_and_infers_its_s
     esn.train(DATA, plot_training=False)                                # t_train and t_val inferred
     old = legacy(esn, cls)
     assert np.isclose(old.dt_ESN, 0.03) and np.isclose(old.dt_physical, 0.01) and old.N_train == esn.N_train
-    old.train(DATA[:200], plot_training=False, force=True)             # before, "Increase the length" for old pickles
+    old.train(DATA[:200], plot_training=False, force=True)             # the inferred split, inferred again
     new = cls(DATA.T, **{**QUICK, 'dt': 0.01, 'upsample': 3})
     new.train(DATA[:200], plot_training=False)
     assert np.allclose(split(old), split(new))
@@ -441,7 +475,7 @@ def test_a_network_pickled_by_this_version_stores_dt_ESN_for_older_versions():
 
 
 def test_the_constructor_takes_dt_ESN():
-    # before, dt_ESN was overwritten by dt * upsample without a warning
+    # dt_ESN sets the time step of the data, dt_ESN / upsample, with a warning when a given dt disagrees
     esn = EchoStateNetwork(DATA.T, dt_ESN=0.5, upsample=5)
     assert np.isclose(esn.dt_ESN, 0.5) and np.isclose(esn.dt_physical, 0.1)
     with pytest.warns(UserWarning, match=r'dt_ESN=0.5 and dt=1 disagree'):
@@ -460,27 +494,37 @@ def test_independent_patches_take_a_metric_set_as_an_attribute():
     assert all(net.validation_metric.keywords['metric'] is validation.nMSE for net in esn.patches)
 
 
-# ------------------------------------------------------------------------------- round 2 of the review (issue #7)
+# ------------------------------------- networks pickled by echostatenetwork 0.2.3, seeds and the time step (issue #7)
 def test_a_network_pickled_before_this_version_keeps_a_given_split_that_fills_80_percent_of_the_series():
-    # 280 + 40 steps fill 80% of the 400 steps, as an inferred t_train does. Before, the given t_train was taken as
-    # inferred and replaced on other data; 0.2.3 kept it
+    # 280 + 40 steps fill 80% of the 400 steps, as an inferred t_train does, but 40 is not 20% of them: the given
+    # split is kept on other data, as 0.2.3 kept it
     old = legacy(trained(t_train=280, t_val=40))
     old.train(np.concatenate([DATA, DATA]), plot_training=False, force=True)
     assert split(old) == (280, 40)
 
 
 def test_a_network_pickled_before_this_version_with_seeds_infers_its_split_again():
-    # 0.2.3 split the data of the kept seed again, which wrote t_val_inferred=False into split_summary: before,
-    # "Increase the length" on shorter data
+    # 0.2.3 split the data of the kept seed again to score it without a search, which wrote t_val_inferred=False
+    # into split_summary: with seed_scores, the inferred split is recognized, and inferred again from shorter data
     old = legacy(trained())
     old.split_summary = {**old.split_summary, 't_val_inferred': False}
+    old.seed_scores = {0: -1.0, 1: -0.5}                                # trained with n_seeds=2
     old.train(DATA[:200], plot_training=False, force=True)
     assert split(old) == split(trained(DATA[:200]))
 
 
+def test_a_network_pickled_before_this_version_keeps_a_given_split_equal_to_the_inferred_one():
+    # 256 + 64 steps are the split that train infers from the 400 steps, but split_summary says that t_val was
+    # given, and the network was trained without seeds: the split is kept on other data, as 0.2.3 kept it
+    assert split(trained()) == (256, 64)
+    old = legacy(trained(t_train=256, t_val=64))
+    old.train(np.concatenate([DATA, DATA]), plot_training=False, force=True)
+    assert split(old) == (256, 64)
+
+
 def test_the_kept_seed_keeps_its_normalization_and_its_inferred_split():
-    # before, the score of a seed without a search split the data of the kept network again: a new noise gave it
-    # another norm than the one that fitted its Wout, and its summary lost '(inferred)'
+    # the kept seed keeps the norm that its Wout was fitted with, and its summary marks t_val as inferred, as a
+    # single network trained with that seed
     options = {**QUICK, 'noise': 5e-2}
     esn = EchoStateNetwork(DATA.T, **options)
     esn.train(DATA, plot_training=False, n_seeds=2)
@@ -493,14 +537,14 @@ def test_the_kept_seed_keeps_its_normalization_and_its_inferred_split():
 
 @pytest.mark.parametrize('options', [dict(dt_ESN=2.0, upsample=2), dict(upsample=2, dt_ESN=2.0)])
 def test_dt_ESN_and_upsample_given_to_train_do_not_depend_on_their_order(options):
-    # before, dt_ESN given first was divided by the old upsample: dt_ESN 4.0
+    # dt_ESN and upsample given together set the time step of the data, dt_ESN / upsample, whatever their order
     esn = trained(t_train=120, t_val=30)
     esn.train(DATA, plot_training=False, force=True, **options)
     assert (esn.dt_ESN, esn.dt_physical, esn.N_train) == (2.0, 1.0, 60)
 
 
 def test_a_reservoir_given_to_train_with_a_new_N_units_is_set_after_it():
-    # before, W given before N_units failed the check of its shape against the old N_units
+    # W given to train with a new N_units is set after N_units, so its shape is checked against the new value
     esn = trained(t_train=120, t_val=30)
     esn.train(DATA, plot_training=False, W=np.eye(20), N_units=20, force=True)
     np.testing.assert_array_equal(esn.W.toarray(), np.eye(20))

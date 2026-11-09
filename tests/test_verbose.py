@@ -97,6 +97,21 @@ def test_run_test_without_testable_segment_warns():
         assert esn.run_test(short[None, :-1], short[None, 1:]) == []
 
 
+def test_run_test_tests_each_segment_at_most_once(caplog):
+    # max_L_tests larger than the number of segments: each of the 3 segments is tested once, none twice
+    import matplotlib.pyplot as plt
+    plt.switch_backend('Agg')
+    esn, data = small_esn()
+    esn.train(data, plot_training=False)
+    segments = np.stack([data[:60], data[60:120], data[120:180]])
+    try:
+        with caplog.at_level(logging.INFO, logger='echostatenetwork'):
+            esn.run_test(segments[:, :-1], segments[:, 1:], max_L_tests=10, long_term=False, max_short_tests=1)
+    finally:
+        plt.close('all')
+    assert 'mean per segment over 3 segments' in caplog.text
+
+
 def test_trained_network_is_not_trained_again_without_force():
     esn, data = small_esn()
     esn.train(data, plot_training=False)
@@ -117,6 +132,16 @@ def test_search_table_with_verbose_and_every_line_prefixed(capsys):
     err = capsys.readouterr().err.splitlines()
     assert any('hyperparameter search' in line for line in err) and any('log_nMAE' in line for line in err)
     assert all(line.startswith('[echostatenetwork] ') for line in err if line.strip())
+
+
+@pytest.mark.parametrize('n_func_evals, points', [(3, '1 point'), (4, '2 points')])
+def test_search_header_counts_the_points_of_bayesian_optimization(caplog, n_func_evals, points):
+    pytest.importorskip('skopt')                    # a Bayesian search
+    echostatenetwork.set_verbose(True)
+    esn, data = small_esn()
+    esn.train(data, plot_training=False, hyperparameters_to_optimize=['rho'], N_func_evals=n_func_evals, N_grid=2,
+              force=True)
+    assert f'a 2^1 grid and {points} of Bayesian optimization' in caplog.text
 
 
 def test_search_table_with_tikh_alone(capsys):

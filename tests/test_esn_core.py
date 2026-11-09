@@ -725,7 +725,8 @@ def _one_evaluation(esn, data, strategy, tikh):
 def test_tikh_alone_is_one_evaluation_of_the_strategy(strategy, monkeypatch):
     # Every evaluation of the strategy selects tikh from tikh_range, so the search over tikh alone is one
     # evaluation at the fixed rho, sigma_in and leak_rate: no Bayesian optimization, and no scikit-optimize
-    # (before the fix, gp_minimize raised "need at least one array to concatenate" on the empty space).
+    # (echostatenetwork 0.2.3 gave the empty space to gp_minimize, which raised "need at least one array to
+    # concatenate").
     from echostatenetwork import validation
     monkeypatch.setitem(sys.modules, 'skopt', None)            # any import of scikit-optimize fails
     strategy = getattr(validation, strategy)
@@ -778,8 +779,8 @@ def test_seed_score_without_a_search_is_the_score_of_the_fixed_tikh():
 
 @pytest.mark.parametrize('searched', [[], ['tikh']])
 def test_plot_training_without_a_bayesian_optimization(searched):
-    # No convergence trace and no landscape without a Bayesian optimization: only Wout is drawn (perform_test=False).
-    # Before the fix, plot_training=True raised a TypeError without a search, and the error of issue #1 with tikh alone.
+    # No convergence trace and no landscape without a Bayesian optimization: plot_training=True draws Wout only
+    # (perform_test=False), without a search and with 'tikh' alone.
     import matplotlib.pyplot as plt
     plt.switch_backend('Agg')
     plt.close('all')
@@ -794,6 +795,7 @@ def test_plot_training_without_a_bayesian_optimization(searched):
 def test_tikh_alone_with_parametric_inputs():
     # optimize_parameter_normalization (the default with input_parameters) adds the shift and the norm of the
     # parameter to the search, which is then a Bayesian optimization; without it, tikh alone is one evaluation.
+    pytest.importorskip('skopt')                                         # a Bayesian search
     rng = np.random.default_rng(1)
     data, params = rng.normal(size=(2, 80, 3)), np.array([[0.0, 1.0]])
     options = dict(dt=1, N_units=15, upsample=1, t_train=40, t_val=10, t_test=10, N_wash=5, N_folds=2, N_grid=2,

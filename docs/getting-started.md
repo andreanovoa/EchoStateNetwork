@@ -48,7 +48,7 @@ summary of the last training is also returned by `esn.training_summary()`. A
 trained network, its copy (`esn.copy()`) and a network loaded with its matrices
 are trained again only with `esn.train(..., force=True)`, which keeps the
 reservoir while the options that define it are unchanged (see
-[Training](training.md#training)).
+[Training again](training.md#training-again)).
 
 ## Parametric ESN
 
