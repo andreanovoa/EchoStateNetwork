@@ -700,3 +700,28 @@ def test_bho_midpoint_grid_noise_and_stability_gate():
     W = esn.Wout
     flags = validation.unstable(esn, U, Y, np.stack([W, 1e3 * W]))
     assert flags[1] == 1.0
+
+
+def test_stability_gate_from_several_starts():
+    """The washouts of the gate spread over every segment, in turn; one start is the start of the first segment
+    (the former gate); several starts flag the unstable readout and keep the parameters of each record."""
+    from echostatenetwork import validation
+    rng = np.random.default_rng(1)
+    t = np.arange(300) * 0.05
+    data = np.stack([np.stack([np.sin(t + a), np.cos(t + a)], axis=1) for a in (0.0, 1.0)]) + 0.01 * rng.normal(size=(2, 300, 2))
+    esn = EchoStateNetwork(data[0].T, dt=1, N_units=30, upsample=1, t_train=200, t_val=40, t_test=60, N_wash=10,
+                           hyperparameters_to_optimize=[], seed=0, input_parameters=np.array([[0.0, 1.0]]),
+                           optimize_parameter_normalization=False)
+    esn.train(data, plot_training=False)
+    U, Y, *_ = esn._split_and_format_data(data)
+    esn.stability_starts = 1
+    assert validation._stability_starts(esn, U) == [(0, 0)]
+    esn.stability_starts = 4
+    starts = validation._stability_starts(esn, U)
+    assert [l for l, _ in starts] == [0, 1, 0, 1] and starts[0][1] == starts[1][1] == 0 and starts[2][1] > 0
+    before = esn.input_parameters.copy()
+    esn.stability_steps = 100
+    W = esn.Wout
+    flags = validation.unstable(esn, U, Y, np.stack([W, 1e3 * W]))
+    assert flags[1] == 1.0
+    np.testing.assert_array_equal(esn.input_parameters, before)

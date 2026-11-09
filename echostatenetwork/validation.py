@@ -41,30 +41,50 @@ def nMSE(case, Y_true, Y_pred, norm=None):
 
 
 
+def _stability_starts(case, U_wtv):
+    """(segment, step) of the `stability_starts` washouts of the stability gate: evenly spaced in every segment,
+    taken in turn from the segments (the first is the start of the first segment, the gate of a single start)."""
+    n = max(1, int(getattr(case, 'stability_starts', 1)))
+    per_segment = [[(l, int(p)) for p in np.linspace(0, len(U_l) - case.N_wash, -(-n // len(U_wtv)), endpoint=False)]
+                   if len(U_l) >= case.N_wash else [] for l, U_l in enumerate(U_wtv)]
+    order = [s for k in range(max(map(len, per_segment))) for seg in per_segment for s in seg[k:k + 1]]
+    return order[:n]
+
+
 def unstable(case, U_wtv, Y_wtv, Wout_tik):
-    """1.0 for each Tikhonov candidate whose closed loop of `stability_steps` steps, after a
-    washout at the start of the first segment, leaves the attractor (non-finite, or beyond
-    3x the largest |y| of the data) or whose output standard deviations leave
-    `stability_band` times those of the data; else 0.0. The gate of RVC_Noise."""
+    """1.0 for each Tikhonov candidate whose closed loop of `stability_steps` steps, after a washout, leaves the
+    attractor (non-finite, or beyond 3x the largest |y| of the data) or whose output standard deviations leave
+    `stability_band` times those of the data, from any of `stability_starts` washouts spread over the record
+    (`_stability_starts`; advanced together, as the columns of one ensemble); else 0.0. The gate of RVC_Noise. One
+    start tests one trajectory only: a network that leaves the attractor from other states passes it."""
     Y = np.concatenate([np.asarray(y) for y in Y_wtv])
     bound, std = 3 * np.abs(Y).max(), Y.std(axis=0)
     lo, hi = case.stability_band
+    starts = _stability_starts(case, U_wtv)
+    U_wash = np.stack([np.asarray(U_wtv[l])[p:p + case.N_wash].reshape(case.N_wash, -1) for l, p in starts],
+                      axis=-1)                                              # (N_wash, N_dim_in, n_starts)
+    original = case.input_parameters
+    if original is not None:                  # every start keeps the parameters of its own record
+        case.input_parameters = U_wash[0, -case._n_param(original):]
     out = np.zeros(len(Wout_tik))
-    for j, W in enumerate(Wout_tik):
-        case.Wout = W
-        r = np.zeros((case.N_r, 1))
-        for u_in in U_wtv[0][:case.N_wash]:
-            u, r = case.step(u_in, r)
-        Z = np.empty((case.stability_steps, Y.shape[1]))
-        for k in range(case.stability_steps):
-            u, r = case.step(case.outputs_to_inputs(full_state=u), r)
-            Z[k] = u[:, 0]
-            if not np.isfinite(Z[k]).all() or np.abs(Z[k]).max() > bound:
-                out[j] = 1.0
-                break
-        else:
-            ratio = Z.std(axis=0) / std
-            out[j] = float(not (lo < ratio.min() and ratio.max() < hi))
+    try:
+        for j, W in enumerate(Wout_tik):
+            case.Wout = W
+            r = np.zeros((case.N_r, len(starts)))
+            for u_in in U_wash:
+                u, r = case.step(u_in, r)
+            Z = np.empty((case.stability_steps,) + u.shape)
+            for k in range(case.stability_steps):
+                u, r = case.step(case.outputs_to_inputs(full_state=u), r)
+                Z[k] = u
+                if not np.isfinite(u).all() or np.abs(u).max() > bound:
+                    out[j] = 1.0
+                    break
+            else:
+                ratio = Z.std(axis=0) / std[:, np.newaxis]                 # (N_dim, n_starts)
+                out[j] = float(not (lo < ratio.min() and ratio.max() < hi))
+    finally:
+        case.input_parameters = original
     return out
 
 
