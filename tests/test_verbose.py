@@ -112,6 +112,32 @@ def test_run_test_tests_each_segment_at_most_once(caplog):
     assert 'mean per segment over 3 segments' in caplog.text
 
 
+def test_run_test_scores_every_window_and_caps_the_figures_per_segment(caplog):
+    # the number of scored short-term tests is set by the test tail, not by the figures: max_short_tests caps the
+    # figures of each segment, and every segment is scored the same way
+    import matplotlib.pyplot as plt
+    plt.switch_backend('Agg')
+    esn, data = small_esn()
+    esn.train(data, plot_training=False)
+    segments = np.stack([data[:80], data[80:160]])
+    n_windows = (80 - 1 - esn.N_val - 1) // esn.N_val + 1          # windows of N_val steps that fit in a segment
+    try:
+        for max_short_tests, n_figures in ((1, 2), (10, 2 * n_windows)):
+            caplog.clear()
+            with caplog.at_level(logging.INFO, logger='echostatenetwork'):
+                figures = esn.run_test(segments[:, :-1], segments[:, 1:], long_term=False,
+                                       max_short_tests=max_short_tests)
+            assert figures[0] is None and len(figures) == 1 + n_figures
+            assert f'({2 * n_windows} tests), mean per segment over 2 segments' in caplog.text
+        figures = esn.run_test(segments[:1, :-1], segments[:1, 1:], short_term=False)
+        assert figures[0] is not None and figures[1:] == [None]    # one segment: its long-term figure
+        assert esn.run_test(segments[:, :-1], segments[:, 1:], short_term=False)[0] is None
+        with pytest.warns(UserWarning, match='max_L_tests < 1'):
+            assert esn.run_test(segments[:, :-1], segments[:, 1:], max_L_tests=0) == []
+    finally:
+        plt.close('all')
+
+
 def test_trained_network_is_not_trained_again_without_force():
     esn, data = small_esn()
     esn.train(data, plot_training=False)

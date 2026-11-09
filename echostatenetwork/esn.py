@@ -2990,11 +2990,11 @@ class EchoStateNetwork:
                  Y_test,
                  pdf_file=None,
                  Nt_test=None,
-                 max_L_tests=5,
+                 max_L_tests=None,
                  nbins=20,
-                max_short_tests=10,
-                long_term=True,
-                short_term=True,
+                 max_short_tests=None,
+                 long_term=True,
+                 short_term=True,
                  ):
         """Evaluate the trained ESN on test data with closed-loop forecasts, logging the
         error metrics (logger 'echostatenetwork', silent by default; see `set_verbose`) and
@@ -3010,31 +3010,37 @@ class EchoStateNetwork:
             Currently unused by this method (present for API compatibility).
         Nt_test : int, optional
             Length of each short-term test, in ESN steps. Defaults to `N_val`.
-        max_L_tests : int
+        max_L_tests : int, optional
             Maximum number of segments (of the `L` available) to evaluate, each at most once; with more
-            segments, `run_test` draws `max_L_tests` of them with the generator `rng`. Default 5.
+            segments, `run_test` draws `max_L_tests` of them with the generator `rng`. Defaults to the
+            attribute `max_L_tests` (10).
         nbins : int
             Number of bins for the prediction PDFs (long-term test only). Default 20.
-        max_short_tests : int
-            Maximum number of short-term test figures to draw, across all segments.
-            Default 10.
+        max_short_tests : int, optional
+            Maximum number of short-term test figures to draw per tested segment. Defaults to the attribute
+            `max_short_tests` (10). Every short-term test of the test tail is scored, whether it is drawn or not.
         long_term : bool
             If True, run one long-term (full-length) closed-loop forecast per tested
             segment and plot it. Default True.
         short_term : bool
-            If True, run repeated short-term (`Nt_test`-long) closed-loop forecasts
-            per tested segment and plot up to `max_short_tests` of them. Default True.
+            If True, run short-term (`Nt_test`-long) closed-loop forecasts over the whole test tail of every
+            tested segment, and plot up to `max_short_tests` of them per segment. Default True.
 
         Returns
         -------
         list
-            ``[fig_long] + figures_short``: the long-term test figure (or None if
-            `long_term` is False or there is more than one segment) followed by the
-            short-term test figures (each possibly None if `short_term` is False).
+            ``[fig_long] + figures_short``: the long-term test figure (None if `long_term` is False or more than
+            one segment is tested) followed by the short-term test figures of every tested segment (``[None]`` if
+            `short_term` is False). ``[]`` when no segment can be tested.
         """
 
-        if max_L_tests is None and hasattr(self, 'max_L_tests'):
+        if max_L_tests is None:
             max_L_tests = self.max_L_tests
+        if max_short_tests is None:
+            max_short_tests = self.max_short_tests
+        if max_L_tests < 1:
+            _warn('run_test: max_L_tests < 1; no test is run.')
+            return []
         if Nt_test is None:
             Nt_test = self.N_val
 
@@ -3151,7 +3157,7 @@ class EchoStateNetwork:
                 _ax.set(ylabel=f'$u_{dim_i}$')
                 _ax.set(ylim=ylims[dim_i])
 
-        test_counter, errors_all = 0, []
+        test_counter, errors_all, figures_long, figures_short = 0, [], [], []
         hist_args = dict(bins=nbins, density=True, orientation='horizontal', stacked=False)
 
 
@@ -3203,19 +3209,16 @@ class EchoStateNetwork:
                 # axs[0].legend(loc='lower center', ncol=4, bbox_to_anchor=(0.5, 1.0))
                 plt.suptitle(f'Li = {Li}, observed idx = {self.observed_idx}, error = {err_long:.4}')
                 axs[-1].set(xlabel='$t/T$')
-            else:
-                fig_long = None
+                figures_long.append(fig_long)
 
 
             if short_term:
                 i0 = 0 # reset time index for each Li
-                figures_short = []
+                n_figures = 0                      # the figures of this segment, at most max_short_tests
                 short_term_error = 0.
                 max_test_time = U_test_l.shape[0]  # per-segment: segments may differ in length
 
-                while i0 + Nt_test < max_test_time:
-                    if len(figures_short) >= max_short_tests:
-                        break
+                while i0 + Nt_test < max_test_time:     # every window of the test tail is scored
                     test_counter += 1
 
                     i1 = i0 + Nt_test + self.N_wash
@@ -3232,7 +3235,7 @@ class EchoStateNetwork:
                     short_term_error += current_error
 
 
-                    if test_counter <= max_L_tests:
+                    if n_figures < max_short_tests:
                         fig_short, axs_short = plt.subplots(nrows=nrows, ncols=1, figsize=[8, 1.5 * nrows], sharex='all', layout='tight')
                         if nrows == 1:
                             axs_short = [axs_short]
@@ -3246,14 +3249,13 @@ class EchoStateNetwork:
                         axs_short[-1].set(xlabel='$t/T$')
 
                         figures_short.append(fig_short)
+                        n_figures += 1
                     i0 += Nt_test
 
                 errors_all.append(short_term_error / max(1, (i0 // Nt_test)))
-            else:
-                figures_short = [None]
 
-        else:
-            fig_long = None
+        fig_long = figures_long[0] if len(figures_long) == 1 else None
+        if not figures_short:
             figures_short = [None]
 
         # Compute errors over all Lis

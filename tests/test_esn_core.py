@@ -503,7 +503,8 @@ def test_training_summary_reports_realized_fold_count():
                                t_val=50, t_test=100, N_wash=5, N_folds=100,
                                N_grid=2, N_func_evals=2,
                                hyperparameters_to_optimize=['rho'])
-    esn_kfv.train(data, plot_training=False, validation_strategy=EchoStateNetwork._KFV)
+    with pytest.warns(UserWarning, match='KFV: only'):
+        esn_kfv.train(data, plot_training=False, validation_strategy=EchoStateNetwork._KFV)
     # capped to what fits: the summary shows the REALIZED count, not the request
     assert esn_kfv.n_folds_realized < 100
     assert f'{esn_kfv.n_folds_realized} validation folds' in esn_kfv.training_summary()
