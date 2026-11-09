@@ -30,6 +30,26 @@ training, `esn.step(u, r)` advances the reservoir one step; washout (open loop o
 observed data) followed by closed-loop prediction is shown end to end in the
 [tutorials](index.md#tutorials).
 
+Every option of `EchoStateNetwork`, i.e. a class attribute such as `N_units` or
+`rho_range`, can be passed as a keyword to the constructor or to `esn.train`. A
+keyword that is not an option, e.g. the misspelt `rho_rnage`, a method such as
+`copy`, or a read-only property such as `trained`, is ignored with a warning,
+which names the keyword and, for a typo, suggests the closest name (e.g.
+`rho_range`). The warning points at the line that calls the package; to silence
+it, filter it by its message or category, not by the module `echostatenetwork`.
+
+The package is silent by default. `echostatenetwork.set_verbose()` prints its
+reports on stderr: the hyperparameter search and the training summary of
+`esn.train`, and diagnostic messages, e.g. a training option changed by `train`;
+`set_verbose(False)` silences them again (see the
+[API reference](api/esn.md#echostatenetwork.set_verbose)). The keyword `verbose`
+of earlier versions is removed: it gives a `FutureWarning` and has no effect. The
+summary of the last training is also returned by `esn.training_summary()`. A
+trained network, its copy (`esn.copy()`) and a network loaded with its matrices
+are trained again only with `esn.train(..., force=True)`, which keeps the
+reservoir while the options that define it are unchanged (see
+[Training again](training.md#training-again)).
+
 ## Parametric ESN
 
 Pass `input_parameters` (shape `(N_param, L)`, one parameter vector per training

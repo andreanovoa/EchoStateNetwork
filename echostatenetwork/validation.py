@@ -21,7 +21,30 @@ when set, else its own default. Built-ins: `log_nMAE` (log10 range-normalised
 MAE, the recycle-family default) and `nMSE` (raw variance-normalised MSE).
 """
 
+import logging
+
 import numpy as np
+
+from .verbose import _warn
+
+logger = logging.getLogger(__name__)
+
+
+def convergence_header(case):
+    """Header of the hyperparameter-search table: the evaluation, the hyperparameters and the validation metric."""
+    metric = getattr(case.validation_metric, '__name__', None) or 'log_nMAE'
+    return f'{"eval":>5}' + ''.join(f'{hp:>12}' for hp in _searched(case)) + f'{metric:>12}'
+
+
+def _convergence_line(case, score):
+    """One row of the hyperparameter-search table, aligned with `convergence_header`."""
+    return f'{case.val_k:>5}' + ''.join(f'{case._get_hyperparam(hp):>12.3e}' for hp in _searched(case)) \
+        + f'{score:>12.4f}'
+
+
+def _searched(case):
+    """The names of `hyperparameters_to_optimize`, each once, in order: the columns of the search table."""
+    return list(dict.fromkeys(case.hyperparameters_to_optimize))
 
 
 def log_nMAE(case, Y_true, Y_pred, norm=1.0):
@@ -200,11 +223,8 @@ def RVC_Noise(x, case, U_wtv, Y_wtv, tikh_opt, hp_names, print_convergence=True)
     normalized_best_MAE = nMAE[a] / n_looop
 
     case.val_k += 1
-    if print_convergence:
-        print(case.val_k, end="")
-        for hp in case.hyperparameters_to_optimize:
-            print(f'\t {case._get_hyperparam(hp):.3e}', end="")
-        print(f'\t {normalized_best_MAE:.4f}')
+    if print_convergence:                       # one line of the search table (info log)
+        logger.info('%s', _convergence_line(case, normalized_best_MAE))
 
     return normalized_best_MAE
 
@@ -372,11 +392,8 @@ def single_series_validation(x, case, U_wtv, Y_wtv, tikh_opt, hp_names,
     normalized_best_MAE = nMAE[a] / len(folds)
 
     case.val_k += 1
-    if print_convergence:
-        print(case.val_k, end="")
-        for hp in case.hyperparameters_to_optimize:
-            print(f'\t {case._get_hyperparam(hp):.3e}', end="")
-        print(f'\t {normalized_best_MAE:.4f}')
+    if print_convergence:                       # one line of the search table (info log)
+        logger.info('%s', _convergence_line(case, normalized_best_MAE))
 
     return normalized_best_MAE
 
@@ -412,7 +429,8 @@ def SSV(x, case, U_wtv, Y_wtv, tikh_opt, hp_names, print_convergence=True):
     hp_names : list
         Names of the hyperparameters being optimized.
     print_convergence : bool
-        Print one convergence row per evaluation.
+        Log one row of the search table per evaluation, an info message of the logger
+        'echostatenetwork', which `echostatenetwork.set_verbose()` shows.
 
     Returns
     -------
@@ -452,8 +470,8 @@ def WFV(x, case, U_wtv, Y_wtv, tikh_opt, hp_names, print_convergence=True):
     steps (< ``N_val``) gives the paper's chaotic version with overlapping
     intervals and correspondingly more folds. With ``n`` post-washout
     steps and ``K = min(N_folds, 1 + (n - 1 - N_val) // step)`` folds
-    (reduced with a printed note when the requested ``N_folds`` do not
-    fit), the training-window length is
+    (reduced, with a warning once per `train` call, when the requested
+    ``N_folds`` do not fit), the training-window length is
     ``m = n - (K - 1) * step - N_val``; fold ``k`` (``k = 0..K-1``) trains
     on rows ``[k * step, k * step + m)`` and validates on
     ``[k * step + m, k * step + m + N_val)`` -- the last validation
@@ -476,7 +494,8 @@ def WFV(x, case, U_wtv, Y_wtv, tikh_opt, hp_names, print_convergence=True):
     hp_names : list
         Names of the hyperparameters being optimized.
     print_convergence : bool
-        Print one convergence row per evaluation.
+        Log one row of the search table per evaluation, an info message of the logger
+        'echostatenetwork', which `echostatenetwork.set_verbose()` shows.
 
     Returns
     -------
@@ -496,9 +515,8 @@ def WFV(x, case, U_wtv, Y_wtv, tikh_opt, hp_names, print_convergence=True):
         step = case_.val_fold_step or case_.N_val
         K = min(case_.N_folds, 1 + (n_post - 1 - case_.N_val) // step)
         if K < case_.N_folds and case_.val_k == 0:
-            print(f'WFV: only {K} of the requested N_folds={case_.N_folds} '
-                  f'walk-forward folds fit in {n_post} post-washout steps '
-                  f'(N_val={case_.N_val}, step={step}); using {K} folds.')
+            _warn(f'WFV: only {K} of the requested N_folds={case_.N_folds} walk-forward folds fit in {n_post} '
+                  f'post-washout steps (N_val={case_.N_val}, step={step}); using {K} folds.')
         m = n_post - (K - 1) * step - case_.N_val  # fixed training-window length
         folds = []
         for k in range(K):
@@ -534,8 +552,8 @@ def KFV(x, case, U_wtv, Y_wtv, tikh_opt, hp_names, print_convergence=True):
     time in ESN steps (< ``N_val``) gives the paper's chaotic version with
     overlapping intervals and correspondingly more folds. With ``n``
     post-washout steps and ``K = min(N_folds, 1 + (n - N_val) // step)``
-    intervals (reduced with a printed note when fewer fit), the initial
-    offset is ``n - (K - 1) * step - N_val``; fold ``k`` (``k = 0..K-1``)
+    intervals (reduced, with a warning once per `train` call, when fewer
+    fit), the initial offset is ``n - (K - 1) * step - N_val``; fold ``k`` (``k = 0..K-1``)
     validates on rows ``[offset + k * step, offset + k * step + N_val)``
     and trains on all rows outside its own interval.
 
@@ -556,7 +574,8 @@ def KFV(x, case, U_wtv, Y_wtv, tikh_opt, hp_names, print_convergence=True):
     hp_names : list
         Names of the hyperparameters being optimized.
     print_convergence : bool
-        Print one convergence row per evaluation.
+        Log one row of the search table per evaluation, an info message of the logger
+        'echostatenetwork', which `echostatenetwork.set_verbose()` shows.
 
     Returns
     -------
@@ -576,9 +595,8 @@ def KFV(x, case, U_wtv, Y_wtv, tikh_opt, hp_names, print_convergence=True):
         step = case_.val_fold_step or case_.N_val
         K = min(case_.N_folds, 1 + (n_post - case_.N_val) // step)
         if K < case_.N_folds and case_.val_k == 0:
-            print(f'KFV: only {K} of the requested N_folds={case_.N_folds} '
-                  f'validation intervals fit in {n_post} post-washout steps '
-                  f'(N_val={case_.N_val}, step={step}); using {K} folds.')
+            _warn(f'KFV: only {K} of the requested N_folds={case_.N_folds} validation intervals fit in {n_post} '
+                  f'post-washout steps (N_val={case_.N_val}, step={step}); using {K} folds.')
         offset = n_post - (K - 1) * step - case_.N_val
         folds = []
         for k in range(K):

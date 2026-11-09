@@ -50,8 +50,8 @@ import numpy as np
 from echostatenetwork import EchoStateNetwork
 
 y = my_time_series                       # (Nt, N_dim)
-esn = EchoStateNetwork(y, dt=0.01, N_units=200, t_train=40.0, t_val=4.0)
-esn.train([y])
+esn = EchoStateNetwork(y[:1].T, dt=0.01, N_units=200, t_train=40.0, t_val=4.0)   # y[:1].T sets N_dim
+esn.train(y)
 u_wash, r = ...                          # see docstrings: washout then closed loop
 ```
 
