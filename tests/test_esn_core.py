@@ -725,3 +725,19 @@ def test_stability_gate_from_several_starts():
     flags = validation.unstable(esn, U, Y, np.stack([W, 1e3 * W]))
     assert flags[1] == 1.0
     np.testing.assert_array_equal(esn.input_parameters, before)
+
+
+def test_stability_gate_compares_each_loop_with_its_own_record():
+    """Two records of different amplitude: the loops of a readout that reproduces each record pass the gate. A band
+    around the pooled records would reject the loops of the small one."""
+    from echostatenetwork import validation
+    t = np.arange(400) * 0.05
+    data = np.stack([a * np.stack([np.sin(t), np.cos(t)], axis=1) for a in (1.0, 4.0)])
+    esn = EchoStateNetwork(data[0].T, dt=1, N_units=60, upsample=1, t_train=300, t_val=50, t_test=50, N_wash=20,
+                           hyperparameters_to_optimize=[], seed=0, input_parameters=np.array([[0.0, 1.0]]),
+                           optimize_parameter_normalization=False, rho=0.5, sigma_in=0.5, tikh=1e-8, noise=0.0)
+    esn.train(data, plot_training=False)
+    U, Y, *_ = esn._split_and_format_data(data, add_noise=False)
+    esn.stability_steps, esn.stability_starts = 200, 2
+    assert [l for l, _ in validation._stability_starts(esn, U)] == [0, 1]
+    assert validation.unstable(esn, U, Y, esn.Wout[None])[0] == 0.0
