@@ -242,15 +242,16 @@ local.patches[0].rho, local.patches[0].Win     # hyperparameters and matrices of
 | `N_r` | rows of the reservoir state, $P N_\mathrm{units}$ |
 | `patch_sites` | `(N_patches, G + 2H)` sites of each window, $-1$ outside a non-periodic domain |
 | `state_positions` | `(N_dim + N_r,)` position of every row of $[\mathbf{u}; \mathbf{r}]$ |
-| `Win`, `W`, `Wout` | shared matrices, `(N_units, G + 2H + 1)`, `(N_units, N_units)`, `(N_units + 1, G)` |
+| `Win`, `W`, `Wout` | shared matrices, `(N_units, G + 2H + N_param + 1)`, `(N_units, N_units)`, `(N_units + 1, G)`; with `input_parameters`, every patch reads the `N_param` parameters after its window |
 | `patches` | with `shared=False`: one `EchoStateNetwork` per patch, with its own matrices and hyperparameters |
 
 ## Limitations
 
 - The layout raises a `ValueError` when `patch_size` does not divide the number
   of sites, when the window exceeds a periodic domain, when it is combined with
-  `input_parameters`, `readout_input` or partial observability (`observed_idx`),
-  and when `shared=False` is set without `patch_size`.
+  `readout_input` or partial observability (`observed_idx`), when independent
+  patches (`shared=False`) are given `input_parameters`, and when `shared=False`
+  is set without `patch_size`.
 - With independent patches, `Win`, `W` and `Wout` of the parallel network raise
   an `AttributeError` that points to `patches[p]`, and its `rho`, `sigma_in` and
   `tikh` are the starting values passed to every patch: the selected values live

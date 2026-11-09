@@ -247,8 +247,9 @@ class EchoStateNetwork:
         ValueError
             If the parallel layout cannot work: `patch_size` does not divide `N_dim`,
             the window of a patch exceeds a periodic domain, `patch_size` is combined
-            with `input_parameters`, `readout_input` or partial observability
-            (`observed_idx`), or ``shared=False`` is set without `patch_size`.
+            with `readout_input` or partial observability (`observed_idx`),
+            ``shared=False`` with `input_parameters`, or ``shared=False`` is set
+            without `patch_size`.
         """
 
         if y.ndim == 1:
@@ -618,7 +619,10 @@ class EchoStateNetwork:
     def _n_in(self) -> int:
         """int: columns of `Win` before the bias column -- `N_dim_in`, or the window
         width ``patch_size + 2 * halo`` with the parallel layout."""
-        return self.N_dim_in if self.patch_size is None else self.patch_size + 2 * self.halo
+        if self.patch_size is None:
+            return self.N_dim_in
+        n_param = 0 if self.input_parameters is None else self._n_param(self.input_parameters)
+        return self.patch_size + 2 * self.halo + n_param   # the window, then the parameters
 
     @property
     def _n_out(self) -> int:
@@ -637,8 +641,8 @@ class EchoStateNetwork:
         if self.periodic and G + 2 * H > N:
             raise ValueError(f'on a periodic domain, the window of a patch (patch_size + 2 * halo '
                              f'= {G + 2 * H} sites) must not exceed the N_dim={N} sites.')
-        if self.input_parameters is not None:
-            raise ValueError('input_parameters is not implemented with the parallel layout (patch_size).')
+        if self.input_parameters is not None and not self.shared:
+            raise ValueError('input_parameters is not implemented with independent patches (shared=False).')
         if self.readout_input:
             raise ValueError('readout_input is not implemented with the parallel layout (patch_size).')
         if not np.array_equal(self.observed_idx, np.arange(N)):
@@ -880,7 +884,10 @@ class EchoStateNetwork:
             # parallel layout: the patches become columns of the shared reservoir --
             # u_norm -> the windows (n_window, N_patches * N_ens), r -> (N_units, N_patches * N_ens);
             # the appended zero row is what the -1 entries of patch_sites read
-            u_norm = self._to_columns(np.vstack([u_norm, np.zeros((1, u.shape[-1]))])[self.patch_sites])
+            # input_parameters: the rows after the N_dim sites, read by every patch
+            params = np.tile(u_norm[self.N_dim:], (1, self.N_patches))
+            u_norm = self._to_columns(np.vstack([u_norm[:self.N_dim], np.zeros((1, u.shape[-1]))])[self.patch_sites])
+            u_norm = np.vstack([u_norm, params])
             r = self._to_columns(r.reshape(self.N_patches, self.N_units, -1))
 
         # Augment input with bias
@@ -1126,13 +1133,18 @@ class EchoStateNetwork:
         sites = self.patch_sites                                       # (P, n_window)
         Win_1 = self.Win[:, :self._n_in]
         Win_1 = Win_1.toarray() if issparse(Win_1) else np.asarray(Win_1)
+        n_window = sites.shape[1]
         inv_norm = np.where(sites >= 0, 1. / self.norm[sites], 0.)      # padded positions: no input
-        blocks = np.einsum('jg,pjm,jk,pk->pgkm', self.Wout[:self.N_units],
-                           tt.reshape(self.N_patches, self.N_units, N_ens),
-                           self.sigma_in * Win_1, inv_norm, optimize=True)   # (P, G, n_window, N_ens)
+        tt = tt.reshape(self.N_patches, self.N_units, N_ens)
+        blocks = np.einsum('jg,pjm,jk,pk->pgkm', self.Wout[:self.N_units], tt,
+                           self.sigma_in * Win_1[:, :n_window], inv_norm, optimize=True)   # (P, G, n_window, N_ens)
         J = np.zeros((self.N_dim, self.N_dim_in, N_ens))
         rows = np.arange(self.N_dim).reshape(self.N_patches, self.patch_size, 1)
         np.add.at(J, (rows, np.maximum(sites, 0)[:, np.newaxis, :]), blocks)
+        if n_window < self._n_in:          # input_parameters: every patch reads them
+            J[:, self.N_dim:] = np.einsum('jg,pjm,jk,k->pgkm', self.Wout[:self.N_units], tt,
+                                          self.sigma_in * Win_1[:, n_window:], 1. / self.norm[self.N_dim:],
+                                          optimize=True).reshape(self.N_dim, -1, N_ens)
         return J[..., 0] if N_ens == 1 else J
 
 
