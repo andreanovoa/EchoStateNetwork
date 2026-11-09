@@ -75,7 +75,11 @@ $\sigma_\mathrm{in}$, the Tikhonov factor, $\beta$, and the leak rate, $\alpha$:
 search range (`rho_range`, `sigma_in_range` in $\log_{10}$, the grid `tikh_range`,
 `leak_rate_range`) or a fixed value (`rho`, `sigma_in`, `tikh`, `leak_rate`), together
 with the budget of the Bayesian optimization (`N_func_evals`, `N_grid`). The ticked
-hyperparameters form `hyperparameters_to_optimize`.
+hyperparameters form `hyperparameters_to_optimize`. The Tikhonov factor alone needs no
+budget, because one evaluation of the validation strategy selects $\beta$ from the grid,
+unless the network has parameters: `train` then also searches the shift and the scale of
+every parameter column (`optimize_parameter_normalization`, on by default with
+`input_parameters`) by Bayesian optimization, with the budget `N_func_evals`.
 
 **Validation.** The strategy that scores every evaluation of the search: chaotic recycle
 validation (`RVC_Noise`, the default), single shot (`SSV`), walk forward (`WFV`) or

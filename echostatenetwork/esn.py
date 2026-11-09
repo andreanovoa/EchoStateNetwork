@@ -3,16 +3,18 @@
 Shared ESN implementation for qlrom, romda and related projects.
 """
 
+import difflib
+import inspect
 import io
+import logging
 import os
 import pickle
-import warnings
 from concurrent.futures import ProcessPoolExecutor
-from contextlib import redirect_stdout
+from contextlib import redirect_stdout, suppress
 from copy import deepcopy
 
 # Validation methods
-from functools import cached_property, partial
+from functools import cached_property, partial, partialmethod
 from itertools import product
 
 import matplotlib.backends.backend_pdf as plt_pdf
@@ -23,6 +25,9 @@ from scipy.sparse.linalg import ArpackNoConvergence
 from scipy.sparse.linalg import eigs as sparse_eigs
 
 from . import validation
+from .verbose import _collected_warnings, _warn, _warnings_once
+
+logger = logging.getLogger(__name__)
 
 #: `Win_type` options; 'sparse_dense_bias' gives every neuron the bias column (see `EchoStateNetwork.Win`)
 WIN_TYPES = ('sparse', 'sparse_dense_bias', 'dense')
@@ -34,33 +39,187 @@ def add_pdf_page(pdf, fig):
     plt.close(fig)
 
 
-def _train_one_seed(case, seed, train_data, add_noise, validation_strategy, kwargs):
+def _train_one_seed(case, seed, train_data, add_noise, validation_strategy):
     """Worker for `EchoStateNetwork.train(n_seeds=...)` (module-level so it pickles
     into worker processes): regenerate the reservoir for this seed, train fully,
-    and return ``(case, score)`` with one validation score comparable across seeds
-    -- the BHO minimum when a search ran, otherwise one evaluation of the
-    validation strategy on a sacrificial copy (the strategy mutates `Wout`/`tikh`
-    while scanning `tikh_range`). Stdout is captured and returned instead of
-    printed: worker prints interleave across processes, and a forked Jupyter
-    kernel's ZMQ stream is not fork-safe -- the parent prints the logs in order."""
+    and return ``(case, score, log, warnings)`` with one validation score comparable across seeds
+    -- the minimum of the search when a search ran (``bo_results['fun']``; with 'tikh' alone, its one
+    evaluation), otherwise one evaluation of the validation strategy at the fixed hyperparameters of the
+    network, `tikh` included, on a sacrificial copy (the strategy overwrites `Wout`). The reports of the
+    package (logger 'echostatenetwork', info and above) and any print are captured and returned instead of
+    written: worker output interleaves across processes, and a forked Jupyter kernel's ZMQ stream is not
+    fork-safe -- the parent logs them in order. The warnings of the package are collected as well
+    (``(message, category)`` pairs, each once): the parent issues them, at the line of its caller and under its
+    warnings filters, which the process of a seed cannot reach. When the seed fails, the error carries the warnings
+    collected before it (`_SEED_WARNINGS`), which the parent issues before it raises the error."""
     log = io.StringIO()
-    with redirect_stdout(log):
-        for attr in ('_W', '_Win', '_Wout'):
-            if hasattr(case, attr):
-                delattr(case, attr)
-        case.seed = seed
-        case.train(train_data, add_noise=add_noise, plot_training=False,
-                   validation_strategy=validation_strategy, seed=seed, **kwargs)
-        if case.bo_results is not None:
-            score = case.bo_results['fun']
+    package = logging.getLogger('echostatenetwork')
+    saved = package.handlers[:], package.level, package.propagate
+    capture = logging.StreamHandler(log)
+    capture.setFormatter(logging.Formatter('%(message)s'))
+    package.handlers, package.propagate = [capture], False
+    package.setLevel(logging.INFO)
+    try:
+        return _train_seed_captured(case, seed, train_data, add_noise, validation_strategy, log)
+    finally:
+        package.handlers, package.propagate = saved[0], saved[2]
+        package.setLevel(saved[1])
+
+
+def _train_seed_captured(case, seed, train_data, add_noise, validation_strategy, log):
+    """Body of `_train_one_seed`, with the logs already captured into `log`."""
+    with redirect_stdout(log), _collected_warnings() as caught:        # the parent issues them
+        try:
+            for attr in ('_W', '_Win', '_Wout'):
+                if hasattr(case, attr):
+                    delattr(case, attr)
+            case.seed = seed
+            case.train(train_data, add_noise=add_noise, plot_training=False,
+                       validation_strategy=validation_strategy, seed=seed)
+            if case.bo_results is not None:
+                score = case.bo_results['fun']
+            else:
+                strategy = validation_strategy or validation.RVC_Noise
+                # the data of the copy: the kept network keeps the norm that its Wout was fitted with, its generator
+                # and its split_summary, in which an inferred t_val stays inferred
+                probe = case.copy()
+                U_wtv, Y_wtv = probe._split_and_format_data(train_data, add_noise=add_noise)[:2]
+                # the score of the network that is kept: its fixed tikh, not the best value of tikh_range
+                probe.val_k, probe.tikh_range = 0, [case.tikh]
+                score = strategy([], probe, U_wtv, Y_wtv, np.zeros(1), [],
+                                 print_convergence=False)
+        except Exception as error:
+            # a warning may explain the failure: the error carries the warnings to the parent (an exception pickles
+            # its attributes), which issues them before it raises the error
+            with suppress(AttributeError, TypeError):
+                setattr(error, _SEED_WARNINGS, list(caught))
+            raise
+    return case, float(score), log.getvalue(), caught
+
+
+#: attribute of the error of a failed seed of ``train(n_seeds > 1)`` that holds the warnings the seed collected
+_SEED_WARNINGS = '_echostatenetwork_warnings'
+
+
+def _pop_verbose(kwargs, where):
+    """Remove the keyword 'verbose', which no longer exists, from `kwargs`, with a FutureWarning at the line of the
+    caller (`where` names the call in the message)."""
+    if kwargs.pop('verbose', None) is not None:
+        _warn(f"{where}: the keyword 'verbose' is removed and has no effect; the reports of train() go to the logger "
+              "'echostatenetwork', which echostatenetwork.set_verbose() shows.", FutureWarning)
+
+
+#: a missing value (an attribute that is not set, a getter that is not called). Ellipsis, a builtin singleton: a
+#: record that holds it (`_record_split`) pickles and copies as itself, also for the processes of ``n_seeds > 1``,
+#: and loads in versions of the package without this name
+_UNSET = Ellipsis
+
+
+def _option_names(cls, network=None, extra=()) -> list:
+    """The public names that a keyword can set: the attributes of `cls` and its properties with a setter (not its
+    methods or read-only properties, which a keyword cannot set either), with `network` the public attributes of that
+    network, and the names of `extra` (e.g. the parameters of `train`). They are the candidates of the hint of
+    `_warn_ignored`."""
+    names = {n for n in dir(cls) if not n.startswith('_') and _keyword_kind(cls, n) == 'option'}
+    if network is not None:
+        names.update(n for n in vars(network) if not n.startswith('_'))
+    return sorted(names.union(extra))
+
+
+def _keyword_kind(cls, key, network=None) -> str:
+    """What a keyword of the constructor (`cls`) or of `train` (`cls` and `network`) names, without calling a getter
+    that may fail (e.g. `N_train` before training, `patch_sites` without patches):
+
+    - 'option': an attribute that the keyword sets (a class attribute, a property with a setter, or an attribute
+      set on `network`);
+    - 'unset': a property with a setter that `network` does not hold yet (its getter raises AttributeError, e.g.
+      `Win` before training);
+    - 'read-only': a property without a setter (e.g. `trained`, `sparsity`, `N_train`);
+    - 'method': a method, which the keyword would replace (e.g. `copy`, `step`);
+    - 'unknown': none of these.
+
+    A method is a staticmethod, a classmethod, a partialmethod or a callable that binds to the instance, as in
+    dynamodels; a callable value that does not bind (e.g. a `functools.partial`) is an option."""
+    attr = inspect.getattr_static(cls, key, _UNSET)
+    if attr is _UNSET:
+        return 'option' if network is not None and key in vars(network) else 'unknown'
+    if isinstance(attr, property):
+        if attr.fset is None:
+            return 'read-only'
+        if network is not None:
+            try:
+                attr.fget(network)
+            except AttributeError:
+                return 'unset'
+            except Exception:       # e.g. a ValueError: the setter decides
+                pass
+        return 'option'
+    if isinstance(attr, (staticmethod, classmethod, partialmethod)) or \
+            (callable(attr) and hasattr(type(attr), '__get__') and not isinstance(attr, cached_property)):
+        return 'method'
+    return 'option'
+
+
+def _warn_ignored(where, kinds, owner, cls, network=None, extra=(), independent=False):
+    """Warn once, at the line of the caller, that keywords are ignored. `kinds` maps a kind of `_keyword_kind` to
+    the keywords of that kind: 'unknown' keywords are not attributes of `owner` (each with the closest of
+    `_option_names(cls, network, extra)` as a hint, e.g. 'rho_range' for 'rho_rnage'), 'method' keywords name a
+    method, 'read-only' keywords a property that cannot be set, 'computed' keywords a result of `train` (`Wout`),
+    and 'unset' keywords an attribute that the network does not hold yet (e.g. `Win` before training; with
+    `independent` patches, the network of every patch holds its own). Nothing when no keyword is ignored. The cutoff 0.8 of the hint keeps typos ('N_unit', 'rho_rnage') and
+    drops loose matches: the default cutoff, 0.6, suggests 'plot_Wout' for 'plot'."""
+    parts = []
+    if unknown := sorted(kinds.get('unknown', ())):
+        names = _option_names(cls, network, extra)   # only when a warning is due: dir() of the class
+        hints = [f'{match[0]!r} for {key!r}' for key in unknown
+                 if (match := difflib.get_close_matches(key, names, n=1, cutoff=0.8))]
+        parts.append(f'keyword(s) {unknown} are not attributes of {owner} and are ignored'
+                     + (f" (did you mean {', '.join(hints)}?)" if hints else ''))
+    if methods := sorted(kinds.get('method', ())):
+        parts.append(f'keyword(s) {methods} name methods of {owner}, not options, and are ignored')
+    if read_only := sorted(kinds.get('read-only', ())):
+        parts.append(f'keyword(s) {read_only} are read-only properties of {owner} and are ignored')
+    if computed := sorted(kinds.get('computed', ())):
+        parts.append(f'keyword(s) {computed} are computed by train and are ignored')
+    if unset := sorted(kinds.get('unset', ())):
+        # train keeps a reservoir set on the network by hand, but computes Wout again
+        reservoir = sorted({'W', 'Win'}.intersection(unset))
+        if independent and reservoir:
+            advice = ' (with independent patches, the network of every patch holds its own, in patches[p])'
+        elif reservoir:
+            advice = f" (set {' and '.join(reservoir)} on the network before calling train, which keeps them)"
         else:
-            strategy = validation_strategy or validation.RVC_Noise
-            U_wtv, Y_wtv = case._split_and_format_data(train_data, add_noise=add_noise)[:2]
-            probe = case.copy()
-            probe.val_k = 0
-            score = strategy([], probe, U_wtv, Y_wtv, np.zeros(1), [],
-                             print_convergence=False)
-    return case, float(score), log.getvalue()
+            advice = ''
+        parts.append(f'keyword(s) {unset} are attributes that the network does not hold yet and are ignored{advice}')
+    if parts:
+        _warn(f"{where}: {'; '.join(parts)}")
+
+
+def _same(a, b):
+    """Whether two option values are equal (arrays, lists and scalars): for the log of `train`, and for what changed
+    since the previous call (the inferred split, the options of independent patches)."""
+    try:
+        return bool(np.array_equal(np.asarray(a, dtype=object), np.asarray(b, dtype=object)))
+    except (TypeError, ValueError):
+        return a is b
+
+
+#: options that the network of an independent patch takes neither from the parallel network (`_init_patches`) nor
+#: from the keywords of `train` (`_train_patches`): the layout, the results of the last search, and the validation
+#: metric, which the network of a patch wraps to score the sites of its patch only (`_patch_metric`)
+_PATCH_EXCLUDED = frozenset({'patch_size', 'halo', 'periodic', 'shared', 'patches', 'observed_idx',
+                             'input_parameters', 'readout_input', 'bo_results', 'split_summary',
+                             'validation_metric'})
+#: attributes that the split of `train` may infer from its data, which the next call of `train` infers again from
+#: its own data (`_restore_split`): the split, and the names of the search over the normalization of the parameters.
+#: Not `param_shift_range` and `param_norm_range`: sized from the parameters of the first call, they are kept, so that
+#: a call on data in which a parameter takes fewer values (e.g. a cluster id of qlroms) searches the same range
+_INFERRED = ('t_train', 't_val', 'hyperparameters_to_optimize')
+#: keywords of `train` that `_set_options` sets after the others, in this order
+_SET_LAST = ('Win', 'W', 'dt_ESN')
+#: keywords of `train` after which the layout is checked again, as by the constructor (`_check_layout`)
+_LAYOUT_OPTIONS = frozenset({'patch_size', 'halo', 'periodic', 'shared', 'observed_idx', 'input_parameters',
+                             'readout_input'})
 
 
 def _patch_metric(case, Y_true, Y_pred, norm=1.0, metric=None, sites=None):
@@ -86,7 +245,7 @@ class EchoStateNetwork:
           leak_rate -- the leaky-integrator rate, 1.0 = no leak, etc.)
         - Training, validation, and test configuration (e.g., t_train, t_val, t_test, N_wash, etc.)
         - Optimization settings for Bayesian hyperparameter search (e.g., hyperparameters_to_optimize, rho_range, etc.)
-        - Bayesian optimization output of the last train() call (bo_results; None when no BHO ran)
+        - Hyperparameter search output of the last train() call (bo_results; None when no search ran; see train)
         - Input and output weight matrices (Win, Wout) and reservoir state matrix (W)
         - Parallel layout (patch_size, halo, periodic, shared): one reservoir per patch of sites, see below
 
@@ -124,7 +283,8 @@ class EchoStateNetwork:
     bias_out = np.array([1.0])
     regularize_bias_out = True   # False: the Tikhonov factor leaves the bias row of the readout out
 
-    # Slim copy of the last skopt result; None before training or when BHO is off.
+    # Slim copy of the last skopt result; None before training or when no search ran (hyperparameters_to_optimize
+    # empty). With 'tikh' alone, the one evaluation of the validation strategy (hp_names = [], see train()).
     bo_results: dict | None = None
 
     # Split summary from the last train() call; source for training_summary().
@@ -188,8 +348,6 @@ class EchoStateNetwork:
     grid_midpoints = False
     N_initial_rand = 0
     N_units = 100
-    # False silences train()'s reporting
-    verbose = True
     N_wash = 50
 
     max_L_tests = 10
@@ -224,7 +382,7 @@ class EchoStateNetwork:
     param_shift_range = (-1.0, 1.0)
     param_norm_range = (0.1, 10.0)
 
-    def __init__(self, y, dt=1., **kwargs):
+    def __init__(self, y, dt=None, **kwargs):
         """Initialize the reservoir dimensions and time step; matrices are built at
         training time (see `train` / `_generate_W_Win`), not here.
 
@@ -233,12 +391,18 @@ class EchoStateNetwork:
         y : np.ndarray
             Sample physical state used only to infer `N_dim`, shape ``(N_dim, N_samples)``
             (or 1D, treated as ``N_samples=1``).
-        dt : float
-            Time step of the input data, such that ``dt_ESN = dt * upsample``.
+        dt : float, optional
+            Time step of the input data (default 1), such that ``dt_ESN = dt * upsample`` (`dt_ESN` follows a
+            later change of `upsample`).
         **kwargs
             Any `EchoStateNetwork` class attribute to override (e.g. ``N_units``,
             ``rho``, ``observed_idx``, ``input_parameters``, ``optimize_parameter_normalization``,
             or ``patch_size``, ``halo``, ``periodic`` and ``shared`` for the parallel layout).
+            The keyword ``dt_ESN``, the time step of the network, sets ``dt = dt_ESN / upsample``, with a
+            UserWarning when `dt` is also given and disagrees. A keyword that is not a class attribute is
+            ignored with a UserWarning, which names it and, for a typo, suggests the closest attribute (e.g.
+            ``N_units`` for ``N_unit``); so is a keyword that names a method or a read-only property. The
+            removed keyword ``verbose`` gives a FutureWarning.
 
         Raises
         ------
@@ -262,21 +426,32 @@ class EchoStateNetwork:
         self.observed_idx = kwargs.pop('observed_idx', np.arange(self.N_dim)) # Default to full observability
 
         # Set provided input parameters ------------------------- #
-        keys = list(kwargs.keys())
-        [setattr(self, key, kwargs.pop(key)) for key in keys if hasattr(EchoStateNetwork, key)]
+        _pop_verbose(kwargs, type(self).__name__)
+        dt_ESN = kwargs.pop('dt_ESN', None)         # sets the time step of the data below, once upsample is set
+        ignored = {}
+        for key in list(kwargs):
+            kind = _keyword_kind(EchoStateNetwork, key)
+            if kind == 'option':
+                setattr(self, key, kwargs.pop(key))
+            else:                                   # not an option of the class: never set
+                ignored.setdefault(kind, []).append(key)
+        _warn_ignored(type(self).__name__, ignored, 'EchoStateNetwork', EchoStateNetwork)
 
         # Default to rescaling parametric inputs unless the user explicitly disables it.
         # Dense parameter columns can otherwise dominate the reservoir dynamics.
         if self.input_parameters is not None and 'optimize_parameter_normalization' not in vars(self):
             self.optimize_parameter_normalization = True
 
-        if self.patch_size is not None:
-            self._check_patch_layout()
-        elif not self.shared:
-            raise ValueError('shared=False requires the parallel layout: set patch_size.')
+        self._check_layout()
 
-        # Define time steps and windows.
-        self.dt_ESN = dt * self.upsample
+        # Time step of the data; the network steps at dt_ESN = dt * upsample, which follows upsample
+        self._dt_data = 1. if dt is None else dt
+        if dt_ESN is not None:
+            if dt is not None and not np.isclose(dt * self.upsample, dt_ESN):
+                _warn(f'{type(self).__name__}: dt_ESN={dt_ESN} and dt={dt} disagree (dt * upsample = '
+                      f'{dt * self.upsample}); the time step of the data is dt_ESN / upsample = '
+                      f'{dt_ESN / self.upsample}.')
+            self.dt_ESN = dt_ESN
 
         # Initialize ESN matrices.
         self.val_k = kwargs.get('val_k', 0)
@@ -362,8 +537,9 @@ class EchoStateNetwork:
         assert value.shape == (self.N_units, self.N_units), \
             f'W must be a square matrix of shape ({self.N_units}, {self.N_units}), but got {value.shape}'
 
-        # Set the reservoir state matrix
+        # Set the reservoir state matrix; a matrix set by hand has no record of the options that drew it
         self._W = value
+        self.__dict__.pop('_reservoir_key', None)
 
     @property
     def Win(self) -> np.ndarray | csr_matrix:
@@ -404,8 +580,9 @@ class EchoStateNetwork:
         assert value.shape ==  (self.N_units, self._n_in + 1), \
             f'Win must be a matrix of shape ({self.N_units}, {self._n_in + 1}), but got {value.shape}'
 
-        # Set the input matrix
+        # Set the input matrix; a matrix set by hand has no record of the options that drew it
         self._Win = value
+        self.__dict__.pop('_reservoir_key', None)
         self._invalidate_jacobian_cache()
 
 
@@ -461,8 +638,49 @@ class EchoStateNetwork:
 
     @property
     def dt_physical(self):
-        """float: Time step of the underlying physical data, ``dt_ESN / upsample``."""
-        return self.dt_ESN / self.upsample
+        """float: Time step of the underlying physical data, the `dt` of the constructor (``dt_ESN / upsample``)."""
+        return self._data_time_step()
+
+    @property
+    def dt_ESN(self):
+        """float: Time step of the network, ``dt * upsample``, with `dt` the time step of the data (`dt_physical`).
+        It follows `upsample`: ``train(upsample=k)``, or ``esn.upsample = k``, changes `dt_ESN` and leaves `dt`.
+        Setting `dt_ESN` sets the time step of the data to ``dt_ESN / upsample``."""
+        return self._data_time_step() * self.upsample
+
+    @dt_ESN.setter
+    def dt_ESN(self, value):
+        self._dt_data = value / self.upsample
+
+    def _data_time_step(self):
+        """The time step of the data, `_dt_data`. A network pickled while `dt_ESN` was stored, before it followed
+        `upsample`, holds `dt_ESN` instead, which the property hides: it becomes ``_dt_data = dt_ESN / upsample``
+        here, on the first use, also when a subclass unpickles the network with a `__setstate__` of its own that
+        does not call this class's (e.g. romda's `LatentROM`)."""
+        state = self.__dict__
+        if '_dt_data' not in state and 'dt_ESN' in state:
+            self._dt_data = state.pop('dt_ESN') / self.upsample
+        try:
+            return state['_dt_data']
+        except KeyError:
+            raise AttributeError(f"'{type(self).__name__}' object has no attribute '_dt_data'") from None
+
+    def __getstate__(self):
+        """Pickle (also `copy`): the attributes of the network, and `dt_ESN`, which echostatenetwork 0.2.3 and
+        earlier store and read, so that they load a network pickled by this version."""
+        state = self.__dict__.copy()
+        if '_dt_data' in state:
+            state['dt_ESN'] = self.dt_ESN
+        return state
+
+    def __setstate__(self, state):
+        """Unpickle (also `copy`). A network pickled while `dt_ESN` was stored, before it followed `upsample`,
+        keeps its `dt_ESN`; for a network pickled by this version, `dt_ESN` is only the copy that `__getstate__`
+        stores for older versions."""
+        self.__dict__.update(state)
+        legacy = self.__dict__.pop('dt_ESN', None)
+        if legacy is not None and '_dt_data' not in self.__dict__:
+            self.dt_ESN = legacy
 
     @property
     def N_train(self):
@@ -625,6 +843,15 @@ class EchoStateNetwork:
         """int: columns of `Wout` -- `N_dim`, or `patch_size` with the parallel layout."""
         return self.N_dim if self.patch_size is None else self.patch_size
 
+    def _check_layout(self):
+        """Raise a ValueError if the layout cannot work with the other options: see `_check_patch_layout`, and
+        ``shared=False`` requires `patch_size`. The constructor checks it, and `train` again after a keyword of the
+        layout (`_set_options`)."""
+        if self.patch_size is not None:
+            self._check_patch_layout()
+        elif not self.shared:
+            raise ValueError('shared=False requires the parallel layout: set patch_size.')
+
     def _check_patch_layout(self):
         """Raise a ValueError if the parallel layout (`patch_size`, `halo`,
         `periodic`) cannot work with the other options."""
@@ -667,23 +894,30 @@ class EchoStateNetwork:
         are independent random realizations. Its validation probes feed back only the
         sites of the patch and take the halo from the data, and its validation metric
         scores only the sites of the patch (see `_closed_loop_input`, `_patch_metric`)."""
-        excluded = {'patch_size', 'halo', 'periodic', 'shared', 'patches', 'observed_idx',
-                    'input_parameters', 'readout_input', 'bo_results', 'split_summary',
-                    'validation_metric', 'verbose'}
-        options = deepcopy({k: getattr(self, k) for k, v in vars(EchoStateNetwork).items()
-                            if not k.startswith('_') and k not in excluded and not callable(v)
-                            and not isinstance(v, (property, cached_property, staticmethod,
-                                                   classmethod))})
+        options = self._patch_options()
+        # what the networks took from this network: train() passes them a value changed since (_train_patches)
+        self._patch_options_seen = deepcopy(options)
+        options = deepcopy(options)
         sites = slice(self.halo, self.halo + self.patch_size)
-        seeds = np.random.SeedSequence(self.seed if seed is None else seed).generate_state(self.N_patches)
+        root = self.seed if seed is None else seed
+        seeds = np.random.SeedSequence(root).generate_state(self.N_patches)
+        # what defines the networks of the patches: train() builds them again when it changes (_stale_patches)
+        self._patches_key = dict(patch_size=self.patch_size, halo=self.halo, seed=root)
         self.patches = []
-        for seed_p in seeds:
-            net = EchoStateNetwork(np.zeros((self._n_in, 1)), dt=self.dt_ESN / self.upsample,
-                                   verbose=False, **options)
+        for p, seed_p in enumerate(seeds):
+            net = EchoStateNetwork(np.zeros((self._n_in, 1)), dt=self.dt_physical, **options)
             net.seed = int(seed_p)
+            net._patch = p                      # the parallel network reports the summary of every patch
             net._forecast_sites = sites
             net.validation_metric = partial(_patch_metric, metric=self.validation_metric, sites=sites)
             self.patches.append(net)
+
+    def _patch_options(self) -> dict:
+        """The options of this network that the network of every independent patch takes: the public class
+        attributes of `EchoStateNetwork` that are values (not methods or properties), except `_PATCH_EXCLUDED`."""
+        return {k: getattr(self, k) for k, v in vars(EchoStateNetwork).items()
+                if not k.startswith('_') and k not in _PATCH_EXCLUDED and not callable(v)
+                and not isinstance(v, (property, cached_property, staticmethod, classmethod))}
 
     def _patch_record(self, data, p):
         """Record of the window of patch `p`: the columns `patch_sites[p]` of `data`
@@ -720,7 +954,7 @@ class EchoStateNetwork:
         return np.concatenate(u_out), np.concatenate(r_out)
 
     def _train_patches(self, train_data, add_noise=True, validation_strategy=None, seed=None,
-                       n_seeds=1, **kwargs):
+                       n_seeds=1, **options):
         """Backend of `train` with independent patches (``shared=False``): train the
         network of every patch on the record of its own window, with its own
         hyperparameter search (the validation strategy and Bayesian optimization of
@@ -728,19 +962,76 @@ class EchoStateNetwork:
         `n_seeds` selects the reservoir realization per patch. Training plots are not
         drawn. The validation probes of a patch forecast the sites of the patch in
         closed loop with the halo taken from the data, so that the search of one patch
-        does not depend on the other patches."""
-        for key, val in kwargs.items():
-            if hasattr(self, key):
-                setattr(self, key, val)
+        does not depend on the other patches.
+
+        `options` are the keywords of `train`, which `train` has already set on this network. The network of
+        every patch receives the options of `_patch_options` that are keywords of this call or that changed on this
+        network since the networks took them (e.g. ``esn.N_units = 10`` before ``train(force=True)``); an option
+        that this network holds but a plain `EchoStateNetwork` does not, e.g. an attribute of a subclass, stays on
+        this network. A new `validation_metric`, given to `train` or set on this network, is wrapped to score the
+        sites of the patch only. The networks of the patches are built again, with seeds spawned from the given
+        `seed`, else from the attribute `seed`, when `patch_size` or `halo` changes (`_stale_patches`); a given `seed`
+        alone does not build them again (a warning says so). Otherwise, every network keeps its reservoir by the
+        rule of `train`, which draws a new one from the seed of the patch when an option that defines it changes,
+        and its own results of the search (e.g. `rho`) unless they changed on this network. Every network takes the
+        time step of the data and the split of this network: the `t_train` and `t_val` that were given, or None,
+        which infers them again from the record of the window. A warning that the networks of the patches raise,
+        e.g. fewer validation folds than `N_folds`, is issued once per call, at the line that calls `train`."""
+        stale = self._stale_patches()
+        root = self.__dict__.get('_patches_key', {}).get('seed')
+        if stale:
+            logger.debug('train: new networks of the patches, because %s changed.', ', '.join(stale))
+            self.patches = None
+        elif seed is not None and self.patches is not None and seed != root:
+            _warn(f'{type(self).__name__}.train: seed={seed} is ignored: the networks of the patches keep their '
+                  f'reservoirs and their seeds, spawned from seed {root}, which train spawns again only when '
+                  'patch_size or halo changes (see force). A new network trained with '
+                  f'seed={seed} draws the networks of that seed.')
+        for attr in ('_W', '_Win', '_Wout', '_reservoir_key'):     # the matrices of a shared layout trained before
+            self.__dict__.pop(attr, None)
+        current = self._patch_options()
         if self.patches is None:
             self._init_patches(seed)
+            changed = {}
+        else:
+            seen = self.__dict__.get('_patch_options_seen')
+            if seen is None:        # networks built before this record: the options that define the reservoir
+                names = ('N_units', 'connect', 'Win_type', 'param_in_reservoir')
+            else:
+                names = [k for k, v in current.items() if not _same(v, seen.get(k, _UNSET))]
+            changed = {k: current[k] for k in names if k not in ('t_train', 't_val')}   # the split: below
+            for net in self.patches:        # a metric given to train, or set on this network since
+                wrapped = net.validation_metric
+                if 'validation_metric' in options or (getattr(wrapped, 'func', None) is _patch_metric
+                                                      and wrapped.keywords['metric'] is not self.validation_metric):
+                    net.validation_metric = partial(_patch_metric, metric=self.validation_metric,
+                                                    sites=net._forecast_sites)
+        options = deepcopy({**changed, **{k: v for k, v in options.items() if k in current}})
         for p, net in enumerate(self.patches):
+            net._inferred_split = {}            # the split of this network decides, not the record of the patch
+            net.t_train, net.t_val = self.t_train, self.t_val
+            net._dt_data = self.dt_physical
             net.train(self._patch_record(train_data, p), add_noise=add_noise, plot_training=False,
-                      validation_strategy=validation_strategy, n_seeds=n_seeds, **kwargs)
+                      validation_strategy=validation_strategy, n_seeds=n_seeds, force=True, **options)
+        self._patch_options_seen = deepcopy(current)
         # the split is the same for every patch (same record length)
+        before = self._inferred_state()
         self.t_train, self.t_val = self.patches[0].t_train, self.patches[0].t_val
-        if self.verbose:
-            print(self.training_summary())
+        self._record_split(before)
+        logger.info('%s', self.training_summary())
+
+    def _stale_patches(self) -> list:
+        """Why the networks of the independent patches no longer fit (empty: `train` keeps them): `patch_size` or
+        `halo` changed since `_init_patches` built them. A seed given to `train` does not rebuild them, as for the
+        reservoir of a single network (`_stale_reservoir`)."""
+        if self.patches is None:
+            return []
+        key = self.__dict__.get('_patches_key', {})
+        stale = [f'{name} ({key[name]} -> {getattr(self, name)})' for name in ('patch_size', 'halo')
+                 if name in key and key[name] != getattr(self, name)]
+        if not stale and (len(self.patches) != self.N_patches or self.patches[0].N_dim != self._n_in):
+            stale.append('the window of the patches')
+        return stale
 
 
     @property
@@ -1148,12 +1439,24 @@ class EchoStateNetwork:
               validation_strategy=None,
               seed=None,
               n_seeds=1,
+              force=False,
               **kwargs
               ):
         """Train the ESN: format the data into washout/train/validation/test sets,
-        (re)generate `Win`/`W` if not already set, select hyperparameters via
-        Bayesian optimization (unless `hyperparameters_to_optimize` is empty), and
-        fit `Wout` by ridge regression on the resulting hyperparameters.
+        (re)generate `Win`/`W` if not already set or if the options that define them
+        changed (see `force`), select hyperparameters via
+        Bayesian optimization (none when `hyperparameters_to_optimize` is empty; with
+        'tikh' alone, one evaluation of the validation strategy), and fit `Wout` by
+        ridge regression on the resulting hyperparameters.
+
+        Every evaluation of the validation strategy selects `tikh` from the grid
+        `tikh_range`, so 'tikh' is not a dimension of the Bayesian optimization. A
+        search over 'tikh' alone is therefore a grid search: one evaluation of the
+        strategy at the fixed `rho`, `sigma_in` and `leak_rate`, without Bayesian
+        optimization and without scikit-optimize (`N_func_evals`, `N_grid` and
+        `N_initial_rand` do not apply). Dimensions that the network adds to the
+        search, e.g. the normalization of the parameters with
+        `optimize_parameter_normalization`, make it a Bayesian optimization again.
 
         With the parallel layout (`patch_size`), the patches share `Wout`, which the
         ridge regression fits on all the patches at once: every time step provides
@@ -1163,6 +1466,10 @@ class EchoStateNetwork:
         patches (``shared=False``), the network of every patch trains on the record of
         its own window, with its own hyperparameter search, normalization and ridge
         regression (see `_train_patches`); `n_seeds` then applies per patch.
+
+        A call that raises, e.g. a ValueError of the layout or data too short for the split, or that is
+        interrupted, leaves the network as it was: its options, matrices, split and generator `rng`. A warning
+        of the package is issued once per call, at the line that called the package (`echostatenetwork.verbose`).
 
         Parameters
         ----------
@@ -1181,54 +1488,170 @@ class EchoStateNetwork:
         validation_strategy : callable, optional
             Validation function for hyperparameter tuning. Defaults to `_RVC_Noise`.
         seed : int, optional
-            Random seed for generating `Win`/`W` if they don't already exist.
-            Defaults to `seed`/`rng`.
+            Seed of the random `Win` and `W` when `train` draws them, with a new generator: on the first call
+            (unless the network holds a reservoir drawn by `_generate_W_Win` or set by hand before it), and when
+            an option that defines the reservoir changes (see `force`). By default, the first call draws them
+            from the generator `rng` of the attribute `seed`, after the noise of the inputs, so that no given seed
+            reproduces them. A seed alone does not replace a reservoir that the network holds: `train` keeps the
+            reservoir and warns that `seed` is ignored, unless it is the seed of that reservoir. The keyword does
+            not change the attribute `seed`, which seeds the noise of the inputs, and setting the attribute does
+            not draw a new reservoir. With ``n_seeds > 1``, the first seed of the realizations: by default, the
+            first seed of the previous ``n_seeds`` call while the attribute `seed` is one of its seeds (as after
+            that call), so that training again draws the same realizations; otherwise the attribute `seed`.
         n_seeds : int
             If > 1, train this many reservoir realizations (seeds ``base, base+1,
-            ...`` with ``base = seed or self.seed``) on the same data and settings,
+            ...``, with `base` given by `seed`) on the same data and settings,
             in parallel processes, and keep the one with the best validation score;
-            per-seed scores are stored in `seed_scores` for statistical comparison.
-            Training plots are skipped in this mode.
+            per-seed scores are stored in `seed_scores` for statistical comparison
+            (a later call with ``n_seeds = 1`` leaves them, and they set the first
+            seed of the next ``n_seeds`` call, see `seed`).
+            The score of a seed is ``bo_results['fun']`` after a search, otherwise
+            one evaluation of the validation strategy at the fixed hyperparameters
+            of the seed, `tikh` included. Training plots are skipped in this mode.
+            A warning raised while the seeds train, e.g. fewer validation folds than
+            `N_folds`, is issued once, by the calling process, at the line that calls
+            `train`, also when the warning comes from code of the user that the package
+            calls back (e.g. a validation strategy that calls `validation.WFV`), which a
+            single seed points at.
+        force : bool
+            A trained network is not trained again unless `force` is True (a warning says so). A copy of a
+            trained network (`copy`) and a network loaded with its matrices (`from_arrays`, `pickle`) are
+            trained. With `force`, the hyperparameter search and `Wout` are computed again, and:
+
+            - the reservoir (`W`, `Win`) is kept while the options that define it are unchanged, as keywords
+              or as attributes: `N_units`, `connect`, `Win_type`, the number of inputs (`observed_idx`,
+              `input_parameters`), `param_in_reservoir`, `patch_size` and `halo`. A seed is not one of them
+              (see `seed`). When one of them changes, a new reservoir is drawn from the given `seed`, else from
+              the seed of the reservoir, or the attribute `seed` for a reservoir drawn from `rng`: it is the
+              reservoir that a new network with these options draws with ``train(seed=...)``, and a diagnostic
+              message names the option. A reservoir of the first call, drawn from `rng`, is therefore not
+              restored when an option changes and changes back. A reservoir set by hand (`W`, `Win`,
+              `from_arrays`), or held by a network pickled by echostatenetwork 0.2.3 or earlier, takes the
+              options of the network at the start of the call as its own: an option that the call changes draws
+              a new one from the attribute `seed`, as for a reservoir drawn from `rng`, so that networks that
+              share one reservoir draw the same new one. A matrix set by hand whose shape no longer fits the
+              options (e.g. ``esn.N_units = 20; esn.W = W20`` keeps the old `Win`) is drawn again alone.
+              `readout_input` changes `Wout` only;
+            - with independent patches, the networks of the patches are built again, with seeds spawned from
+              the given `seed`, else from the attribute `seed`, when `patch_size` or `halo` changes. Otherwise,
+              every network takes the options changed on this network (keywords or attributes) and keeps its
+              reservoir by the rule above, which draws a new one from the seed of its patch,
+              ``patches[p].seed``, when an option changes: a new single network with the options of the patch
+              draws it with ``train(seed=patches[p].seed)``, a new parallel network does not;
+            - a `t_train` or `t_val` that was given (to the constructor, to `train` or as an attribute) is
+              kept, and one that the previous call inferred from its data is inferred again from the new
+              data, so that the same data give the same split. An attribute set to the value that the previous
+              call inferred cannot be told from it and is inferred again; pass it to `train` to keep it;
+            - the names ``param_shift_i``, ``param_norm_i`` that the previous call added to
+              `hyperparameters_to_optimize` are added again only while the network has parameters and
+              `optimize_parameter_normalization`, unless the list was set since; the `param_shift_range`,
+              `param_norm_range` that the first call sized from the parameters are kept;
+            - `dt_ESN` follows `upsample`, and `t_train`, `t_val` remain times.
+
+            The noise of the inputs continues the generator `rng`, so that a single network trained again on
+            the same data does not reproduce its previous training; the seeds of ``n_seeds > 1`` do.
         **kwargs
-            Any existing attribute to override before training (e.g. `N_units`).
+            Any option of the network to override before training (e.g. `N_units`, `rho_range`), set in the
+            order given, except `W`, `Win` and `dt_ESN`, which are set last. The keywords of the layout
+            (`patch_size`, `halo`, `periodic`, `shared`, `observed_idx`, `input_parameters`, `readout_input`)
+            are checked as by the constructor. A keyword that is not an option, e.g. a misspelt name, a method
+            or a read-only property such as `trained`, is ignored with a UserWarning, which names it and, for a
+            typo, suggests the closest option or parameter of `train` (e.g. `rho_range` for `rho_rnage`,
+            `n_seeds` for `n_seed`), once per call, also with ``n_seeds > 1`` and independent patches, and also
+            when a trained network is not trained again. `Wout`, which `train` computes, and an attribute that
+            the network does not hold yet (e.g. `W` or `Win` before training) are ignored with the same warning;
+            `W` and `Win` set on the network before `train` are kept (with independent patches, on the network
+            of a patch). The removed keyword ``verbose`` gives a FutureWarning.
 
         Returns
         -------
         None
-            Sets `Wout` (and, if not already present, `Win`/`W`) in place. Also sets
-            `bo_results`: a dict with keys ``'func_vals'`` (the per-evaluation
+            Sets `Wout` (and `Win`/`W` when they are not present or no longer fit, see `force`) in place. Also
+            sets `bo_results`: a dict with keys ``'func_vals'`` (the per-evaluation
             validation-loss trace), ``'x_iters'`` (evaluated points), ``'x'``/``'fun'``
             (the selected point and its loss), ``'hp_names'``, and ``'n_grid_points'``
-            — or None when `hyperparameters_to_optimize` is empty (no BHO ran). This
+            -- or None when `hyperparameters_to_optimize` is empty (no search ran). This
             is a slimmed copy of the `skopt` result: the raw ``OptimizeResult``
             retains the training corpus and the fitted GP models, which would bloat
-            every pickle/deepcopy of a trained ESN.
+            every pickle/deepcopy of a trained ESN. With 'tikh' alone, `bo_results`
+            holds the one evaluation: ``'func_vals'`` of length one, ``'x' = []``,
+            ``'x_iters' = [[]]``, ``'hp_names' = []`` (the selected Tikhonov factor
+            is `tikh`, as after a Bayesian optimization) and ``'n_grid_points' = 1``;
+            ``'fun'`` is the validation score at the selected `tikh`, which also
+            scores a seed of ``n_seeds > 1``.
         """
+        # once, here, before the dispatch: the networks of independent patches and the seeds of n_seeds > 1 train
+        # with the keywords that are kept, so they do not warn again
+        _pop_verbose(kwargs, f'{type(self).__name__}.train')
+        ignored = {}
+        for key in list(kwargs):
+            # Wout: train computes it, also on a trained network, which holds it
+            kind = 'computed' if key == 'Wout' else _keyword_kind(type(self), key, network=self)
+            if kind == 'method' and _keyword_kind(EchoStateNetwork, key) == 'option':
+                kind = 'option'         # an option that a subclass holds as a callable, e.g. a staticmethod metric
+            if kind != 'option':
+                ignored.setdefault(kind, []).append(key)
+                del kwargs[key]
+        if ignored:                     # the parameters of train are candidates of the hint as well
+            _warn_ignored(f'{type(self).__name__}.train', ignored, 'the network', type(self), network=self,
+                          extra=[name for name in inspect.signature(EchoStateNetwork.train).parameters
+                                 if name not in ('self', 'kwargs')], independent=self._independent)
+        if self.trained and not force:
+            _warn('EchoStateNetwork.train: the network is already trained and is not trained again; pass '
+                  'force=True to train it again.')
+            return None
+        if self.trained and getattr(self, '_patch', None) is None:
+            logger.debug('train(force=True): training the trained network again.')
+        saved = self._saved_state()
+        try:
+            with _warnings_once():      # each warning once per call, however many evaluations, seeds or patches
+                return self._train_network(train_data, add_noise, plot_training, save_ESN_training, folder,
+                                           validation_strategy, seed, n_seeds, kwargs)
+        except BaseException:           # an error, or an interruption: the network is left as it was
+            self._restore_state(saved)
+            raise
+
+    def _train_network(self, train_data, add_noise, plot_training, save_ESN_training, folder, validation_strategy,
+                       seed, n_seeds, kwargs):
+        """Body of `train`, after the check of its keywords (`kwargs`, the options to set). Not `_train`, which
+        romda's autoencoders define, and which a latent ROM (e.g. AE_ESN) inherits with this class."""
+        self._record_reservoir()            # before the keywords, which _stale_reservoir compares with this record
+        self._set_options(kwargs)           # before the dispatch: the keywords may change the layout
+        self._restore_split(keep=kwargs)    # what the previous call inferred from its data is inferred again
         if self._independent:
             return self._train_patches(train_data, add_noise=add_noise,
                                        validation_strategy=validation_strategy, seed=seed,
                                        n_seeds=n_seeds, **kwargs)
+        if self.patches is not None:        # the networks of independent patches, from a layout trained before
+            self.patches = None
         if n_seeds > 1:
             return self._train_multi_seed(train_data, n_seeds, add_noise=add_noise,
-                                          validation_strategy=validation_strategy,
-                                          seed=seed, **kwargs)
-
-        if self.trained:
-            print("ESN is already trained. Skipping training.")
-            pass #  skip training
-
-        for key, val in kwargs.items():
-            if hasattr(self, key):
-                print(f'Modifying {key} = {getattr(self, key)} -> {val} at training.')
-                setattr(self, key, val)
+                                          validation_strategy=validation_strategy, seed=seed)
 
         # ========================== STEP 1: DATA FORMATTING ==========================
-        # Format data into washout, train/validation, and test sets
-        U_wtv, Y_wtv, U_test, Y_test = self._split_and_format_data(train_data, add_noise=add_noise)
+        # Format data into washout, train/validation, and test sets; remember what the split inferred
+        before = self._inferred_state()
+        try:
+            U_wtv, Y_wtv, U_test, Y_test = self._split_and_format_data(train_data, add_noise=add_noise)
+        finally:
+            self._record_split(before)
 
-        # print([xx.shape for xx in [U_wtv, Y_wtv, U_test, Y_test]])
-
-        # Ensure W and Win matrices are initialized
+        # W and Win: kept while the options that define them are unchanged, whatever the seed, drawn again otherwise
+        stale, drop = self._stale_reservoir()
+        key = self.__dict__.get('_reservoir_key') or {}
+        if stale:
+            if seed is None:                # the seed of the reservoir, else the attribute seed, with a new generator
+                seed = self.seed if key.get('seed') is None else key['seed']
+            logger.debug('%strain: new %s (seed %s), because %s changed.',
+                         '' if getattr(self, '_patch', None) is None else f'patch {self._patch}: ',
+                         ' and '.join(attr[1:] for attr in drop), seed, ', '.join(stale))
+            for attr in (*drop, '_reservoir_key'):
+                self.__dict__.pop(attr, None)
+        elif seed is not None and seed != key.get('seed') and hasattr(self, '_W') and hasattr(self, '_Win'):
+            _warn(f"{type(self).__name__}.train: seed={seed} is ignored: the network keeps its reservoir (W, Win)"
+                  + ('' if key.get('seed') is None else f", drawn from seed {key['seed']}") + ', which train draws '
+                  'again only when an option that defines it changes (see force). A new network trained with '
+                  f'seed={seed}, or n_seeds > 1, draws the reservoir of that seed.')
         if not hasattr(self, '_W') or not hasattr(self, '_Win'):
             self._generate_W_Win(seed=seed)
 
@@ -1243,7 +1666,7 @@ class EchoStateNetwork:
             if self.hyperparameters_to_optimize:
                 bo_results = self._optimize_hyperparameters(U_wtv, Y_wtv,
                                                            validation_strategy,
-                                                           print_convergence=plot_training)
+                                                           print_convergence=plot_training or logger.isEnabledFor(logging.INFO))
             else:
                 bo_results = None
             # Expose the BHO output for post-training inspection
@@ -1257,11 +1680,13 @@ class EchoStateNetwork:
                     hp_names=bo_results['hp_names'],
                     n_grid_points=bo_results['n_grid_points'])
             # ====================== STEP 3: RIDGE REGRESSION TRAINING =====================
+            # the search, or the keywords, may have changed sigma_in and the normalization, which dr_di caches
+            self._invalidate_jacobian_cache()
             # Compute the output weight matrix Wout
             self.Wout = self._solve_ridge_regression(U_wtv, Y_wtv)
 
-            if self.verbose:
-                print(self.training_summary())
+            if getattr(self, '_patch', None) is None:
+                logger.info('%s', self.training_summary())
 
             # ========================== STEP 4: TEST AND PLOTTING ======================
             if plot_training:
@@ -1269,52 +1694,213 @@ class EchoStateNetwork:
         finally:
             self.input_parameters = original_input_parameters
 
-    def _train_multi_seed(self, train_data, n_seeds, add_noise, validation_strategy,
-                          seed, **kwargs):
+    def _train_multi_seed(self, train_data, n_seeds, add_noise, validation_strategy, seed):
         """Backend of ``train(n_seeds > 1)``: train `n_seeds` reservoir realizations
         of this ESN on the same data and settings, adopt the realization with the
         best validation score in place, and store the per-seed scores in
         `seed_scores` (``{seed: score}``) for statistical comparison. Runs one
         process per seed when the ESN and validation strategy pickle (a closure
-        strategy doesn't -- falls back to a serial loop with a note)."""
-        base = self.seed if seed is None else seed
+        strategy doesn't -- falls back to a serial loop with a note). `train` has
+        already set its keywords on this network, which the realizations copy. The
+        first seed is `seed`; by default, the first seed of the previous call while
+        the attribute `seed` (the kept seed) is one of its seeds, else the attribute."""
+        previous = getattr(self, 'seed_scores', None) or {}
+        if seed is not None:
+            base = seed
+        elif self.seed in previous:     # trained again: the seeds of the previous call
+            base = int(min(previous))
+        else:
+            base = self.seed
         seeds = [base + i for i in range(n_seeds)]
         try:
             pickle.dumps((self, validation_strategy))
             parallel = True
         except Exception:
-            print('n_seeds: ESN or validation_strategy is not picklable; '
-                  'training the seeds serially instead of in parallel.')
+            logger.info('n_seeds: the ESN or the validation strategy does not pickle; '
+                        'training the seeds serially instead of in parallel.')
             parallel = False
-        if parallel:
-            # ponytail: no BLAS-thread throttling in workers; export OMP_NUM_THREADS
-            # if n_seeds x BLAS threads oversubscribes the machine.
-            with ProcessPoolExecutor(max_workers=min(n_seeds, os.cpu_count() or 1)) as ex:
-                results = list(ex.map(_train_one_seed, [self] * n_seeds, seeds,
-                                      [train_data] * n_seeds, [add_noise] * n_seeds,
-                                      [validation_strategy] * n_seeds,
-                                      [kwargs] * n_seeds))
-        else:
-            results = [_train_one_seed(self.copy(), s, train_data, add_noise,
-                                       validation_strategy, kwargs) for s in seeds]
-        if self.verbose:
-            for _, _, log in results:
-                print(log, end='')
-        scores = np.array([score for _, score, _ in results])
+        try:
+            if parallel:
+                # ponytail: no BLAS-thread throttling in workers; export OMP_NUM_THREADS
+                # if n_seeds x BLAS threads oversubscribes the machine.
+                with ProcessPoolExecutor(max_workers=min(n_seeds, os.cpu_count() or 1)) as ex:
+                    results = list(ex.map(_train_one_seed, [self] * n_seeds, seeds,
+                                          [train_data] * n_seeds, [add_noise] * n_seeds,
+                                          [validation_strategy] * n_seeds))
+            else:
+                results = [_train_one_seed(self.copy(), s, train_data, add_noise, validation_strategy)
+                           for s in seeds]
+        except Exception as error:      # the warnings of the failed seed first: they may explain the error
+            for message, category in getattr(error, _SEED_WARNINGS, ()):
+                _warn(message, category)
+            raise
+        # collected by the seeds, issued here, once per call of train (_warnings_once): before the best seed is
+        # adopted
+        for *_, caught in results:
+            for message, category in caught:
+                _warn(message, category)
+        scores = np.array([score for _, score, *_ in results])
+        for s, score, (_, _, log, _) in zip(seeds, scores, results):  # the reports of each seed, in order
+            logger.info('seed %s (validation score %.4f)%s', s, score, (':\n' + log.rstrip('\n')) if log.strip() else '')
         best = int(np.nanargmin(scores))
         self.__dict__.clear()
         self.__dict__.update(results[best][0].__dict__)
         self.seed_scores = dict(zip(seeds, scores))
-        if self.verbose:
-            print(f'n_seeds={n_seeds}: validation score {scores.mean():.4f} +/- '
-                  f'{scores.std():.4f} (best {scores[best]:.4f} @ seed {seeds[best]}, '
-                  f'worst {scores.max():.4f}) -> kept seed {seeds[best]}')
+        logger.info('n_seeds=%d: validation score %.4f +/- %.4f (best %.4f @ seed %s, worst %.4f) -> kept seed %s',
+                    n_seeds, scores.mean(), scores.std(), scores[best], seeds[best], scores.max(), seeds[best])
+
+    # ---------------------------------------------------------------- training again (train(force=True))
+    def _set_options(self, options):
+        """Set the keywords of `train` (options of the network, see `_keyword_kind`), with a diagnostic message for
+        every changed value (from this network, not from the networks of independent patches, which receive the
+        same keywords). After a keyword of the layout (`_LAYOUT_OPTIONS`), check the layout as the constructor does;
+        `train` restores the network when the check raises a ValueError."""
+        # dt_ESN, W and Win last, whatever the order of the keywords: dt_ESN sets the time step of the data from the
+        # new upsample (as the constructor does), and W and Win are checked against the new N_units and inputs
+        for key in sorted(options, key=lambda k: _SET_LAST.index(k) + 1 if k in _SET_LAST else 0):
+            val = options[key]
+            if getattr(self, '_patch', None) is None:
+                try:
+                    old = getattr(self, key)
+                except Exception:               # e.g. a getter that needs another option
+                    old = val
+                if not _same(old, val):
+                    logger.debug('train: %s = %s -> %s', key, old, val)
+            setattr(self, key, val)
+        if _LAYOUT_OPTIONS.intersection(options):
+            self._check_layout()
+
+    def _saved_state(self) -> list:
+        """The state of this network and of the networks of its patches, for `_restore_state`: their attributes
+        (a shallow copy, enough because `train` assigns new values and new arrays rather than changing them in
+        place) and a copy of their generator `rng`, which the noise of the inputs advances."""
+        return [(net, dict(net.__dict__), deepcopy(net.__dict__.get('_rng')))
+                for net in [self, *(self.patches or [])]]
+
+    @staticmethod
+    def _restore_state(saved):
+        """Return every network of `saved` (`_saved_state`) to its saved state."""
+        for net, state, rng in saved:
+            net.__dict__.clear()
+            net.__dict__.update(state)
+            if rng is not None:
+                net._rng = rng
+
+    def _inferred_state(self) -> dict:
+        """The attributes of `_INFERRED` that this network sets itself (`_UNSET`: the class default), before the
+        split of `train` may infer them, for `_record_split`."""
+        return {name: self.__dict__.get(name, _UNSET) for name in _INFERRED}
+
+    def _record_split(self, before):
+        """Remember which attributes of `_INFERRED` the split of this call inferred from the data (or, for a
+        ragged record, wrote back), with the value that each had before (`before`, from `_inferred_state`), for
+        `_restore_split`."""
+        now = self._inferred_state()
+        self._inferred_split = {name: (now[name], value) for name, value in before.items()
+                                if not _same(now[name], value)}
+
+    def _restore_split(self, keep=()):
+        """Return the attributes that the previous `train` inferred from its data (`_record_split`) to the values
+        they had before it, so that this call infers them again from its data: `t_train` and `t_val` (None: inferred
+        again), and the names ``param_shift_i``/``param_norm_i`` that it added to `hyperparameters_to_optimize`
+        (`_INFERRED`). An attribute set since, or in `keep` (the keywords of this call), is kept. A value set as
+        an attribute that equals the inferred value cannot be told from it, and is inferred again: give it to
+        `train` to keep it. A network trained before this record (pickled by echostatenetwork 0.2.3 or earlier) has
+        it rebuilt from `split_summary` (`_legacy_split_record`)."""
+        record = self.__dict__.pop('_inferred_split', None)
+        if record is None:
+            record = self._legacy_split_record()
+        for name, (inferred, before) in record.items():
+            if name in keep or not _same(self.__dict__.get(name, _UNSET), inferred):
+                continue
+            if name in ('t_train', 't_val') and before in (None, _UNSET):
+                logger.debug('train: %s is inferred again from the data (the previous call inferred %s).',
+                             name, inferred)
+            if before is _UNSET:
+                self.__dict__.pop(name, None)
+            else:
+                setattr(self, name, before)
+
+    def _legacy_split_record(self) -> dict:
+        """The record of `_record_split` of a network trained before it existed, from `split_summary`. When in doubt,
+        a value is taken as given, and kept, as echostatenetwork 0.2.3 kept it. A ragged record writes `t_train`
+        back, and its summary says whether `t_val` was inferred. On one series, `t_train` and `t_val` were both
+        inferred when the split is the one that `train` infers from the length of the series: the training and
+        validation steps fill 80% of it, and `t_val` is 20% of these. That covers a network trained with
+        ``n_seeds > 1``, whose summary says that `t_val` was given (0.2.3 split the data of the kept seed again).
+        Otherwise, `t_val` was inferred when the summary says so, and `t_train` is taken as given: a `t_train`
+        inferred with a given `t_val` cannot be told from a given split that fills 80% of the series. The names
+        that the split added to `hyperparameters_to_optimize` are not recorded. With independent patches, the
+        summary of the network of the first patch, whose split this network takes."""
+        source = self.patches[0] if self._independent and self.patches else self
+        summary = source.split_summary
+        if not summary or not source.trained:
+            return {}
+        record = {}
+        try:
+            if summary.get('ragged'):
+                record['t_train'] = (self.t_train, summary.get('t_train_given'))
+                val_inferred = summary.get('t_val_inferred')
+            else:
+                n_wtv = max(self.N_wash + 2, int(round(0.8 * summary['n_steps'])))
+                inferred = self.N_train + self.N_val == n_wtv and self.N_val == max(1, int(round(0.2 * n_wtv)))
+                if inferred:
+                    record['t_train'] = (self.t_train, None)
+                val_inferred = inferred or summary.get('t_val_inferred')
+            if val_inferred:
+                record['t_val'] = (self.t_val, None)
+        except (KeyError, TypeError, ValueError):       # an incomplete summary: nothing is inferred again
+            return {}
+        return record
+
+    def _reservoir_options(self) -> dict:
+        """The options that define `W` and `Win` (their shape or their pattern of connections): `N_units`,
+        `connect`, `Win_type`, the number of inputs and of parameter columns, `param_in_reservoir` (with
+        parameters), and the layout of the patches (`patch_size`, and `halo` with patches)."""
+        n_param = 0 if self.input_parameters is None else self._n_param(self.input_parameters)
+        return dict(N_units=self.N_units, connect=self.connect, Win_type=self.Win_type, inputs=self._n_in,
+                    parameters=n_param, param_in_reservoir=bool(self.param_in_reservoir) if n_param else None,
+                    patch_size=self.patch_size, halo=None if self.patch_size is None else self.halo)
+
+    def _record_reservoir(self):
+        """Give a reservoir without a record of the options that define it the options of the network as its record,
+        before `train` sets its keywords, when both matrices fit these options. A reservoir set by hand (`W`, `Win`,
+        `from_arrays`, e.g. the charts of a qlroms family that share the reservoir of the first chart) or held by a
+        network pickled by echostatenetwork 0.2.3 or earlier then follows the rule of a reservoir drawn by
+        `_generate_W_Win` (`_stale_reservoir`): `train` keeps it, or draws a new one when an option of this call
+        changes it, so that the networks that share one reservoir draw the same new one. Its seed is unknown (None),
+        as for a reservoir drawn from `rng`. An option changed as an attribute before this call is not detected."""
+        state = self.__dict__
+        if '_reservoir_key' in state or '_W' not in state or '_Win' not in state:
+            return
+        if state['_W'].shape == (self.N_units, self.N_units) and state['_Win'].shape == (self.N_units, self._n_in + 1):
+            self._reservoir_key = dict(self._reservoir_options(), seed=None)
+
+    def _stale_reservoir(self) -> tuple[list, tuple]:
+        """Why `W` and `Win` no longer fit the network, and the matrices to draw again (both empty: `train` keeps
+        them). A reservoir with a record of the options that define it (`_generate_W_Win`, `_record_reservoir`):
+        every option of `_reservoir_options` that changed since, and both matrices. The seed is not an option of the
+        record: a trained network keeps its reservoir whatever the seed given to `train`, and the first call keeps
+        a reservoir drawn or set before it. Matrices without a record (e.g. after ``esn.N_units = 20; esn.W = W20``,
+        which leaves the old `Win`): the matrix whose shape no longer fits, alone."""
+        state = self.__dict__
+        key = state.get('_reservoir_key')
+        if key is None:
+            shapes = {'_W': (self.N_units, self.N_units), '_Win': (self.N_units, self._n_in + 1)}
+            drop = tuple(attr for attr, shape in shapes.items() if attr in state and state[attr].shape != shape)
+            return [f'the shape of {attr[1:]} ({state[attr].shape} -> {shapes[attr]})' for attr in drop], drop
+        if '_W' not in state and '_Win' not in state:
+            return [], ()
+        stale = [f'{name} ({key.get(name)} -> {value})' for name, value in self._reservoir_options().items()
+                 if key.get(name) != value]
+        return stale, ('_W', '_Win') if stale else ()
 
     def training_summary(self) -> str:
         """One-line summary of the last `train` call: the data split (from
         `_split_and_format_data`, stored in `split_summary`), the resulting
         train/validation windows, and the selected hyperparameters (with the number
-        of Bayesian-optimization evaluations when a search ran)."""
+        of Bayesian-optimization evaluations when a search ran, or, with 'tikh' alone,
+        the number of values of `tikh_range` that its one evaluation compares)."""
         if self._independent and self.patches is not None:
             return '\n'.join(f'patch {p}: {net.training_summary()}'
                              for p, net in enumerate(self.patches))
@@ -1339,8 +1925,13 @@ class EchoStateNetwork:
         folds = getattr(self, 'n_folds_realized', None)
         if folds is not None:
             hps += f" | {folds} validation fold{'s' if folds != 1 else ''}"
-        bo = (f" | BHO: {len(self.bo_results['func_vals'])} evals over "
-              f"{self.bo_results['hp_names']}" if self.bo_results is not None else '')
+        if self.bo_results is None:
+            bo = ''
+        elif self.bo_results['hp_names']:
+            bo = f" | BHO: {len(self.bo_results['func_vals'])} evals over {self.bo_results['hp_names']}"
+        else:       # 'tikh' alone: one evaluation of the validation strategy selects tikh
+            n = len(self.tikh_range)
+            bo = f" | tikh alone: 1 eval over the {n} value{'s' if n != 1 else ''} of tikh_range, no BHO"
         return (f"trained: {data} | t_train={self.t_train:.3g}, t_val={self.t_val:.3g}"
                 + (' (inferred)' if s['t_val_inferred'] else '') + f" | {hps}{bo}")
 
@@ -1351,7 +1942,8 @@ class EchoStateNetwork:
         Returns
         -------
         EchoStateNetwork
-            A new, independent instance with the same state and matrices.
+            A new, independent instance with the same state and matrices. The copy of a trained network is
+            trained: ``train(force=True)`` trains it again, e.g. on other data (see `train`).
         """
         return deepcopy(self)
 
@@ -1410,8 +2002,8 @@ class EchoStateNetwork:
     def from_arrays(cls, arrays) -> 'EchoStateNetwork':
         """Rebuild a deployable ESN from `to_arrays`'s dict (values may be 0-d numpy
         scalars from an npz, or memory-mapped arrays). `trained` is True iff the
-        matrix keys are present. Assignment runs through the normal constructor and
-        property setters, so every shape assertion still guards the load."""
+        matrix keys are present, and ``train(force=True)`` then trains it again. Assignment runs through the
+        normal constructor and property setters, so every shape assertion still guards the load."""
         def f(key):
             return float(np.asarray(arrays[key]))
 
@@ -1482,7 +2074,11 @@ class EchoStateNetwork:
         Parameters
         ----------
         seed : int, optional
-            Random seed for reproducibility. Defaults to `seed`/`rng`.
+            Random seed for reproducibility, with a new generator. Defaults to the
+            generator of the attribute `seed`, `rng`. When it draws both matrices,
+            the network records the options that define them (`_reservoir_options`)
+            and the seed (None for `rng`), so that `train` keeps them while these
+            are unchanged.
 
         Raises
         ------
@@ -1505,6 +2101,7 @@ class EchoStateNetwork:
             rng0 = self.rng
         else:
             rng0 = np.random.default_rng(seed)
+        drawn = not hasattr(self, '_Win') and not hasattr(self, '_W')     # both drawn here, none set by hand
 
         # Input matrix: Sparse random matrix where only one element per row is different from zero.
         # Parameter columns (if any) are the exception: every neuron connects densely to them,
@@ -1554,6 +2151,9 @@ class EchoStateNetwork:
                 # eigenvalues are exact and cheap at typical N_units
                 spectral_radius = np.abs(np.linalg.eigvals(W.toarray())).max()
             self.W = (1. / spectral_radius) * W
+        if drawn:       # what drew W and Win: train() keeps them while it holds (_stale_reservoir)
+            # seed None: drawn from the generator rng, after the noise of the inputs, which no given seed reproduces
+            self._reservoir_key = dict(self._reservoir_options(), seed=seed)
 
 
     def _compute_RR_terms(self, U_wtv, Y_wtv):
@@ -1837,13 +2437,12 @@ class EchoStateNetwork:
                 n_val = max(1, median_len - self.N_wash - 1)
                 self.t_val = n_val * self.dt_ESN
                 if n_val < 10:
-                    warnings.warn(
+                    _warn(
                         f'inferred validation window is degenerate: N_val={n_val} '
                         f'step(s), because the median segment ({median_len} steps) '
                         f'barely exceeds the washout (N_wash={self.N_wash}). '
                         f'Closed-loop validation over so few steps is meaningless; '
-                        f'provide longer segments or set t_val explicitly.',
-                        stacklevel=2)
+                        f'provide longer segments or set t_val explicitly.')
 
             # Use ALL the input data -- the first 80% of the segments (they arrive in
             # time order) train/validate, the last 20% are held out as the run_test
@@ -2032,17 +2631,31 @@ class EchoStateNetwork:
 
         Returns
         -------
-            OptimizeResult: Results of the Bayesian optimization process.
+            dict: ``res``, the result of the search (an ``OptimizeResult``), ``hp_names``, the names of its
+            dimensions, and ``n_grid_points``, the number of points of its initial grid. With 'tikh' alone, the
+            search space is empty, and the search is one evaluation of the validation strategy, which selects
+            `tikh` from `tikh_range` (``hp_names = []``, ``n_grid_points = 1``, ``res.x = []``). Without 'tikh'
+            in `hyperparameters_to_optimize`, every evaluation keeps the fixed `tikh`: the strategies read the
+            grid ``tikh_range = [tikh]`` during the search, and `tikh_range` is restored afterwards.
         """
-        from skopt import gp_minimize
-        from skopt.learning import GaussianProcessRegressor as GPR
-        from skopt.learning.gaussian_process.kernels import ConstantKernel, Matern
+        if 'tikh' in self.hyperparameters_to_optimize:
+            return self._search_hyperparameters(U_wtv, Y_wtv, validation_strategy, print_convergence)
+        saved = self.__dict__.get('tikh_range', _UNSET)
+        self.tikh_range = [self.tikh]
+        try:
+            return self._search_hyperparameters(U_wtv, Y_wtv, validation_strategy, print_convergence)
+        finally:
+            if saved is _UNSET:
+                del self.tikh_range                 # the class default
+            else:
+                self.tikh_range = saved
 
-        # print("Starting Bayesian hyperparameter optimization...")
-
+    def _search_hyperparameters(self, U_wtv, Y_wtv, validation_strategy, print_convergence):
+        """Body of `_optimize_hyperparameters`, with the grid of `tikh` that the strategies read."""
         # Prepare search grid, space, and hyperparameter names
         search_grid, search_space, hp_names = self._hyperparameter_search(print_convergence=print_convergence)
-        tikh_opt = np.zeros(self.N_func_evals)  # Track optimal Tikhonov regularization
+        # Track optimal Tikhonov regularization (one evaluation with 'tikh' alone, whatever N_func_evals)
+        tikh_opt = np.zeros(max(self.N_func_evals, 1))
 
         # Use default or provided validation strategy
         if validation_strategy is None:
@@ -2058,27 +2671,41 @@ class EchoStateNetwork:
                            print_convergence=print_convergence
                            )
 
-        # Configure ARD 5/2 Matern Kernel for Gaussian Process
-        kernel_ = (ConstantKernel(constant_value=1.0, constant_value_bounds=(1e-1, 3e0)) *
-                   Matern(length_scale=[0.2] * len(search_space), nu=2.5, length_scale_bounds=(1e-2, 1e1)))
+        if not search_space:
+            # 'tikh' alone (issue #1): every evaluation of the strategy selects tikh from tikh_range, so the search
+            # is one evaluation at the fixed rho, sigma_in and leak_rate; gp_minimize cannot fit a Gaussian process
+            # on zero dimensions. The result has the fields of a skopt result that train() and the plots read.
+            # Imported here: scipy.optimize slows the import of the package.
+            from scipy.optimize import OptimizeResult
 
-        # Gaussian Process reconstruction
-        gp_estimator = GPR(kernel=kernel_,
-                           normalize_y=True,
-                           n_restarts_optimizer=3,
-                           noise=self.bho_noise,
-                           random_state=10)
+            fun = float(val_func([]))
+            result = OptimizeResult(x=[], fun=fun, func_vals=np.array([fun]), x_iters=[[]], models=[])
+        else:
+            from skopt import gp_minimize
+            from skopt.learning import GaussianProcessRegressor as GPR
+            from skopt.learning.gaussian_process.kernels import ConstantKernel, Matern
 
-        # Perform Bayesian Optimization
-        result = gp_minimize(val_func,  # function to minimize
-                             search_space,  # bounds
-                             base_estimator=gp_estimator,  # GP kernel
-                             acq_func="gp_hedge",  # acquisition function
-                             n_calls=self.N_func_evals,  # number of evaluations
-                             x0=search_grid,  # Initial grid points
-                             n_random_starts=self.N_initial_rand,  # random initial points
-                             n_restarts_optimizer=3,  # tries per acquisition
-                             random_state=10)
+            # Configure ARD 5/2 Matern Kernel for Gaussian Process
+            kernel_ = (ConstantKernel(constant_value=1.0, constant_value_bounds=(1e-1, 3e0)) *
+                       Matern(length_scale=[0.2] * len(search_space), nu=2.5, length_scale_bounds=(1e-2, 1e1)))
+
+            # Gaussian Process reconstruction
+            gp_estimator = GPR(kernel=kernel_,
+                               normalize_y=True,
+                               n_restarts_optimizer=3,
+                               noise=self.bho_noise,
+                               random_state=10)
+
+            # Perform Bayesian Optimization
+            result = gp_minimize(val_func,  # function to minimize
+                                 search_space,  # bounds
+                                 base_estimator=gp_estimator,  # GP kernel
+                                 acq_func="gp_hedge",  # acquisition function
+                                 n_calls=self.N_func_evals,  # number of evaluations
+                                 x0=search_grid,  # Initial grid points
+                                 n_random_starts=self.N_initial_rand,  # random initial points
+                                 n_restarts_optimizer=3,  # tries per acquisition
+                                 random_state=10)
         assert result is not None, 'gp_minimize retuned a None instance'
         # Process results
         f_iters = np.array(result.func_vals)
@@ -2087,8 +2714,10 @@ class EchoStateNetwork:
         # Update hyperparameters with the best result
         self._reset_hyperparams(result.x, hp_names, tikhonov=tikh_opt[best_idx])
 
-        if self.verbose:
-            print(f"seed {self.seed} \t Optimal hyperparameters: {result.x}, {self.tikh}, val score: {result.fun}")  # type: ignore
+        logger.info('%soptimum: %s, validation score %.4f',
+                    '' if getattr(self, '_patch', None) is None else f'patch {self._patch}: ',
+                    ', '.join([f'{name}={self._get_hyperparam(name):.3g}' for name in hp_names]
+                              + [f'tikh={self.tikh:.0e}']), result.fun)  # type: ignore
 
         return dict(res=result,
                     hp_names=hp_names,
@@ -2104,14 +2733,13 @@ class EchoStateNetwork:
             tuple:
                 - search_grid (list): List of initial grid points for optimization.
                 - search_space (list): Search space objects for each hyperparameter.
-                - input_parameters (list): Names of the hyperparameters being optimized.
+                - hp_names (list): Names of the hyperparameters being optimized. 'tikh' is never one of them: every
+                  evaluation of the validation strategy selects it from `tikh_range`. With 'tikh' alone, the
+                  three lists are ``[[]]``, ``[]`` and ``[]``.
         """
-        from skopt.space import Real
-
         parameters = [hp for hp in self.hyperparameters_to_optimize if hp != 'tikh']
-
-        if 'tikh' not in self.hyperparameters_to_optimize:
-            setattr(self, 'tikh_range', [self.tikh])
+        if parameters:          # a search over 'tikh' alone needs no scikit-optimize
+            from skopt.space import Real
 
         # Grid points per axis, shrunk (never grown) so the full factorial grid fits
         # within N_func_evals. A fixed N_grid blows up combinatorially once many
@@ -2136,12 +2764,15 @@ class EchoStateNetwork:
 
         # Print optimization header
         if print_convergence:
-            print('\n ----------------- HYPERPARAMETER SEARCH ------------------\n '
-                  f'{n_grid_eff}^{len(parameters)} grid' +
-                  f' and {max(0, self.N_func_evals - len(search_grid))} points with Bayesian Optimization\n\t', end="")
-            for kk in self.hyperparameters_to_optimize:
-                print(f'\t {kk}', end="")
-            print('\t MSE val ')
+            patch = '' if getattr(self, '_patch', None) is None else f' (patch {self._patch})'
+            if parameters:
+                logger.info('hyperparameter search: a %d^%d grid and %d points of Bayesian optimization%s',
+                            n_grid_eff, len(parameters), max(0, self.N_func_evals - len(search_grid)), patch)
+            else:
+                n = len(self.tikh_range)
+                logger.info('hyperparameter search: tikh alone, selected from the %d value%s of tikh_range in one '
+                            'evaluation, without Bayesian optimization%s', n, 's' if n != 1 else '', patch)
+            logger.info('%s', validation.convergence_header(self))
 
         return search_grid, search_space, parameters
 
@@ -2242,8 +2873,7 @@ class EchoStateNetwork:
 
     def compute_nRMSE(self, Y_true, Y_pred, norm=1.0):
         """Deprecated alias of `compute_nMAE` -- the metric was never an RMSE."""
-        warnings.warn('compute_nRMSE computes a normalized MAE; use compute_nMAE',
-                      DeprecationWarning, stacklevel=2)
+        _warn('compute_nRMSE computes a normalized MAE; use compute_nMAE', DeprecationWarning)
         return self.compute_nMAE(Y_true, Y_pred, norm)
 
     # _______________________________________________________________________________________ TEST & PLOTTING FUNCTIONS
@@ -2335,7 +2965,7 @@ class EchoStateNetwork:
         min_needed = 2 * self.N_wash if long_term else self.N_wash
         testable = [Li for Li in range(L) if len(Y_test[Li]) >= min_needed]
         if not testable:
-            print(f'run_test: no segment has >= {min_needed} test steps; skipping.')
+            _warn(f'run_test: no segment has >= {min_needed} test steps; no test is run.')
             return []
 
         if len(testable) > 1:
@@ -2417,9 +3047,7 @@ class EchoStateNetwork:
         hist_args = dict(bins=nbins, density=True, orientation='horizontal', stacked=False)
 
 
-        print('Running test for L=', end=' ')
         for Li in L_indices:
-            print(f'{Li}', end=' ')
 
             # Select dataset
             U_test_l, Y_test_l = U_test[Li], Y_test[Li]
@@ -2523,7 +3151,9 @@ class EchoStateNetwork:
         # Compute errors over all Lis
         if test_counter > 0:
             errors_all = np.array(errors_all)
-            print(f'Overall tests min, max and mean MSE in {test_counter} tests = {np.min(errors_all):.4}, {np.max(errors_all):.4}, {np.mean(errors_all):.4}.')
+            logger.info('run_test: log10 nMAE of the short closed-loop tests (%d tests), mean per segment over %d '
+                        'segments: min %.3g, max %.3g, mean %.3g', test_counter, len(errors_all),
+                        np.min(errors_all), np.max(errors_all), np.mean(errors_all))
 
         return [fig_long] + figures_short
 
@@ -2531,17 +3161,19 @@ class EchoStateNetwork:
     def _plot_training_results(self, U_test, Y_test, results, save_ESN_training, folder):
         """
         Plots training results, including Bayesian optimization convergence and test results.
+        `results` is None when no search ran; with 'tikh' alone (one evaluation), there is no convergence to plot.
         """
-        from skopt.plots import plot_convergence
-
         all_figs = []
 
-        # Plot Bayesian optimization convergence
-        fig1 = plt.figure()
-        plot_convergence(results['res'])
-        all_figs.append(fig1)
-        # Plot Gaussian Process reconstruction
-        all_figs.extend(self._plot_BO(results))
+        if results is not None and results['hp_names']:
+            from skopt.plots import plot_convergence
+
+            # Plot Bayesian optimization convergence
+            fig1 = plt.figure()
+            plot_convergence(results['res'])
+            all_figs.append(fig1)
+            # Plot Gaussian Process reconstruction
+            all_figs.extend(self._plot_BO(results))
         # Plot Wout matrix
         all_figs.append(self.plot_Wout())
         # Plot test results if applicable (run_test itself skips gracefully if no

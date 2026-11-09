@@ -1,5 +1,6 @@
 """Tests for the parametric EchoStateNetwork (src/esn_core.py)."""
 import re
+import sys
 import warnings
 
 import numpy as np
@@ -442,17 +443,18 @@ def test_wfv_rejects_ragged_segments():
                   validation_strategy=EchoStateNetwork._WFV)
 
 
-def test_val_fold_step_overlapping_intervals_multiply_folds(capsys):
+def test_val_fold_step_overlapping_intervals_multiply_folds():
     # Chaotic fold variants of Racca & Magri (2021): a val_fold_step smaller
     # than N_val advances consecutive validation intervals by less than their
     # length, so they overlap and more folds fit in the same data. Request an
-    # unreachable N_folds so both runs print the auto-reduction note, and read
-    # the achieved fold count from it.
+    # unreachable N_folds so both runs warn of the reduction, and read the
+    # achieved fold count from the warning.
     def achieved_folds(strategy, step):
-        _train_single_series(strategy, N_folds=100, N_func_evals=2,
-                             val_fold_step=step)
-        out = capsys.readouterr().out
-        return int(re.search(r'using (\d+) folds', out).group(1))
+        with pytest.warns(UserWarning, match=r'using \d+ folds') as record:
+            _train_single_series(strategy, N_folds=100, N_func_evals=2,
+                                 val_fold_step=step)
+        note = next(str(w.message) for w in record if 'using' in str(w.message))
+        return int(re.search(r'using (\d+) folds', note).group(1))
 
     for strategy in (EchoStateNetwork._WFV, EchoStateNetwork._KFV):
         k_regular = achieved_folds(strategy, None)
@@ -479,7 +481,7 @@ def test_val_fold_step_none_matches_explicit_n_val_bit_identically():
         for step in (None, 30):
             esn.val_fold_step = step
             esn.train(data, plot_training=False, add_noise=False,
-                      validation_strategy=strategy)
+                      validation_strategy=strategy, force=True)
             traces[step] = esn.bo_results['func_vals'].copy()
         assert np.array_equal(traces[None], traces[30])
 
@@ -700,3 +702,107 @@ def test_bho_midpoint_grid_noise_and_stability_gate():
     W = esn.Wout
     flags = validation.unstable(esn, U, Y, np.stack([W, 1e3 * W]))
     assert flags[1] == 1.0
+
+
+# ---------------------------------------------------------------------- 'tikh' alone in the search (issue #1)
+def _issue1_network(**kwargs):
+    """The network and record of issue #1: 'tikh' is the only hyperparameter to optimize."""
+    data = np.random.default_rng(0).normal(size=(300, 3)).cumsum(axis=0) * 0.1
+    options = dict(dt=1, upsample=1, N_units=20, t_train=200, t_val=40, t_test=0, N_wash=10,
+                   hyperparameters_to_optimize=['tikh'])
+    return EchoStateNetwork(data.T, **{**options, **kwargs}), data
+
+
+def _one_evaluation(esn, data, strategy, tikh):
+    """The validation score of `strategy` on a copy of `esn` whose Tikhonov factor is fixed at `tikh`."""
+    probe = esn.copy()
+    probe.val_k, probe.tikh_range = 0, [tikh]
+    U_wtv, Y_wtv = probe._split_and_format_data(data, add_noise=False)[:2]
+    return strategy([], probe, U_wtv, Y_wtv, np.zeros(1), [], print_convergence=False)
+
+
+@pytest.mark.parametrize('strategy', ['RVC_Noise', 'SSV', 'WFV', 'KFV'])
+def test_tikh_alone_is_one_evaluation_of_the_strategy(strategy, monkeypatch):
+    # Every evaluation of the strategy selects tikh from tikh_range, so the search over tikh alone is one
+    # evaluation at the fixed rho, sigma_in and leak_rate: no Bayesian optimization, and no scikit-optimize
+    # (before the fix, gp_minimize raised "need at least one array to concatenate" on the empty space).
+    from echostatenetwork import validation
+    monkeypatch.setitem(sys.modules, 'skopt', None)            # any import of scikit-optimize fails
+    strategy = getattr(validation, strategy)
+    esn, data = _issue1_network()
+    tikh_range = list(esn.tikh_range)
+    esn.train(data, plot_training=False, add_noise=False, validation_strategy=strategy)
+
+    bo = esn.bo_results
+    assert bo['hp_names'] == [] and bo['x'] == [] and bo['x_iters'] == [[]] and bo['n_grid_points'] == 1
+    assert len(bo['func_vals']) == 1 and bo['fun'] == bo['func_vals'][0]
+    assert (esn.rho, esn.sigma_in, esn.leak_rate) == (0.9, 1e-3, 1.0) and list(esn.tikh_range) == tikh_range
+    # tikh is the value of tikh_range with the lowest score, and fun is that score
+    scores = [_one_evaluation(esn, data, strategy, tikh) for tikh in tikh_range]
+    assert esn.tikh == tikh_range[int(np.argmin(scores))]
+    assert bo['fun'] == pytest.approx(min(scores), rel=1e-9)
+    assert esn.training_summary().endswith(f'tikh alone: 1 eval over the {len(tikh_range)} values of tikh_range, '
+                                           'no BHO')
+
+
+def test_tikh_alone_needs_no_search_budget():
+    # other lists without a dimension: 'tikh' twice, and no budget of evaluations (N_func_evals=0)
+    esn, data = _issue1_network(hyperparameters_to_optimize=['tikh', 'tikh'], N_func_evals=0)
+    esn.train(data, plot_training=False)
+    assert esn.bo_results['hp_names'] == [] and len(esn.bo_results['func_vals']) == 1
+    assert esn.tikh in esn.tikh_range and np.isfinite(esn.Wout).all()
+
+
+def test_tikh_alone_scores_each_seed_by_its_evaluation():
+    # n_seeds > 1 scores a seed with bo_results['fun'], here the score of its one evaluation
+    esn, data = _issue1_network()
+    esn.train(data, plot_training=False, n_seeds=2)
+    scores = esn.seed_scores
+    assert esn.bo_results['hp_names'] == [] and len(esn.bo_results['func_vals']) == 1
+    assert esn.seed == min(scores, key=scores.get)
+    assert scores[esn.seed] == esn.bo_results['fun']
+
+
+def test_seed_score_without_a_search_is_the_score_of_the_fixed_tikh():
+    # Without a search, a seed is scored at its own fixed tikh, the one of the network that is kept, and not at
+    # the best value of tikh_range, which the network does not use.
+    from echostatenetwork import validation
+    esn, data = _issue1_network(hyperparameters_to_optimize=[], tikh=1e-16)
+    esn.train(data, plot_training=False, add_noise=False, n_seeds=2)
+    assert esn.tikh == 1e-16 and esn.bo_results is None
+    fixed = _one_evaluation(esn, data, validation.RVC_Noise, 1e-16)
+    best = min(_one_evaluation(esn, data, validation.RVC_Noise, tikh) for tikh in esn.tikh_range)
+    assert fixed != pytest.approx(best)                          # the two scores differ on this record
+    assert esn.seed_scores[esn.seed] == pytest.approx(fixed, rel=1e-9)
+
+
+@pytest.mark.parametrize('searched', [[], ['tikh']])
+def test_plot_training_without_a_bayesian_optimization(searched):
+    # No convergence trace and no landscape without a Bayesian optimization: only Wout is drawn (perform_test=False).
+    # Before the fix, plot_training=True raised a TypeError without a search, and the error of issue #1 with tikh alone.
+    import matplotlib.pyplot as plt
+    plt.switch_backend('Agg')
+    plt.close('all')
+    esn, data = _issue1_network(hyperparameters_to_optimize=searched, perform_test=False)
+    try:
+        esn.train(data, plot_training=True)
+        assert esn.trained and len(plt.get_fignums()) == 1
+    finally:
+        plt.close('all')
+
+
+def test_tikh_alone_with_parametric_inputs():
+    # optimize_parameter_normalization (the default with input_parameters) adds the shift and the norm of the
+    # parameter to the search, which is then a Bayesian optimization; without it, tikh alone is one evaluation.
+    rng = np.random.default_rng(1)
+    data, params = rng.normal(size=(2, 80, 3)), np.array([[0.0, 1.0]])
+    options = dict(dt=1, N_units=15, upsample=1, t_train=40, t_val=10, t_test=10, N_wash=5, N_folds=2, N_grid=2,
+                   N_func_evals=3, input_parameters=params, hyperparameters_to_optimize=['tikh'])
+    esn = EchoStateNetwork(data[0].T, **options)
+    esn.train(data, plot_training=False)
+    assert esn.bo_results['hp_names'] == ['param_shift_0', 'param_norm_0']
+    assert len(esn.bo_results['func_vals']) == 3
+    esn = EchoStateNetwork(data[0].T, optimize_parameter_normalization=False, **options)
+    esn.train(data, plot_training=False)
+    assert esn.bo_results['hp_names'] == [] and len(esn.bo_results['func_vals']) == 1
+    assert esn.tikh in esn.tikh_range

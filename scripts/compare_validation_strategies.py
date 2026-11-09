@@ -270,6 +270,8 @@ def member_task(task):
     retrain Wout on the full train+val series with the selected
     hyperparameters -> m_Test + horizon on the common test tail."""
     warnings.filterwarnings('ignore', category=DeprecationWarning)
+    # N_folds = N_FOLDS_MAX on purpose: WFV and KFV employ the folds that fit, and warn that fewer fit
+    warnings.filterwarnings('ignore', message='(WFV|KFV): only', category=UserWarning)
     cfg = DATASETS[task['dataset']]
     method, chaotic = STRATEGIES[task['strategy']]
     if method == '_RVC_Noise':

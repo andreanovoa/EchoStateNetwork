@@ -34,8 +34,22 @@ training data.*
   on everything outside its validation interval, exactly (prefix-sum
   assembly), and validates on it.
 
-All strategies select the Tikhonov parameter from `tikh_range` per evaluation
-and score their probes through a shared **validation metric**: any callable
+When fewer than `N_folds` folds fit in the series, `WFV` and `KFV` employ the
+folds that fit, and warn once per `train` call, at the line that calls `train`
+(for a single network, a validation strategy of the user that calls them is the
+line of the warning, see [seeded ensembles](training.md#seeded-ensembles)).
+To silence this warning, filter it by its message, e.g.
+`warnings.filterwarnings('ignore', message='(WFV|KFV): only')`: the warning
+belongs to the module of the caller, not to `echostatenetwork`.
+
+All strategies select the Tikhonov factor from `tikh_range` at every
+evaluation, so a search over `hyperparameters_to_optimize=['tikh']` alone is
+one evaluation of the strategy, which needs neither the Bayesian optimization
+nor scikit-optimize. For a parametric network with
+`optimize_parameter_normalization` (the default with `input_parameters`),
+`train` adds the shift and the scale of every parameter column to the search,
+which is then a Bayesian optimization. All strategies also score their probes
+through a shared **validation metric**: any callable
 `metric(case, Y_true, Y_pred, norm) -> float` (divergence penalty included).
 Set `validation_metric` on the ESN to swap the scoring for every strategy at
 once; built-ins are `log_nMAE` (log10 range-normalized MAE, the recycle-family
