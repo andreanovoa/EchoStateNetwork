@@ -89,10 +89,13 @@ def unstable(case, U_wtv, Y_wtv, Wout_tik):
     amplitude, so a band around the pooled records rejects correct loops. The band holds for the root mean square
     over the outputs, not for every output: on a record of tens of Lyapunov times, the standard deviation of a single
     output is uncertain by some ten per cent, and the worst of many outputs leaves a band of 20% around correct
-    loops."""
+    loops. The band must hold for the whole loop and for its last `stability_tail` (a fraction of the steps): a loop
+    that follows the attractor for most of its length and collapses near the end keeps the standard deviation of
+    the whole loop in the band, and that of its tail falls below it."""
     Y = np.concatenate([np.asarray(y) for y in Y_wtv])
     bound = 3 * np.abs(Y).max()
     lo, hi = case.stability_band
+    tail = int(round(getattr(case, 'stability_tail', 0) * case.stability_steps))   # steps of the tail window
     starts = _stability_starts(case, U_wtv)
 
     def rms(y):                                   # RMS over the outputs of their standard deviation
@@ -118,8 +121,9 @@ def unstable(case, U_wtv, Y_wtv, Wout_tik):
                     out[j] = 1.0
                     break
             else:
-                ratio = rms(Z) / std                                       # (n_starts,)
-                out[j] = float(not (lo < ratio.min() and ratio.max() < hi))
+                windows = [Z] + ([Z[-tail:]] if tail >= 2 else [])        # the whole loop, then its tail
+                ratios = [rms(window) / std for window in windows]       # (n_starts,) each
+                out[j] = float(not all(lo < ratio.min() and ratio.max() < hi for ratio in ratios))
     finally:
         case.input_parameters = original
     return out

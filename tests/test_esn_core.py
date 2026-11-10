@@ -790,6 +790,33 @@ def test_stability_penalty_rejects_a_failing_candidate(monkeypatch):
     assert evaluation(1.0) == (-2.0, 1e-12)                                  # the former default: the failing one
 
 
+def test_stability_gate_checks_the_tail_of_the_loop(monkeypatch):
+    """A loop that follows the record for three quarters of its length and then collapses to the mean keeps the
+    standard deviation of the whole loop inside the band (sqrt(0.75) of the record's); the band on the last half of
+    the loop (stability_tail) rejects it, and stability_tail=0 restores the test on the whole loop only."""
+    from echostatenetwork import validation
+    t = np.arange(400) * 0.05
+    data = np.stack([np.sin(t), np.cos(t)], axis=1)[None]
+    esn = EchoStateNetwork(data[0].T, dt=1, N_units=20, upsample=1, t_train=300, t_val=50, t_test=50, N_wash=10,
+                           hyperparameters_to_optimize=[], seed=0, noise=0.0, stability_steps=300)
+    esn.train(data, plot_training=False)
+    U, Y, *_ = esn._split_and_format_data(data, add_noise=False)
+    calls = []
+
+    def step(u, r):                                   # the loop reproduces the record, then collapses to its mean
+        k = len(calls) - esn.N_wash                   # steps into the loop (negative during the washout)
+        calls.append(k)
+        y = data[0, k % len(t)] if k < 0.75 * esn.stability_steps else np.zeros(2)
+        return y.reshape(2, 1), r
+
+    monkeypatch.setattr(esn, 'step', step)
+    assert esn.stability_tail == 0.5
+    assert validation.unstable(esn, U, Y, esn.Wout[None])[0] == 1.0
+    calls.clear()
+    esn.stability_tail = 0
+    assert validation.unstable(esn, U, Y, esn.Wout[None])[0] == 0.0
+
+
 def test_parameter_columns_normalized_like_the_state():
     """optimize_parameter_normalization='data': the parameter columns take the shift and scale of norm_method over
     the training values, and the search keeps its own hyperparameters only."""
