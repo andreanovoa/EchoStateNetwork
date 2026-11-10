@@ -369,10 +369,13 @@ class EchoStateNetwork:
     # the stability (two-stage validation, as in Lu et al. 2018; Platt et al. 2022).
     # stability_starts: the number of washouts, spread over the training record, from which the loop runs; the
     # candidate fails if any loop fails (1: the start of the first segment only)
+    # stability_penalty: the score of a diverged probe of log_nMAE (10), so that a candidate that fails the gate
+    # loses to every candidate that passes it, as a diverged probe does; at 1.0 (one decade), a failing
+    # candidate still won with a short-fold score better by more than one decade
     stability_steps = 0
     stability_starts = 1
     stability_band = (0.8, 1.2)
-    stability_penalty = 1.0
+    stability_penalty = 10.0
     N_func_evals = 20
     N_grid = 4
     # Bayesian optimization: bho_noise is the GP noise ('gaussian' learns a white-noise level,

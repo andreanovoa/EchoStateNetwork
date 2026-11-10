@@ -473,7 +473,8 @@ def test_sigma_param_scales_the_parameter_columns(patch, tmp_path):
     the Jacobian (parameter columns included) matches finite differences; the value survives npz."""
     kw = dict(N_dim=8, patch_size=patch, halo=1 if patch else 0, input_parameters=np.array([[0.5]]))
     if patch is None:
-        kw.pop('patch_size'); kw.pop('halo')
+        kw.pop('patch_size')
+        kw.pop('halo')
         esn = EchoStateNetwork(np.zeros((8, 1)), dt=1, N_units=10, upsample=1, seed=0, sigma_in=0.5,
                                input_parameters=np.array([[0.5]]))
         esn._generate_W_Win(seed=0)

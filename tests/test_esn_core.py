@@ -758,6 +758,38 @@ def test_stability_starts_cover_every_segment_evenly():
     assert [l for l, _ in validation._stability_starts(Case, U)] == list(range(7))
 
 
+def test_stability_penalty_rejects_a_failing_candidate(monkeypatch):
+    """The default penalty is a hard rejection: a Tikhonov candidate that fails the gate loses to a candidate that
+    passes it, whatever its short-fold score. At the former default of 1.0 (one decade of log_nMAE), a failing
+    candidate still won with a short-fold score better by more than one decade (L96-40s: -2.27 + 1 < -1.2)."""
+    from echostatenetwork import validation
+    data = np.random.default_rng(0).normal(size=(300, 3)).cumsum(axis=0) * 0.1
+    esn = EchoStateNetwork(data.T, dt=1, upsample=1, N_units=20, t_train=200, t_val=40, t_test=0, N_wash=10,
+                           hyperparameters_to_optimize=[], tikh_range=[1e-12, 1e-6], stability_steps=1)
+    esn.train(data, plot_training=False)
+    U_wtv, Y_wtv = esn._split_and_format_data(data, add_noise=False)[:2]
+    scores = {}                                   # short-fold score of each candidate, keyed by its readout:
+
+    def metric(case, Y_true, Y_pred, norm):       # the first candidate scores two decades better than the second
+        key = case.Wout.ctypes.data
+        if key not in scores:
+            scores[key] = (-3.0, -1.0)[len(scores)]
+        return scores[key]
+
+    monkeypatch.setattr(validation, 'unstable', lambda case, U, Y, Wout_tik: np.array([1.0, 0.0]))   # and fails
+
+    def evaluation(penalty):
+        probe = esn.copy()
+        probe.val_k, probe.stability_penalty, probe.validation_metric = 0, penalty, metric
+        scores.clear()
+        score = validation.RVC_Noise([], probe, U_wtv, Y_wtv, np.zeros(1), [], print_convergence=False)
+        assert len(scores) == 2
+        return score, probe.tikh
+
+    assert evaluation(EchoStateNetwork.stability_penalty) == (-1.0, 1e-6)   # the candidate that passes the gate
+    assert evaluation(1.0) == (-2.0, 1e-12)                                  # the former default: the failing one
+
+
 def test_parameter_columns_normalized_like_the_state():
     """optimize_parameter_normalization='data': the parameter columns take the shift and scale of norm_method over
     the training values, and the search keeps its own hyperparameters only."""
@@ -771,6 +803,7 @@ def test_parameter_columns_normalized_like_the_state():
     np.testing.assert_allclose(esn.norm[-1], 6.0)                 # range of the training values, 8 - 2
     np.testing.assert_allclose(esn.shift[-1], 14.0 / 3)           # their mean (equal segments)
     assert esn.hyperparameters_to_optimize == ['rho']
+
 
 # ---------------------------------------------------------------------- 'tikh' alone in the search (issue #1)
 def _issue1_network(**kwargs):

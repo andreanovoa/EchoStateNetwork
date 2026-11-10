@@ -94,7 +94,9 @@ def unstable(case, U_wtv, Y_wtv, Wout_tik):
     bound = 3 * np.abs(Y).max()
     lo, hi = case.stability_band
     starts = _stability_starts(case, U_wtv)
-    rms = lambda y: np.sqrt(np.mean(np.var(y, axis=0), axis=0))         # RMS over the outputs of their std
+
+    def rms(y):                                   # RMS over the outputs of their standard deviation
+        return np.sqrt(np.mean(np.var(y, axis=0), axis=0))
     std = np.array([rms(np.asarray(Y_wtv[l]).reshape(len(Y_wtv[l]), -1)) for l, _ in starts])   # (n_starts,)
     U_wash = np.stack([np.asarray(U_wtv[l])[p:p + case.N_wash].reshape(case.N_wash, -1) for l, p in starts],
                       axis=-1)                                              # (N_wash, N_dim_in, n_starts)
@@ -144,7 +146,8 @@ def RVC_Noise(x, case, U_wtv, Y_wtv, tikh_opt, hp_names, print_convergence=True)
 
     Returns
     -------
-        float: Mean (over folds) log10 closed-loop normalized MAE of the best Tikhonov candidate.
+        float: Mean (over folds) log10 closed-loop normalized MAE of the best Tikhonov candidate,
+        raised by ``case.stability_penalty`` when that candidate fails the stability gate (`unstable`).
 
     See Also
     --------
@@ -246,6 +249,8 @@ def RVC_Noise(x, case, U_wtv, Y_wtv, tikh_opt, hp_names, print_convergence=True)
     case.n_folds_realized = n_looop   # surfaced by training_summary()
 
     if getattr(case, 'stability_steps', 0) and getattr(case, '_forecast_sites', None) is None:
+        # the penalty (default: the score of a diverged probe) raises the fold mean of a failing candidate,
+        # which then wins only when every candidate fails
         nMAE += case.stability_penalty * n_looop * unstable(case, U_wtv, Y_wtv, Wout_tik)
 
     # select and save the optimal tikhonov and noise level in the targets
