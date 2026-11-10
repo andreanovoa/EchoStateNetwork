@@ -235,6 +235,76 @@ def test_parallel_layout_survives_npz(tmp_path):
         assert np.array_equal(u1, u2) and np.array_equal(r1, r2)
 
 
+# ---------------------------------------------------------------------- input parameters
+
+def test_one_patch_without_halo_reproduces_the_standard_parametric_step():
+    # patch_size = N_dim, halo = 0: the parameter columns follow the window, as the standard network's
+    rng = np.random.default_rng(1)
+    data = rng.normal(size=(2, 80, 6)).cumsum(axis=1)
+    kw = dict(dt=1, N_units=15, upsample=1, t_train=40, t_val=15, t_test=10, N_wash=5,
+              hyperparameters_to_optimize=[], seed=0, input_parameters=np.array([[0.0, 1.0]]))
+    std = EchoStateNetwork(data[0].T, **kw)
+    std.train(data, plot_training=False)
+    par = EchoStateNetwork(data[0].T, patch_size=6, halo=0, **kw)
+    par.Win, par.W, par.Wout = std.Win, std.W, std.Wout
+    par.norm, par.shift = std.norm, std.shift
+    std.input_parameters = par.input_parameters = np.array([[0.3, 0.7, 0.3, 0.7]])
+    u, r = std.outputs_to_inputs(data[0, 10:14].T), rng.normal(size=(15, 4))
+    for out_par, out_std in zip(par.step(u, r), std.step(u, r)):
+        np.testing.assert_allclose(out_par, out_std, rtol=1e-12, atol=1e-14)
+    np.testing.assert_allclose(par.Jacobian(u, r), std.Jacobian(u, r), rtol=1e-10, atol=1e-12)
+
+
+@pytest.mark.parametrize('periodic', [True, False])
+def test_every_patch_reads_the_input_parameters(periodic):
+    esn = _random_parallel(N_dim=8, patch_size=2, halo=1, periodic=periodic,
+                           input_parameters=np.array([[0.0], [1.0]]))
+    assert esn.N_dim_in == 10 and esn.Win.shape == (10, 4 + 2 + 1)
+    assert np.all(esn.Win.toarray()[:, 4:6] != 0)          # dense parameter columns
+    rng = np.random.default_rng(5)
+    esn.norm, esn.shift = rng.uniform(0.5, 2.0, 10), rng.normal(size=10)   # sites and parameters
+    u, r = rng.normal(size=(10, 3)), 0.1 * rng.normal(size=(esn.N_r, 3))
+    # every reservoir moves with the parameters
+    du = u.copy()
+    du[8] += 1.0
+    changed = np.abs(esn.step(du, r)[1] - esn.step(u, r)[1]).reshape(4, esn.N_units, 3).max(axis=(1, 2))
+    assert np.all(changed > 0)
+    # Jacobian, parameter columns included
+    J = esn.Jacobian(u, r)
+    assert J.shape == (8, 10, 3)
+    eps, J_fd = 1e-5, np.zeros_like(J)
+    for j in range(10):
+        up, um = u.copy(), u.copy()
+        up[j] += eps
+        um[j] -= eps
+        J_fd[:, j] = (esn.step(up, r)[0] - esn.step(um, r)[0]) / (2 * eps)
+    np.testing.assert_allclose(J, J_fd, rtol=1e-6, atol=1e-8)
+
+
+def test_parametric_lorenz96_parallel_esn_trains_and_survives_npz(tmp_path):
+    dt, n = 0.02, 1200
+    forcings = (6.0, 8.0)
+    data = np.stack([_lorenz96(n, dt, nx=10, forcing=F, seed=i) for i, F in enumerate(forcings)])
+    esn = EchoStateNetwork(data[0, :1].T, dt=dt, upsample=1, N_units=60, patch_size=5, halo=2,
+                           N_wash=20, t_train=0.7 * n * dt, t_val=0.2 * n * dt, t_test=0.1 * n * dt,
+                           rho=0.6, sigma_in=0.5, tikh=1e-6, noise=1e-3, seed=0,
+                           hyperparameters_to_optimize=[], verbose=False,
+                           input_parameters=np.array([forcings]))
+    esn.train(data, plot_training=False)
+    assert esn.trained and esn.Win.shape == (60, 9 + 1 + 1) and esn.Wout.shape == (61, 5)
+    p = tmp_path / 'esn.npz'
+    np.savez_compressed(p, **esn.to_arrays())
+    back = EchoStateNetwork.from_arrays(np.load(p, allow_pickle=False))
+    back.input_parameters = esn.input_parameters = np.array([[7.0]])
+    u1 = u2 = esn.outputs_to_inputs(data[0, 50][:, None])
+    r1 = r2 = np.zeros((esn.N_r, 1))
+    for _ in range(10):
+        y1, r1 = esn.step(u1, r1)
+        y2, r2 = back.step(u2, r2)
+        np.testing.assert_array_equal(y1, y2)
+        u1, u2 = esn.outputs_to_inputs(y1), back.outputs_to_inputs(y2)
+
+
 # ---------------------------------------------------------------------- independent patches
 
 @pytest.mark.parametrize('periodic', [True, False])
@@ -371,7 +441,7 @@ def test_errors_of_independent_patches():
     (dict(patch_size=0), 'divides'),
     (dict(patch_size=2, halo=-1), 'halo'),
     (dict(patch_size=2, halo=4), 'periodic domain'),       # window of 10 sites on a ring of 8
-    (dict(patch_size=2, input_parameters=np.zeros((1, 1))), 'input_parameters'),
+    (dict(patch_size=2, shared=False, input_parameters=np.zeros((1, 1))), 'input_parameters'),
     (dict(patch_size=2, readout_input=True), 'readout_input'),
     (dict(patch_size=2, observed_idx=np.arange(0, 8, 2)), 'observed_idx'),
 ])
@@ -395,3 +465,51 @@ def test_errors_of_the_parallel_api():
     esn = _random_parallel(N_dim=8, patch_size=2, halo=1)
     with pytest.raises(ValueError, match='N_r'):
         esn.step(np.zeros((8, 1)), np.zeros((esn.N_units, 1)))
+
+
+@pytest.mark.parametrize('patch', [None, 2])
+def test_sigma_param_scales_the_parameter_columns(patch, tmp_path):
+    """sigma_param equal to sigma_in is the network without it; another value changes only the parameter input, and
+    the Jacobian (parameter columns included) matches finite differences; the value survives npz."""
+    kw = dict(N_dim=8, patch_size=patch, halo=1 if patch else 0, input_parameters=np.array([[0.5]]))
+    if patch is None:
+        kw.pop('patch_size')
+        kw.pop('halo')
+        esn = EchoStateNetwork(np.zeros((8, 1)), dt=1, N_units=10, upsample=1, seed=0, sigma_in=0.5,
+                               input_parameters=np.array([[0.5]]))
+        esn._generate_W_Win(seed=0)
+        esn.Wout = np.random.default_rng(0).normal(size=(11, 8))
+    else:
+        esn = _random_parallel(**kw)
+    rng = np.random.default_rng(3)
+    esn.norm, esn.shift = rng.uniform(0.5, 2.0, 9), rng.normal(size=9)
+    u, r = rng.normal(size=(9, 2)), 0.1 * rng.normal(size=(esn.N_r, 2))
+    base = esn.step(u, r)
+    esn.sigma_param = esn.sigma_in
+    for a, b in zip(esn.step(u, r), base):
+        np.testing.assert_allclose(a, b, rtol=1e-12, atol=1e-14)
+    esn.sigma_param = 2.0
+    assert not np.allclose(esn.step(u, r)[1], base[1])
+    J = esn.Jacobian(u, r)
+    eps, J_fd = 1e-5, np.zeros_like(J)
+    for j in range(9):
+        up, um = u.copy(), u.copy()
+        up[j] += eps
+        um[j] -= eps
+        J_fd[:, j] = (esn.step(up, r)[0] - esn.step(um, r)[0]) / (2 * eps)
+    np.testing.assert_allclose(J, J_fd, rtol=1e-6, atol=1e-8)
+    p = tmp_path / 'esn.npz'
+    np.savez_compressed(p, **esn.to_arrays())
+    assert EchoStateNetwork.from_arrays(np.load(p, allow_pickle=False)).sigma_param == 2.0
+
+
+def test_sigma_param_is_searched():
+    rng = np.random.default_rng(4)
+    data = rng.normal(size=(2, 120, 4)).cumsum(axis=1) * 0.1
+    esn = EchoStateNetwork(data[0].T, dt=1, N_units=20, upsample=1, t_train=80, t_val=20, t_test=20, N_wash=5,
+                           N_folds=2, N_grid=2, N_func_evals=8, seed=0, input_parameters=np.array([[0.0, 1.0]]),
+                           optimize_parameter_normalization='data', sigma_param_range=(-2, 0),
+                           hyperparameters_to_optimize=['rho', 'sigma_in', 'sigma_param', 'tikh'])
+    esn.train(data, plot_training=False)
+    assert esn.bo_results['hp_names'] == ['rho', 'sigma_in', 'sigma_param']
+    assert 10 ** -2 <= esn.sigma_param <= 1.0

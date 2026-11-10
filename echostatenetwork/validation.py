@@ -64,30 +64,68 @@ def nMSE(case, Y_true, Y_pred, norm=None):
 
 
 
+def _stability_starts(case, U_wtv):
+    """(segment, step) of the `stability_starts` washouts of the stability gate. The starts are shared out evenly
+    over the segments that hold a washout (with fewer starts than segments, the segments are taken evenly over the
+    list, so the last regimes of a parametric network are tested too), evenly spaced within each segment, and taken
+    in turn from the segments; the first is the start of the first segment, the gate of a single start."""
+    n = max(1, int(getattr(case, 'stability_starts', 1)))
+    usable = [l for l, U_l in enumerate(U_wtv) if len(U_l) >= case.N_wash]
+    segment = [usable[i * len(usable) // n] for i in range(n)]         # segment of each start, evenly over the list
+    per_segment = {l: [(l, int(p)) for p in np.linspace(0, len(U_wtv[l]) - case.N_wash, segment.count(l),
+                                                         endpoint=False)] for l in dict.fromkeys(segment)}
+    order = [st for k in range(max(map(len, per_segment.values()))) for seg in per_segment.values()
+             for st in seg[k:k + 1]]
+    return order
+
+
 def unstable(case, U_wtv, Y_wtv, Wout_tik):
-    """1.0 for each Tikhonov candidate whose closed loop of `stability_steps` steps, after a
-    washout at the start of the first segment, leaves the attractor (non-finite, or beyond
-    3x the largest |y| of the data) or whose output standard deviations leave
-    `stability_band` times those of the data; else 0.0. The gate of RVC_Noise."""
+    """1.0 for each Tikhonov candidate whose closed loop of `stability_steps` steps, after a washout, leaves the
+    attractor (non-finite, or beyond 3x the largest |y| of the data) or whose standard deviation, the root mean square
+    over the outputs, leaves `stability_band` times that of the record of its washout, from any of `stability_starts` washouts spread over
+    the records (`_stability_starts`; advanced together, as the columns of one ensemble); else 0.0. The gate of
+    RVC_Noise. One start tests one trajectory only: a network that leaves the attractor from other states passes it.
+    Each loop is compared with its own record: the records of a parametric network (one per regime) differ in
+    amplitude, so a band around the pooled records rejects correct loops. The band holds for the root mean square
+    over the outputs, not for every output: on a record of tens of Lyapunov times, the standard deviation of a single
+    output is uncertain by some ten per cent, and the worst of many outputs leaves a band of 20% around correct
+    loops. The band must hold for the whole loop and for its last `stability_tail` (a fraction of the steps): a loop
+    that follows the attractor for most of its length and collapses near the end keeps the standard deviation of
+    the whole loop in the band, and that of its tail falls below it."""
     Y = np.concatenate([np.asarray(y) for y in Y_wtv])
-    bound, std = 3 * np.abs(Y).max(), Y.std(axis=0)
+    bound = 3 * np.abs(Y).max()
     lo, hi = case.stability_band
+    tail = int(round(getattr(case, 'stability_tail', 0) * case.stability_steps))   # steps of the tail window
+    starts = _stability_starts(case, U_wtv)
+
+    def rms(y):                                   # RMS over the outputs of their standard deviation
+        return np.sqrt(np.mean(np.var(y, axis=0), axis=0))
+    std = np.array([rms(np.asarray(Y_wtv[l]).reshape(len(Y_wtv[l]), -1)) for l, _ in starts])   # (n_starts,)
+    U_wash = np.stack([np.asarray(U_wtv[l])[p:p + case.N_wash].reshape(case.N_wash, -1) for l, p in starts],
+                      axis=-1)                                              # (N_wash, N_dim_in, n_starts)
+    original = case.input_parameters
+    if original is not None:                  # every start keeps the parameters of its own record
+        case.input_parameters = U_wash[0, -case._n_param(original):]
     out = np.zeros(len(Wout_tik))
-    for j, W in enumerate(Wout_tik):
-        case.Wout = W
-        r = np.zeros((case.N_r, 1))
-        for u_in in U_wtv[0][:case.N_wash]:
-            u, r = case.step(u_in, r)
-        Z = np.empty((case.stability_steps, Y.shape[1]))
-        for k in range(case.stability_steps):
-            u, r = case.step(case.outputs_to_inputs(full_state=u), r)
-            Z[k] = u[:, 0]
-            if not np.isfinite(Z[k]).all() or np.abs(Z[k]).max() > bound:
-                out[j] = 1.0
-                break
-        else:
-            ratio = Z.std(axis=0) / std
-            out[j] = float(not (lo < ratio.min() and ratio.max() < hi))
+    try:
+        for j, W in enumerate(Wout_tik):
+            case.Wout = W
+            r = np.zeros((case.N_r, len(starts)))
+            for u_in in U_wash:
+                u, r = case.step(u_in, r)
+            Z = np.empty((case.stability_steps,) + u.shape)
+            for k in range(case.stability_steps):
+                u, r = case.step(case.outputs_to_inputs(full_state=u), r)
+                Z[k] = u
+                if not np.isfinite(u).all() or np.abs(u).max() > bound:
+                    out[j] = 1.0
+                    break
+            else:
+                windows = [Z] + ([Z[-tail:]] if tail >= 2 else [])        # the whole loop, then its tail
+                ratios = [rms(window) / std for window in windows]       # (n_starts,) each
+                out[j] = float(not all(lo < ratio.min() and ratio.max() < hi for ratio in ratios))
+    finally:
+        case.input_parameters = original
     return out
 
 
@@ -112,7 +150,8 @@ def RVC_Noise(x, case, U_wtv, Y_wtv, tikh_opt, hp_names, print_convergence=True)
 
     Returns
     -------
-        float: Mean (over folds) log10 closed-loop normalized MAE of the best Tikhonov candidate.
+        float: Mean (over folds) log10 closed-loop normalized MAE of the best Tikhonov candidate,
+        raised by ``case.stability_penalty`` when that candidate fails the stability gate (`unstable`).
 
     See Also
     --------
@@ -214,6 +253,8 @@ def RVC_Noise(x, case, U_wtv, Y_wtv, tikh_opt, hp_names, print_convergence=True)
     case.n_folds_realized = n_looop   # surfaced by training_summary()
 
     if getattr(case, 'stability_steps', 0) and getattr(case, '_forecast_sites', None) is None:
+        # the penalty (default: the score of a diverged probe) raises the fold mean of a failing candidate,
+        # which then wins only when every candidate fails
         nMAE += case.stability_penalty * n_looop * unstable(case, U_wtv, Y_wtv, Wout_tik)
 
     # select and save the optimal tikhonov and noise level in the targets

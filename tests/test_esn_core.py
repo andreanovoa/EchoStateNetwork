@@ -705,6 +705,133 @@ def test_bho_midpoint_grid_noise_and_stability_gate():
     assert flags[1] == 1.0
 
 
+def test_stability_gate_from_several_starts():
+    """The washouts of the gate spread over every segment, in turn; one start is the start of the first segment
+    (the former gate); several starts flag the unstable readout and keep the parameters of each record."""
+    from echostatenetwork import validation
+    rng = np.random.default_rng(1)
+    t = np.arange(300) * 0.05
+    data = np.stack([np.stack([np.sin(t + a), np.cos(t + a)], axis=1) for a in (0.0, 1.0)]) + 0.01 * rng.normal(size=(2, 300, 2))
+    esn = EchoStateNetwork(data[0].T, dt=1, N_units=30, upsample=1, t_train=200, t_val=40, t_test=60, N_wash=10,
+                           hyperparameters_to_optimize=[], seed=0, input_parameters=np.array([[0.0, 1.0]]),
+                           optimize_parameter_normalization=False)
+    esn.train(data, plot_training=False)
+    U, Y, *_ = esn._split_and_format_data(data)
+    esn.stability_starts = 1
+    assert validation._stability_starts(esn, U) == [(0, 0)]
+    esn.stability_starts = 4
+    starts = validation._stability_starts(esn, U)
+    assert [l for l, _ in starts] == [0, 1, 0, 1] and starts[0][1] == starts[1][1] == 0 and starts[2][1] > 0
+    before = esn.input_parameters.copy()
+    esn.stability_steps = 100
+    W = esn.Wout
+    flags = validation.unstable(esn, U, Y, np.stack([W, 1e3 * W]))
+    assert flags[1] == 1.0
+    np.testing.assert_array_equal(esn.input_parameters, before)
+
+
+def test_stability_gate_compares_each_loop_with_its_own_record():
+    """Two records of different amplitude: the loops of a readout that reproduces each record pass the gate. A band
+    around the pooled records would reject the loops of the small one."""
+    from echostatenetwork import validation
+    t = np.arange(400) * 0.05
+    data = np.stack([a * np.stack([np.sin(t), np.cos(t)], axis=1) for a in (1.0, 4.0)])
+    esn = EchoStateNetwork(data[0].T, dt=1, N_units=60, upsample=1, t_train=300, t_val=50, t_test=50, N_wash=20,
+                           hyperparameters_to_optimize=[], seed=0, input_parameters=np.array([[0.0, 1.0]]),
+                           optimize_parameter_normalization=False, rho=0.5, sigma_in=0.5, tikh=1e-8, noise=0.0)
+    esn.train(data, plot_training=False)
+    U, Y, *_ = esn._split_and_format_data(data, add_noise=False)
+    esn.stability_steps, esn.stability_starts = 200, 2
+    assert [l for l, _ in validation._stability_starts(esn, U)] == [0, 1]
+    assert validation.unstable(esn, U, Y, esn.Wout[None])[0] == 0.0
+
+
+def test_stability_starts_cover_every_segment_evenly():
+    """Fewer starts than segments: the starts are spread over the list of segments, not the first ones only."""
+    from echostatenetwork import validation
+
+    class Case:
+        N_wash, stability_starts = 5, 3
+    U = [np.zeros((50, 2))] * 7
+    assert [l for l, _ in validation._stability_starts(Case, U)] == [0, 2, 4]
+    Case.stability_starts = 7
+    assert [l for l, _ in validation._stability_starts(Case, U)] == list(range(7))
+
+
+def test_stability_penalty_rejects_a_failing_candidate(monkeypatch):
+    """The default penalty is a hard rejection: a Tikhonov candidate that fails the gate loses to a candidate that
+    passes it, whatever its short-fold score. At the former default of 1.0 (one decade of log_nMAE), a failing
+    candidate still won with a short-fold score better by more than one decade (L96-40s: -2.27 + 1 < -1.2)."""
+    from echostatenetwork import validation
+    data = np.random.default_rng(0).normal(size=(300, 3)).cumsum(axis=0) * 0.1
+    esn = EchoStateNetwork(data.T, dt=1, upsample=1, N_units=20, t_train=200, t_val=40, t_test=0, N_wash=10,
+                           hyperparameters_to_optimize=[], tikh_range=[1e-12, 1e-6], stability_steps=1)
+    esn.train(data, plot_training=False)
+    U_wtv, Y_wtv = esn._split_and_format_data(data, add_noise=False)[:2]
+    scores = {}                                   # short-fold score of each candidate, keyed by its readout:
+
+    def metric(case, Y_true, Y_pred, norm):       # the first candidate scores two decades better than the second
+        key = case.Wout.ctypes.data
+        if key not in scores:
+            scores[key] = (-3.0, -1.0)[len(scores)]
+        return scores[key]
+
+    monkeypatch.setattr(validation, 'unstable', lambda case, U, Y, Wout_tik: np.array([1.0, 0.0]))   # and fails
+
+    def evaluation(penalty):
+        probe = esn.copy()
+        probe.val_k, probe.stability_penalty, probe.validation_metric = 0, penalty, metric
+        scores.clear()
+        score = validation.RVC_Noise([], probe, U_wtv, Y_wtv, np.zeros(1), [], print_convergence=False)
+        assert len(scores) == 2
+        return score, probe.tikh
+
+    assert evaluation(EchoStateNetwork.stability_penalty) == (-1.0, 1e-6)   # the candidate that passes the gate
+    assert evaluation(1.0) == (-2.0, 1e-12)                                  # the former default: the failing one
+
+
+def test_stability_gate_checks_the_tail_of_the_loop(monkeypatch):
+    """A loop that follows the record for three quarters of its length and then collapses to the mean keeps the
+    standard deviation of the whole loop inside the band (sqrt(0.75) of the record's); the band on the last half of
+    the loop (stability_tail) rejects it, and stability_tail=0 restores the test on the whole loop only."""
+    from echostatenetwork import validation
+    t = np.arange(400) * 0.05
+    data = np.stack([np.sin(t), np.cos(t)], axis=1)[None]
+    esn = EchoStateNetwork(data[0].T, dt=1, N_units=20, upsample=1, t_train=300, t_val=50, t_test=50, N_wash=10,
+                           hyperparameters_to_optimize=[], seed=0, noise=0.0, stability_steps=300)
+    esn.train(data, plot_training=False)
+    U, Y, *_ = esn._split_and_format_data(data, add_noise=False)
+    calls = []
+
+    def step(u, r):                                   # the loop reproduces the record, then collapses to its mean
+        k = len(calls) - esn.N_wash                   # steps into the loop (negative during the washout)
+        calls.append(k)
+        y = data[0, k % len(t)] if k < 0.75 * esn.stability_steps else np.zeros(2)
+        return y.reshape(2, 1), r
+
+    monkeypatch.setattr(esn, 'step', step)
+    assert esn.stability_tail == 0.5
+    assert validation.unstable(esn, U, Y, esn.Wout[None])[0] == 1.0
+    calls.clear()
+    esn.stability_tail = 0
+    assert validation.unstable(esn, U, Y, esn.Wout[None])[0] == 0.0
+
+
+def test_parameter_columns_normalized_like_the_state():
+    """optimize_parameter_normalization='data': the parameter columns take the shift and scale of norm_method over
+    the training values, and the search keeps its own hyperparameters only."""
+    rng = np.random.default_rng(2)
+    data = rng.normal(size=(3, 80, 2))
+    esn = EchoStateNetwork(data[0].T, dt=1, N_units=20, upsample=1, t_train=50, t_val=10, t_test=10, N_wash=5,
+                           hyperparameters_to_optimize=['rho'], N_grid=2, N_func_evals=2, N_folds=2, seed=0,
+                           input_parameters=np.array([[2.0, 4.0, 8.0]]), optimize_parameter_normalization='data',
+                           norm_method='range')
+    esn.train(data, plot_training=False)
+    np.testing.assert_allclose(esn.norm[-1], 6.0)                 # range of the training values, 8 - 2
+    np.testing.assert_allclose(esn.shift[-1], 14.0 / 3)           # their mean (equal segments)
+    assert esn.hyperparameters_to_optimize == ['rho']
+
+
 # ---------------------------------------------------------------------- 'tikh' alone in the search (issue #1)
 def _issue1_network(**kwargs):
     """The network and record of issue #1: 'tikh' is the only hyperparameter to optimize."""

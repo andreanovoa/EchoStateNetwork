@@ -362,14 +362,24 @@ class EchoStateNetwork:
     # a saturated reservoir scores well over a short probe and fails over a long forecast.
     saturation_penalty = 0.0
     # stability gate of the recycle validation (RVC_Noise): with stability_steps > 0, every
-    # Tikhonov candidate also runs one closed loop of that many steps, and its fold-mean score
-    # rises by stability_penalty when the loop leaves the attractor (non-finite, or beyond 3x
-    # the largest |y| of the data) or the standard deviation of any output leaves
-    # stability_band times that of the data. The short folds score the accuracy, the long loop
+    # Tikhonov candidate also runs closed loops of that many steps, and its fold-mean score
+    # rises by stability_penalty when a loop leaves the attractor (non-finite, or beyond 3x
+    # the largest |y| of the data) or its standard deviation (the RMS over the outputs) leaves
+    # stability_band times that of its record. The short folds score the accuracy, the long loop
     # the stability (two-stage validation, as in Lu et al. 2018; Platt et al. 2022).
+    # stability_starts: the number of washouts, spread over the training record, from which the loop runs; the
+    # candidate fails if any loop fails (1: the start of the first segment only)
+    # stability_tail: the band must also hold on the last stability_tail of the loop (a fraction; 0 tests the
+    # whole loop only), because a loop that follows the attractor for most of its length and collapses near the
+    # end keeps the standard deviation of the whole loop in the band
+    # stability_penalty: the score of a diverged probe of log_nMAE (10), so that a candidate that fails the gate
+    # loses to every candidate that passes it, as a diverged probe does; at 1.0 (one decade), a failing
+    # candidate still won with a short-fold score better by more than one decade
     stability_steps = 0
+    stability_starts = 1
     stability_band = (0.8, 1.2)
-    stability_penalty = 1.0
+    stability_tail = 0.5
+    stability_penalty = 10.0
     N_func_evals = 20
     N_grid = 4
     # Bayesian optimization: bho_noise is the GP noise ('gaussian' learns a white-noise level,
@@ -403,12 +413,19 @@ class EchoStateNetwork:
     rho_range = (.8, 1.05)
     sigma_in = 10 ** -3
     sigma_in_range = (-5, -1)
+    # sigma_param: the input scaling of the input_parameters columns of Win, searched (log10) over sigma_param_range
+    # like sigma_in when listed in hyperparameters_to_optimize; None scales them with sigma_in
+    sigma_param = None
+    sigma_param_range = (-3, 0.477)
     tikh = 1e-12
     tikh_range = [1e-8, 1e-10, 1e-12, 1e-16]
     leak_rate = 1.0
     leak_rate_range = (0.1, 1.0)
 
     # Dense parameter columns can swamp the reservoir if the raw values are not rescaled.
+    # optimize_parameter_normalization: True searches the shift and scale of every parameter column with the other
+    # hyperparameters (param_shift_range, param_norm_range); 'data' normalizes them like the state (norm_method over
+    # the training values), before the search; False leaves them raw.
     optimize_parameter_normalization = False
     param_shift_range = (-1.0, 1.0)
     param_norm_range = (0.1, 10.0)
@@ -442,8 +459,9 @@ class EchoStateNetwork:
         ValueError
             If the parallel layout cannot work: `patch_size` does not divide `N_dim`,
             the window of a patch exceeds a periodic domain, `patch_size` is combined
-            with `input_parameters`, `readout_input` or partial observability
-            (`observed_idx`), or ``shared=False`` is set without `patch_size`.
+            with `readout_input` or partial observability (`observed_idx`),
+            ``shared=False`` with `input_parameters`, or ``shared=False`` is set
+            without `patch_size`.
         """
 
         if y.ndim == 1:
@@ -867,7 +885,10 @@ class EchoStateNetwork:
     def _n_in(self) -> int:
         """int: columns of `Win` before the bias column -- `N_dim_in`, or the window
         width ``patch_size + 2 * halo`` with the parallel layout."""
-        return self.N_dim_in if self.patch_size is None else self.patch_size + 2 * self.halo
+        if self.patch_size is None:
+            return self.N_dim_in
+        n_param = 0 if self.input_parameters is None else self._n_param(self.input_parameters)
+        return self.patch_size + 2 * self.halo + n_param   # the window, then the parameters
 
     @property
     def _n_out(self) -> int:
@@ -895,8 +916,8 @@ class EchoStateNetwork:
         if self.periodic and G + 2 * H > N:
             raise ValueError(f'on a periodic domain, the window of a patch (patch_size + 2 * halo '
                              f'= {G + 2 * H} sites) must not exceed the N_dim={N} sites.')
-        if self.input_parameters is not None:
-            raise ValueError('input_parameters is not implemented with the parallel layout (patch_size).')
+        if self.input_parameters is not None and not self.shared:
+            raise ValueError('input_parameters is not implemented with independent patches (shared=False).')
         if self.readout_input:
             raise ValueError('readout_input is not implemented with the parallel layout (patch_size).')
         if not np.array_equal(self.observed_idx, np.arange(N)):
@@ -1120,6 +1141,9 @@ class EchoStateNetwork:
 
         Win_1 = self.Win[:, :self.N_dim_in]  # type: Union[csr_matrix, np.ndarray]
         g = self.sigma_in * 1.0 / norm
+        if self.sigma_param is not None and self.input_parameters is not None:
+            n_par = self._n_param(self.input_parameters)
+            g[self.N_dim_in - n_par:] = self.sigma_param / norm[self.N_dim_in - n_par:]
 
         if issparse(Win_1):
             # .multiply returns a COO matrix: convert back to CSR for efficient products
@@ -1218,12 +1242,23 @@ class EchoStateNetwork:
             # parallel layout: the patches become columns of the shared reservoir --
             # u_norm -> the windows (n_window, N_patches * N_ens), r -> (N_units, N_patches * N_ens);
             # the appended zero row is what the -1 entries of patch_sites read
-            u_norm = self._to_columns(np.vstack([u_norm, np.zeros((1, u.shape[-1]))])[self.patch_sites])
+            # input_parameters: the rows after the N_dim sites, read by every patch
+            params = np.tile(u_norm[self.N_dim:], (1, self.N_patches))
+            u_norm = self._to_columns(np.vstack([u_norm[:self.N_dim], np.zeros((1, u.shape[-1]))])[self.patch_sites])
+            u_norm = np.vstack([u_norm, params])
             r = self._to_columns(r.reshape(self.N_patches, self.N_units, -1))
 
         # Augment input with bias
         bias_in = self.bias_in * np.ones((1, u_norm.shape[-1]))
         u_aug = np.concatenate((u_norm, bias_in))
+        if self.sigma_param is not None and self.input_parameters is not None:
+            # the parameter rows scaled by sigma_param instead of sigma_in (the product below applies sigma_in)
+            n_par = self._n_param(self.input_parameters)
+            first = self._n_in - n_par
+            ratio = np.asarray(self.sigma_param, dtype=float) / np.asarray(self.sigma_in, dtype=float)
+            if ratio.ndim and self.patch_size is not None:       # per-member values: the patches are columns
+                ratio = np.tile(ratio, self.N_patches)
+            u_aug[first:first + n_par] = u_aug[first:first + n_par] * ratio
 
         # Forecast the reservoir state (leaky-integrator; leak_rate=1 -> plain tanh)
         x_tanh = np.tanh(self.sigma_in * self.Win.dot(u_aug) + self.rho * self.W.dot(r))
@@ -1464,13 +1499,19 @@ class EchoStateNetwork:
         sites = self.patch_sites                                       # (P, n_window)
         Win_1 = self.Win[:, :self._n_in]
         Win_1 = Win_1.toarray() if issparse(Win_1) else np.asarray(Win_1)
+        n_window = sites.shape[1]
         inv_norm = np.where(sites >= 0, 1. / self.norm[sites], 0.)      # padded positions: no input
-        blocks = np.einsum('jg,pjm,jk,pk->pgkm', self.Wout[:self.N_units],
-                           tt.reshape(self.N_patches, self.N_units, N_ens),
-                           self.sigma_in * Win_1, inv_norm, optimize=True)   # (P, G, n_window, N_ens)
+        tt = tt.reshape(self.N_patches, self.N_units, N_ens)
+        blocks = np.einsum('jg,pjm,jk,pk->pgkm', self.Wout[:self.N_units], tt,
+                           self.sigma_in * Win_1[:, :n_window], inv_norm, optimize=True)   # (P, G, n_window, N_ens)
         J = np.zeros((self.N_dim, self.N_dim_in, N_ens))
         rows = np.arange(self.N_dim).reshape(self.N_patches, self.patch_size, 1)
         np.add.at(J, (rows, np.maximum(sites, 0)[:, np.newaxis, :]), blocks)
+        if n_window < self._n_in:          # input_parameters: every patch reads them
+            J[:, self.N_dim:] = np.einsum('jg,pjm,jk,k->pgkm', self.Wout[:self.N_units], tt,
+                                          (self.sigma_in if self.sigma_param is None else self.sigma_param)
+                                          * Win_1[:, n_window:], 1. / self.norm[self.N_dim:],
+                                          optimize=True).reshape(self.N_dim, -1, N_ens)
         return J[..., 0] if N_ens == 1 else J
 
 
@@ -2021,6 +2062,7 @@ class EchoStateNetwork:
         else:
             data = f"{self.N_train}+{self.N_val} train+val steps, {s['n_test']} test"
         hp_names = ('rho', 'sigma_in', 'tikh') + \
+            (('sigma_param',) if self.sigma_param is not None else ()) + \
             (('leak_rate',) if self.leak_rate != 1.0 else ())
         hps = ', '.join(f'{name}={self._get_hyperparam(name):.3g}' for name in hp_names)
         # realized fold count of the last validation run (strategies may cap or
@@ -2073,6 +2115,7 @@ class EchoStateNetwork:
         out = dict(N_dim=self.N_dim, N_units=self.N_units, N_wash=self.N_wash,
                    upsample=self.upsample, seed=self.seed, dt_ESN=self.dt_ESN,
                    rho=self.rho, sigma_in=self.sigma_in, tikh=self.tikh,
+                   **({} if self.sigma_param is None else dict(sigma_param=self.sigma_param)),
                    leak_rate=self.leak_rate, noise=self.noise,
                    Win_type=self.Win_type, norm_method=self.norm_method,
                    noise_type=self.noise_type, readout_input=str(self.readout_input),
@@ -2129,6 +2172,7 @@ class EchoStateNetwork:
                   upsample=upsample, Win_type=s('Win_type'),
                   norm_method=s('norm_method'), noise_type=s('noise_type'),
                   noise=f('noise'), rho=f('rho'), sigma_in=f('sigma_in'),
+                  **({'sigma_param': f('sigma_param')} if 'sigma_param' in arrays else {}),
                   tikh=f('tikh'), leak_rate=f('leak_rate'),
                   observed_idx=np.asarray(arrays['observed_idx']),
                   input_parameters=ip,
@@ -2651,14 +2695,22 @@ class EchoStateNetwork:
             # search already tuned them: re-formatting after train() (e.g. to slice
             # validation data) must not clobber the tuned values and leave a raw
             # parameter swamping the reservoir.
-            if (self.optimize_parameter_normalization and getattr(self, '_norm', None) is not None
+            mode = self.optimize_parameter_normalization
+            if isinstance(mode, str) and mode == 'data':
+                # the parameter columns normalized like the state (norm_method over the training values), before
+                # the search: sigma_in then scales state and parameters alike, and the search keeps its dimensions
+                params = (np.concatenate([u[:, N_obs:] for u in U_wtv], axis=0) if is_ragged
+                          else np.asarray(U_wtv)[..., N_obs:N_obs + N_param])
+                norm_param, shift_param = (np.ravel(v) for v in EchoStateNetwork._set_norm(
+                    np.reshape(params, (1, -1, N_param)), method=self.norm_method))
+            elif (mode and getattr(self, '_norm', None) is not None
                     and self._norm.size == N_obs + N_param):
                 norm_param, shift_param = self._norm[-N_param:], self._shift[-N_param:]
             else:
                 norm_param, shift_param = np.ones(N_param), np.zeros(N_param)
             norm_obs = np.concatenate([norm_obs, norm_param])
             shift_obs = np.concatenate([shift_obs, shift_param])
-            if self.optimize_parameter_normalization:
+            if mode and not isinstance(mode, str):
                 # tune shift/norm per parameter via the same BO loop as rho/sigma_in/tikh,
                 # instead of leaving them fixed at identity (see class docstring above).
                 # Size param_shift_range/param_norm_range from the real, final
@@ -2701,7 +2753,7 @@ class EchoStateNetwork:
         """
         N_obs = len(self.observed_idx)
         for hp, name in zip(params, names):
-            if name == 'sigma_in':
+            if name in ('sigma_in', 'sigma_param'):
                 setattr(self, name, 10 ** hp)
             elif name.startswith('param_shift_'):
                 self._shift[N_obs + int(name.removeprefix('param_shift_'))] = hp
