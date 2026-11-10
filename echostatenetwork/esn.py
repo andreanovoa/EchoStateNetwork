@@ -334,6 +334,10 @@ class EchoStateNetwork:
     # "input skip" ESN variant. Wout then has N_units + N_dim_in + 1 rows.
     # 'params': the readout reads only the parameter rows, Wout on [r; p; bias].
     readout_input = False
+    # True: the readout reads every second reservoir unit squared, [r_1, r_2^2, r_3, r_4^2, ...; bias]
+    # (0-based indices 1, 3, 5, ...), which breaks the odd symmetry of the tanh reservoir in the readout
+    # (Pathak et al. 2018; `r2_mode` of MagriLab/Adjoint-ESN, Ozan et al.). Wout keeps its shape.
+    r2_mode = False
     # False: Win's parameter columns are zero, so the parameter reaches the output only
     # through the readout (with readout_input='params'), never the reservoir.
     param_in_reservoir = True
@@ -1309,10 +1313,31 @@ class EchoStateNetwork:
         return self._readout(r, self.normalize_input(u))
 
     def _readout(self, r, u_norm):
-        """Wout^T [r; u_norm; bias_out] (u_norm only when `readout_input`)."""
+        """Wout^T [r~; u_norm; bias_out] (u_norm only when `readout_input`; r~ = `_readout_states(r)`)."""
         bias_out = self.bias_out * np.ones((1, r.shape[-1]))
+        r = self._readout_states(r)
         parts = (r, u_norm[self._readout_rows], bias_out) if self.readout_input else (r, bias_out)
         return np.dot(self.Wout.T, np.concatenate(parts))
+
+    def _readout_states(self, r, axis=0):
+        """The reservoir states that the readout reads: `r` itself, or with `r2_mode` a copy of `r` in which every
+        second unit (indices 1, 3, 5, ... along `axis`, the axis of the units) is squared."""
+        if not self.r2_mode:
+            return r
+        r = np.array(r, dtype=float, copy=True)
+        units = [slice(None)] * r.ndim
+        units[axis] = slice(1, None, 2)
+        r[tuple(units)] **= 2
+        return r
+
+    def _readout_derivative(self, r):
+        """d r~_j / d r_j of `_readout_states` for the reservoir states `r` ``(N_r, N_ens)`` (patches stacked):
+        1, or 2 r_j on the units that `r2_mode` squares."""
+        d = np.ones_like(r, dtype=float)
+        if self.r2_mode:
+            d3, r3 = d.reshape(-1, self.N_units, r.shape[-1]), r.reshape(-1, self.N_units, r.shape[-1])
+            d3[:, 1::2] = 2. * r3[:, 1::2]
+        return d
 
     def normalize_input(self, data):
         r"""Shift-and-scale the input, $(\mathbf{u} - \texttt{shift}) / \texttt{norm}$
@@ -1376,7 +1401,7 @@ class EchoStateNetwork:
         obtained by differentiating `step` through $\tanh$:
 
         $$
-        \mathbf{J} = \mathbf{W}_\mathrm{out,1}^\mathrm{T}\,
+        \mathbf{J} = \mathbf{W}_\mathrm{out,1}^\mathrm{T}\,\mathbf{D}\,
         \mathrm{diag}\!\left(1-\mathbf{r}_{n+1}^{\,2}\right)\,
         \sigma_\mathrm{in}\,\mathbf{W}_\mathrm{in,1}\,\mathrm{diag}(1/\texttt{norm}),
         $$
@@ -1388,7 +1413,9 @@ class EchoStateNetwork:
         (`leak_rate` $\alpha<1$) the middle factor becomes
         $\alpha\,\mathrm{diag}(1-\tilde{\mathbf{x}}^{\,2})$ with $\tilde{\mathbf{x}}$
         the tanh pre-leak value, recovered from the step as
-        $(\mathbf{r}_{n+1} - (1-\alpha)\mathbf{r}_n)/\alpha$.
+        $(\mathbf{r}_{n+1} - (1-\alpha)\mathbf{r}_n)/\alpha$. $\mathbf{D}$ is the identity, or with
+        `r2_mode` the derivative of the squared units, $D_{jj} = 2 r_{n+1,j}$ on the units with odd index
+        (0-based) and 1 elsewhere.
 
         With the parallel layout (`patch_size`), the Jacobian is sparse: the rows of
         the sites of patch $p$ depend only on the columns of its window,
@@ -1442,6 +1469,7 @@ class EchoStateNetwork:
                 (r_in[0] if r_in.ndim == 3 else r_in)
             x_tanh = (rout - (1. - self.leak_rate) * r_prev) / self.leak_rate
             tt = self.leak_rate * (1. - x_tanh ** 2)
+        tt = tt * self._readout_derivative(rout)      # r2_mode: d r~/d r = 2 r on the squared units
         if not open_loop_J:
             # u_aug = np.concatenate((u_in / self.norm, self.bias_in))
             # rout = np.tanh(self.sigma_in * self.Win.dot(u_aug) + self.rho * np.dot(self.WCout.T, u_in))
@@ -2119,6 +2147,7 @@ class EchoStateNetwork:
                    leak_rate=self.leak_rate, noise=self.noise,
                    Win_type=self.Win_type, norm_method=self.norm_method,
                    noise_type=self.noise_type, readout_input=str(self.readout_input),
+                   r2_mode=bool(self.r2_mode),
                    bias_in=np.asarray(self.bias_in), bias_out=np.asarray(self.bias_out),
                    observed_idx=np.asarray(self.observed_idx),
                    norm=np.asarray(self.norm), shift=np.asarray(self.shift))
@@ -2179,7 +2208,8 @@ class EchoStateNetwork:
                   readout_input={'True': True, 'False': False}.get(
                       str(np.asarray(arrays['readout_input'])),
                       str(np.asarray(arrays['readout_input'])))
-                  if 'readout_input' in arrays else False)
+                  if 'readout_input' in arrays else False,
+                  r2_mode=bool(np.asarray(arrays['r2_mode'])) if 'r2_mode' in arrays else False)
         esn.seed = int(np.asarray(arrays['seed']))
         esn.bias_in = np.asarray(arrays['bias_in'])
         esn.bias_out = np.asarray(arrays['bias_out'])
@@ -2381,9 +2411,10 @@ class EchoStateNetwork:
             bias_out = np.ones([r_open.shape[0], 1]) * self.bias_out
             if self.readout_input:   # row ii also reads the (normalised) input that produced r_open[ii]
                 U2 = Uin_l[..., 0] if Uin_l.ndim == 3 else Uin_l
-                r_aug = np.hstack((r_open, self.normalize_input(U2.T).T[:, self._readout_rows], bias_out))
+                r_aug = np.hstack((self._readout_states(r_open, axis=1),
+                                   self.normalize_input(U2.T).T[:, self._readout_rows], bias_out))
             else:
-                r_aug = np.hstack((r_open, bias_out))
+                r_aug = np.hstack((self._readout_states(r_open, axis=1), bias_out))
 
             LHS += np.dot(r_aug.T, r_aug)
             RHS += np.dot(r_aug.T, Yout_l)
