@@ -2370,16 +2370,18 @@ class EchoStateNetwork:
         ``_regularized(LHS, tikh) @ Wout = RHS``.
 
         A saturated reservoir with a small `tikh` (e.g. a large input scaling in the hyperparameter search) makes the
-        regularised left-hand side singular. Then the minimum-norm least-squares solution replaces the exact one and
-        the logger 'echostatenetwork' warns, so that one bad point of the search scores badly instead of stopping it.
+        regularised left-hand side singular. Then the minimum-norm least-squares solution replaces the exact one, so
+        that one bad point of the search scores badly instead of stopping it; a warning says so (`_warn`: once per
+        call of `train`, at the line that calls the package) and the logger 'echostatenetwork' records the point.
         A non-singular left-hand side gives the result of `np.linalg.solve`, unchanged.
         """
         A = self._regularized(LHS, tikh)
         try:
             return np.linalg.solve(A, RHS)
         except np.linalg.LinAlgError:
-            logger.warning('ridge regression: the regularised matrix is singular (tikh=%s, rho=%s, sigma_in=%s);'
-                           ' the least-squares solution replaces it.', tikh, self.rho, self.sigma_in)
+            _warn(f'{type(self).__name__}: the regularised ridge matrix is singular (a saturated reservoir with a '
+                  'vanishing tikh); the least-squares solution replaces the exact one.')
+            logger.info('ridge regression: singular at tikh=%s, rho=%s, sigma_in=%s', tikh, self.rho, self.sigma_in)
             return np.linalg.lstsq(A, RHS, rcond=None)[0]
 
     def _regularized(self, LHS, tikh):
