@@ -148,7 +148,10 @@
     </div>
     <div class="panel">
       <h3>Hyperparameters</h3>
-      <div class="note">Tick to search by Bayesian optimization in the range; untick to fix the value.</div>
+      <div class="note">Tick to search in the range; untick to fix the value. Bayesian optimization searches
+        &rho;, &sigma;<sub>in</sub> and &alpha;; every evaluation selects &beta; from its grid, so &beta; alone
+        needs one evaluation. With parameters, Bayesian optimization also searches their normalization, whatever
+        is ticked.</div>
       <div class="hp" id="hp-rho"><span class="sym">&rho;</span>
         <label><input type="checkbox" id="s-rho" checked> search in <input id="lo-rho" type="number" step="any" value="0.8"> &ndash; <input id="hi-rho" type="number" step="any" value="1.05"></label>
         <label>or fix at <input id="v-rho" type="number" step="any" value="0.9"></label></div>
@@ -265,7 +268,12 @@ function settings() {
     fstep: $("fstep").value.trim() === "" ? null : Math.max(1, Math.round(num("fstep", 1))),
   };
   s.dims = ["rho", "sigma_in", "leak_rate"].filter((k) => s.search[k]);
-  s.bo = s.dims.length > 0 || s.search.tikh;
+  // with parameters, train() also searches the shift and scale of every parameter column
+  // (optimize_parameter_normalization, on by default with input_parameters), whatever is ticked
+  s.pnorm = s.npar > 0;
+  s.bo = s.dims.length > 0 || s.search.tikh || s.pnorm;    // a search runs, and the validation with it
+  s.bayes = s.dims.length > 0 || s.pnorm;                   // a Bayesian optimization
+  s.nd = s.dims.length + (s.pnorm ? 2 * s.npar : 0);        // its dimensions
   s.observed = Array.from({ length: s.nobs }, (_, i) => (s.nobs === 1 ? 0 : Math.round(i * (N - 1) / (s.nobs - 1))));
   s.nin = par ? G + 2 * H : s.nobs + s.npar;
   s.readRows = s.read === "u" ? s.nobs + s.npar : s.read === "p" ? s.npar : 0;
@@ -306,6 +314,11 @@ function syncControls() {
     const on = $("s-" + k).checked;
     ids.forEach((id) => { $(id).disabled = id.startsWith("v-") ? on : !on; });
   }
+  // the budget of the Bayesian optimization applies when rho, sigma_in or the leak rate is searched, or, with
+  // parameters, to the normalization of the parameters (optimize_parameter_normalization), whatever is ticked
+  const bayes = ["s-rho", "s-sigma", "s-alpha"].some((id) => $(id).checked) || (!par && +$("npar").value > 0);
+  for (const id of ["r-nfe", "r-ngrid"]) $(id).classList.toggle("off", !bayes);
+  for (const id of ["nfe", "ngrid"]) $(id).disabled = !bayes;
 }
 
 /* ---------- architecture (SVG): a port of the TikZ schematic; arrows only at 0/90/180/270 degrees ---------- */
@@ -624,33 +637,76 @@ function equations(s) {
     + (ind ? `, one regression per patch; each keeps the columns of the sites of its patch` : "")
     + (s.search.tikh ? `. β is selected from {${s.tikh_range.map((v) => v.toExponential(0)).join(", ")}} at every evaluation of the search.` : `.`)]);
   // hyperparameter selection
-  if (s.bo && s.dims.length) {
+  const metricTex = s.metric === "nMSE"
+    ? String.raw`m(\bm u, \hat{\bm u}) = \frac{\operatorname{mean}\,(\hat{\bm u} - \bm u)^2}`
+      + String.raw`{\operatorname{mean}\,\bm u^2}`
+    : String.raw`m(\bm u, \hat{\bm u}) = \log_{10}\frac{\operatorname{mean}\,|\hat{\bm u} - \bm u|}`
+      + String.raw`{\operatorname{mean}\,\bm d}`;
+  const inner = String.raw`\frac{1}{K}\sum_{k=0}^{K-1} m\!\left(\bm u[\mathcal V_k],\ \hat{\bm u}[\mathcal V_k]\right)`;
+  const diverged = s.metric === "nMSE" ? "A diverged run scores 10<sup>6</sup>. "
+    : "<b>d</b> is the range of the reference; a diverged run scores 10. ";
+  const intervals = `in which 𝒱<sub>k</sub> is the k-th validation interval of ${s.Nval} steps, `
+    + "forecast in closed loop; ";
+  // the search over the normalization of the parameters (optimize_parameter_normalization), whatever is ticked
+  const pnormText = `<code>train()</code> also searches the shift and the scale of every parameter column`
+    + ` (<code>optimize_parameter_normalization</code>, on by default with <code>input_parameters</code>)`;
+  const grid = s.tikh_range.map((v) => fmt(v)).join(",\\,");
+  const fixed = String.raw`\rho = ${fmt(s.rho)},\quad \sigma_\mathrm{in} = ${fmt(s.sigma_in)},\quad `
+    + String.raw`\alpha = ${fmt(s.leak_rate)}`;
+  if (s.dims.length) {
     const sym = { rho: "\\rho", sigma_in: "\\log_{10}\\sigma_\\mathrm{in}", leak_rate: "\\alpha" };
     const theta = s.dims.map((k) => sym[k]).join(",\\ ");
     const box = s.dims.map((k) => `[${fmt(s[k + "_range"][0])},\\,${fmt(s[k + "_range"][1])}]`).join("\\times");
-    const metricTex = s.metric === "nMSE"
-      ? String.raw`m(\bm u, \hat{\bm u}) = \frac{\operatorname{mean}\,(\hat{\bm u} - \bm u)^2}{\operatorname{mean}\,\bm u^2}`
-      : String.raw`m(\bm u, \hat{\bm u}) = \log_{10}\frac{\operatorname{mean}\,|\hat{\bm u} - \bm u|}{\operatorname{mean}\,\bm d}`;
-    const inner = String.raw`\frac{1}{K}\sum_{k=0}^{K-1} m\!\left(\bm u[\mathcal V_k],\ \hat{\bm u}[\mathcal V_k]\right)`;
     const J = s.search.tikh ? String.raw`J(\bm\theta) = \min_{\beta}\ ${inner}` : String.raw`J(\bm\theta) = ${inner}`;
     const f = foldGeometry(s);
-    blocks.push(["Hyperparameter selection", String.raw`\begin{gathered}\bm\theta^\star = \arg\min_{\bm\theta \in \Theta} J(\bm\theta),\qquad \bm\theta = (${theta}),\qquad \Theta = ${box},\\ ${J},\qquad ${metricTex}\end{gathered}`,
-      `in which 𝒱<sub>k</sub> is the k-th validation interval of ${s.Nval} steps, forecast in closed loop; ${f.how} `
-      + (s.metric === "nMSE" ? "A diverged run scores 10<sup>6</sup>. " : "<b>d</b> is the range of the reference; a diverged run scores 10. ")
-      + `Gaussian-process Bayesian optimization evaluates J at a grid of ${f.ngridEff}<sup>${s.dims.length}</sup> = ${f.ngridEff ** s.dims.length} points and then up to ${s.nfe} evaluations in total` + (ind ? ", once per patch, on the record of its own window." : ".")]);
+    blocks.push(["Hyperparameter selection",
+      String.raw`\begin{gathered}\bm\theta^\star = \arg\min_{\bm\theta \in \Theta}`
+      + String.raw` J(\bm\theta),\qquad \bm\theta = (${theta}),\qquad \Theta = ${box},\\ ${J},\qquad ${metricTex}`
+      + String.raw`\end{gathered}`,
+      intervals + f.how + " " + diverged
+      + (s.pnorm ? `With parameters, ${pnormText}: <b>θ</b> also holds these ${2 * s.npar} dimensions. ` : "")
+      + `Gaussian-process Bayesian optimization evaluates J at a grid of ${f.ngridEff}<sup>${s.nd}</sup> = `
+      + `${f.ngridEff ** s.nd} point${f.ngridEff ** s.nd === 1 ? "" : "s"} and then up to ${s.nfe} evaluations in total`
+      + (ind ? ", once per patch, on the record of its own window." : ".")]);
+  } else if (s.pnorm) {
+    // rho, sigma_in and alpha fixed: the search over the normalization of the parameters is a Bayesian optimization
+    const f = foldGeometry(s);
+    const J = s.search.tikh ? String.raw`J(\bm\theta) = \min_{\beta \in \{${grid}\}}\ ${inner}`
+      : String.raw`J(\bm\theta) = ${inner},\quad \beta = ${fmt(s.tikh)}`;
+    blocks.push(["Hyperparameter selection", String.raw`\begin{gathered}\bm\theta^\star = \arg\min_{\bm\theta}`
+      + String.raw` J(\bm\theta),\qquad ${J},\\ ${fixed},\qquad ${metricTex}\end{gathered}`,
+      intervals + f.how + " " + diverged
+      + `With parameters, ${pnormText}, whatever is ticked: <b>θ</b> holds these`
+      + ` ${2 * s.npar} dimensions, which a Gaussian-process Bayesian optimization searches in up to ${s.nfe}`
+      + ` evaluations, ` + (s.search.tikh ? `each of which selects β from the ${s.tikh_range.length} values of the`
+        + " grid. Set <code>optimize_parameter_normalization=False</code> for one evaluation without Bayesian"
+        + " optimization." : "each at the fixed β. Set <code>optimize_parameter_normalization=False</code> for"
+        + " no search.")]);
   } else if (s.bo) {
-    blocks.push(["Hyperparameter selection", String.raw`\text{only } \beta \text{ is searched}`,
-      "the package needs at least one of ρ, σ<sub>in</sub> or α in the search; with β alone, <code>train()</code> raises an error. Fix β or search another hyperparameter."]);
+    // tikh alone: every evaluation of the objective selects beta from its grid, so the search is one evaluation
+    const f = foldGeometry(s);
+    blocks.push(["Hyperparameter selection", String.raw`\begin{gathered}\beta^\star = \arg\min_{\beta \in \{${grid}\}}`
+      + String.raw`\ ${inner},\\ ${fixed},\qquad ${metricTex}\end{gathered}`,
+      intervals + f.how + " " + diverged
+      + `With β alone, the search is a grid search: one evaluation of the objective at the fixed ρ,`
+      + ` σ<sub>in</sub> and α compares the ${s.tikh_range.length} values of the grid, without Bayesian`
+      + ` optimization, so N_func_evals and N_grid do not apply`
+      + (ind ? ". Every patch selects its own β, on the record of its own window." : ".")]);
   } else {
     blocks.push(["Hyperparameter selection", String.raw`\rho = ${fmt(s.rho)},\quad \sigma_\mathrm{in} = ${fmt(s.sigma_in)},\quad \beta = ${fmt(s.tikh)},\quad \alpha = ${fmt(s.leak_rate)}`,
-      s.nseeds > 1 ? "no search: the hyperparameters are fixed; the validation objective scores each realization once." : "no search: the hyperparameters are fixed and no validation runs."]);
+      s.nseeds > 1 ? "no search: the hyperparameters are fixed; the validation objective scores each realization"
+        + " once, at the fixed β." : "no search: the hyperparameters are fixed and no validation runs."]);
   }
   if (s.nseeds > 1) {
-    const J = s.bo && s.dims.length ? String.raw`J^{[\ell]}\!\left(\bm\theta^{\star[\ell]}\right)` : String.raw`J^{[\ell]}`;
+    const J = s.bayes ? String.raw`J^{[\ell]}\!\left(\bm\theta^{\star[\ell]}\right)`
+      : s.bo ? String.raw`J^{[\ell]}\!\left(\beta^{\star[\ell]}\right)` : String.raw`J^{[\ell]}`;
     blocks.push(["Realizations of the random matrices", String.raw`\mathbf W_\mathrm{in}^{[\ell]},\ \mathbf W^{[\ell]}\ \text{from seed } ${s.seed} + \ell,\quad \ell = 0,\dots,${s.nseeds - 1},\qquad \ell^\star = \arg\min_{\ell}\ ${J}`,
       `every realization ℓ draws its own <b>W</b><sub>in</sub> and <b>W</b> and is trained in its own process`
-      + (s.bo && s.dims.length ? ", with its own hyperparameter search; its score is the minimum of the search" : ", with the fixed hyperparameters; its score is one evaluation of the validation objective")
-      + `. The network keeps realization ℓ<sup>⋆</sup>, and <code>seed_scores</code> stores every score` + (s.ind ? "; independent patches keep the best realization of each patch." : ".")]);
+      + (s.bayes ? ", with its own hyperparameter search; its score is the minimum of the search"
+        : s.bo ? ", with its own selection of β; its score is that one evaluation of the validation objective"
+        : ", with the fixed hyperparameters; its score is one evaluation of the validation objective")
+      + `. The network keeps realization ℓ<sup>⋆</sup>, and <code>seed_scores</code> stores every score`
+      + (s.ind ? "; independent patches keep the best realization of each patch." : ".")]);
   }
   // forecast
   const fb = s.nobs < s.N ? String.raw`\hat{\bm u}_{n+1}[\mathcal O]` : String.raw`\hat{\bm u}_{n+1}`;
@@ -676,7 +732,7 @@ function renderEquations(s) {
 /* ---------- validation folds, as validation.py places them ---------- */
 function foldGeometry(s) {
   const Nt = s.Nt, Nw = s.Nwash, Nv = s.Nval, F = s.folds;
-  const ngridEff = s.dims.length ? Math.max(1, Math.min(s.ngrid, Math.floor(s.nfe ** (1 / s.dims.length) + 1e-9))) : s.ngrid;
+  const ngridEff = s.nd ? Math.max(1, Math.min(s.ngrid, Math.floor(s.nfe ** (1 / s.nd) + 1e-9))) : s.ngrid;
   const out = { folds: [], ngridEff, ok: true, msg: "" };
   if (s.strat === "RVC_Noise") {
     const usable = Nt - Nw - Nv;
@@ -726,7 +782,7 @@ function drawFolds(s) {
   bar(s.Ntr - 1, s.Nt, top, val, 0.45);
   b += `<text x="${X(Math.min(s.Ntr, s.Nt))}" y="${top - 6}" font-size="10" fill="${mute}" text-anchor="middle">t_train | t_val</text>`;
   let yy = top + rowH + gap + 8;
-  if (((s.bo && s.dims.length) || s.nseeds > 1) && f.ok) {
+  if ((s.bo || s.nseeds > 1) && f.ok) {
     f.folds.forEach((fd, k) => {
       lab(`fold ${k}`, yy);
       bar(0, s.Nt, yy, grid);
@@ -736,7 +792,8 @@ function drawFolds(s) {
       yy += rowH + gap;
     });
   } else {
-    b += `<text x="${L}" y="${yy + 11}" font-size="11.5" fill="${sec}">${!f.ok ? f.msg : s.bo ? "No folds: the search needs ρ, σ_in or α." : "No search, no validation folds."}</text>`;
+    b += `<text x="${L}" y="${yy + 11}" font-size="11.5" fill="${sec}">`
+      + `${!f.ok ? f.msg : "No search, no validation folds."}</text>`;
     yy += rowH + gap;
   }
   for (let t = 0; t <= 4; t++) {
@@ -748,7 +805,8 @@ function drawFolds(s) {
   svg.setAttribute("width", W);
   svg.innerHTML = b;
   $("foldSub").innerHTML = `The training record has ${s.Ntr.toLocaleString()} training and ${s.Nval.toLocaleString()} validation steps of ${+s.dtE.toPrecision(4)} time units`
-    + ` (${s.Nt.toLocaleString()} input rows). ` + ((s.bo && s.dims.length) || s.nseeds > 1 ? `Each row below is one fold of ${s.strat}. ${f.msg}` : "");
+    + ` (${s.Nt.toLocaleString()} input rows). `
+    + (s.bo || s.nseeds > 1 ? `Each row below is one fold of ${s.strat}. ${f.msg}` : "");
   return f;
 }
 
@@ -780,16 +838,19 @@ function code(s) {
   for (const k of ["rho", "sigma_in", "tikh", "leak_rate"]) {       // always explicit: searched range or fixed value
     if (s.search[k]) kw.push([`${k}_range`, s[k + "_range"]]); else kw.push([k, s[k]]);
   }
-  if (s.bo) {
+  if (s.bayes) {                          // the budget of the Bayesian optimization (none with tikh alone)
     opt("N_func_evals", s.nfe, DEFAULTS.N_func_evals);
     opt("N_grid", s.ngrid, DEFAULTS.N_grid);
+  }
+  if (s.bo || s.nseeds > 1) {             // the validation runs: a search, or the score of every realization
     if (s.strat !== "SSV") opt("N_folds", s.folds, DEFAULTS.N_folds);
     if (s.fstep && (s.strat === "WFV" || s.strat === "KFV")) kw.push(["val_fold_step", s.fstep]);
     if (s.metric === "nMSE") kw.push(["validation_metric", "RAW:validation.nMSE"]);
   }
   const val = (k, v) => (typeof v === "string" && v.startsWith("RAW:") ? v.slice(4)
     : k.endsWith("_range") && k !== "tikh_range" ? pyTuple(v) : py(v));
-  const lines = ["import numpy as np", `from echostatenetwork import EchoStateNetwork${s.metric === "nMSE" && s.bo ? ", validation" : ""}`, "",
+  const imports = s.metric === "nMSE" && (s.bo || s.nseeds > 1) ? ", validation" : "";
+  const lines = ["import numpy as np", `from echostatenetwork import EchoStateNetwork${imports}`, "",
     `data = ...                          # (Nt, ${s.N}) record, time step dt = ${py(s.dt)}`];
   if (s.npar) lines.push(`params = ...                        # (${s.npar}, L) parameter values, one column per segment`);
   lines.push("", "esn = EchoStateNetwork(data[:1].T,");
@@ -829,27 +890,41 @@ function render() {
   $("t-nrU").textContent = s.par ? `${s.P} reservoirs of ${s.Nu} units` : "one reservoir";
   $("t-w").textContent = (rows * cols * (s.ind ? s.P : 1)).toLocaleString();
   $("t-wU").textContent = `${rows} × ${cols}` + (s.ind ? ` per patch, × ${s.P}` : s.par ? ", shared by the patches" : "");
-  if (s.bo && s.dims.length) {
-    $("t-bo").textContent = `${s.dims.length}-D, ${s.nfe}` + (s.nseeds > 1 ? ` \u00d7 ${s.nseeds}` : "");
-    $("t-boU").textContent = `evaluations, initial grid ${f.ngridEff}^${s.dims.length}` + (s.ind ? `; ${s.P} searches` : "") + (s.nseeds > 1 ? `; one search per realization` : "");
-    const runs = f.ok ? f.folds.length * (s.search.tikh ? s.tikh_range.length : 1) : 0;
+  const nfolds = f.ok ? f.folds.length : 0, folds = `${nfolds} fold${nfolds === 1 ? "" : "s"}`;
+  const betas = s.search.tikh ? s.tikh_range.length : 1, timesBeta = s.search.tikh ? ` × ${betas} β` : "";
+  const over = s.nseeds > 1 ? `, over ${s.nseeds} realizations` : "";
+  if (s.bayes) {                         // a Bayesian optimization: rho, sigma_in, alpha or the parameters
+    $("t-bo").textContent = `${s.nd}-D, ${s.nfe}` + (s.nseeds > 1 ? ` \u00d7 ${s.nseeds}` : "");
+    $("t-boU").textContent = (s.dims.length ? `evaluations, initial grid ${f.ngridEff}^${s.nd}`
+      : "evaluations over the normalization of the parameters; " + (s.search.tikh ? `β from ${betas} values at each`
+        : "fixed β"))
+      + (s.ind ? `; ${s.P} searches` : "") + (s.nseeds > 1 ? `; one search per realization` : "");
+    const runs = nfolds * betas;
     $("t-runs").textContent = runs.toLocaleString();
-    $("t-runsU").textContent = `per evaluation (${f.ok ? f.folds.length : 0} fold${f.folds.length === 1 ? "" : "s"}${s.search.tikh ? ` × ${s.tikh_range.length} β` : ""}); ${(runs * s.nfe * (s.ind ? s.P : 1) * s.nseeds).toLocaleString()} in all` + (s.nseeds > 1 ? `, over ${s.nseeds} realizations` : "");
+    $("t-runsU").textContent = `per evaluation (${folds}${timesBeta}); `
+      + `${(runs * s.nfe * (s.ind ? s.P : 1) * s.nseeds).toLocaleString()} in all` + over;
+  } else if (s.bo) {                     // tikh alone: one evaluation selects beta from its grid
+    $("t-bo").textContent = "1" + (s.nseeds > 1 ? ` \u00d7 ${s.nseeds}` : "");
+    $("t-boU").textContent = `evaluation: β from ${betas} values, no Bayesian optimization`
+      + (s.ind ? `; ${s.P} patches` : "") + (s.nseeds > 1 ? `; one per realization` : "");
+    const runs = nfolds * betas;
+    $("t-runs").textContent = runs.toLocaleString();
+    $("t-runsU").textContent = `in the evaluation (${folds}${timesBeta}); `
+      + `${(runs * (s.ind ? s.P : 1) * s.nseeds).toLocaleString()} in all` + over;
   } else {
     $("t-bo").textContent = "none";
-    $("t-boU").textContent = s.bo ? "β alone cannot be searched" : "fixed hyperparameters";
+    $("t-boU").textContent = "fixed hyperparameters";
     const once = s.nseeds > 1 && f.ok ? f.folds.length * s.nseeds : 0;
     $("t-runs").textContent = once.toLocaleString();
     $("t-runsU").textContent = once ? `one evaluation per realization (${f.folds.length} folds × ${s.nseeds})` : "no validation";
   }
-  $("p-val").style.opacity = (s.bo && s.dims.length) || s.nseeds > 1 ? 1 : 0.45;
+  $("p-val").style.opacity = s.bo || s.nseeds > 1 ? 1 : 0.45;
   $("valNote").innerHTML = s.strat === "RVC_Noise" ? "Chaotic recycle validation, the default." : s.strat === "SSV" ? "One split; N_folds does not apply."
     : "The fold step defaults to N<sub>val</sub>; a step of about one Lyapunov time gives overlapping, chaotic folds.";
   $("r-folds").classList.toggle("off", s.strat === "SSV");
   $("r-step").classList.toggle("off", !(s.strat === "WFV" || s.strat === "KFV"));
   const warn = [];
-  if (s.bo && !s.dims.length) warn.push("Searching the Tikhonov factor alone raises an error in <code>train()</code> (<a href=\"https://github.com/andreanovoa/EchoStateNetwork/issues/1\" target=\"_blank\" rel=\"noopener\">issue #1</a>): add ρ, σ<sub>in</sub> or α to the search, or fix β.");
-  if (s.bo && s.dims.length && !f.ok) warn.push(f.msg);
+  if ((s.bo || s.nseeds > 1) && !f.ok) warn.push(f.msg);
   if (s.Nwash >= s.Ntr) warn.push("The washout is longer than the training record: reduce N<sub>wash</sub> or increase t<sub>train</sub>.");
   if (s.Nval < 1) warn.push("t<sub>val</sub> is shorter than one ESN step.");
   if (s.dims.some((k) => s[k + "_range"][0] >= s[k + "_range"][1])) warn.push("A search range has its lower bound above its upper bound.");

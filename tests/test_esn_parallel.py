@@ -181,7 +181,7 @@ def test_lorenz96_parallel_esn_forecasts_in_closed_loop():
     esn = EchoStateNetwork(X[:1].T, dt=dt, upsample=1, N_units=100, patch_size=2, halo=2,
                            N_wash=50, t_train=0.8 * n_train * dt, t_val=0.2 * n_train * dt,
                            t_test=0., rho=0.6, sigma_in=1.0, tikh=1e-6, noise=1e-3, seed=0,
-                           hyperparameters_to_optimize=[], verbose=False)
+                           hyperparameters_to_optimize=[])
     esn.train(X[:n_train], plot_training=False)
     assert (esn.N_patches, esn.N_r) == (20, 2000)
     assert esn.Win.shape == (100, 7) and esn.Wout.shape == (101, 2)
@@ -214,8 +214,7 @@ def test_validation_strategies_with_patches(strategy):
     data = rng.normal(size=(200, 8)).cumsum(axis=0) * 0.1
     esn = EchoStateNetwork(data.T, dt=1, N_units=12, upsample=1, patch_size=2, halo=1,
                            t_train=120, t_val=30, t_test=40, N_wash=5, N_folds=3, N_grid=2,
-                           N_func_evals=2, hyperparameters_to_optimize=['rho'], seed=0,
-                           verbose=False)
+                           N_func_evals=2, hyperparameters_to_optimize=['rho'], seed=0)
     esn.train(data, plot_training=False, validation_strategy=strategy)
     assert esn.trained and esn.Wout.shape == (13, 2) and np.isfinite(esn.Wout).all()
     assert len(esn.bo_results['func_vals']) == 2
@@ -311,26 +310,36 @@ def test_parametric_lorenz96_parallel_esn_trains_and_survives_npz(tmp_path):
 @pytest.mark.parametrize('periodic', [True, False])
 def test_independent_patches_with_the_shared_matrices_reproduce_the_shared_network(periodic):
     shared = _random_parallel(N_dim=12, patch_size=3, halo=2, periodic=periodic, leak_rate=0.7)
-    shared.norm, shared.shift = np.full(12, 1.7), np.full(12, -0.4)
+    # a normalization that differs from site to site, so that the networks of the patches are not interchangeable:
+    # a patch stepped with the window or the shift of another patch changes the outputs
+    scale = np.random.default_rng(9)
+    norm, shift = scale.uniform(0.5, 2.0, 12), scale.normal(size=12)
+    shared.norm, shared.shift = norm, shift
     local = EchoStateNetwork(np.zeros((12, 1)), dt=1, N_units=10, upsample=1, sigma_in=0.5,
                              patch_size=3, halo=2, periodic=periodic, leak_rate=0.7, shared=False)
     local._generate_W_Win()
     assert len(local.patches) == 4 and local.patches[0].N_dim == 3 + 2 * 2
-    for net in local.patches:           # the matrices and hyperparameters of the shared network
-        net.Win, net.W = shared.Win, shared.W
+    for net, sites in zip(local.patches, local.patch_sites):     # the matrices and hyperparameters of the shared
+        net.Win, net.W = shared.Win, shared.W                       # network, and its normalization of the window
         Wout = np.zeros((11, 7))
         Wout[:, 2:5] = shared.Wout      # the columns of the patch sites within the window
         net.Wout = Wout
-        net.norm, net.shift = np.full(7, 1.7), np.full(7, -0.4)
+        # outside a non-periodic domain, any value: the position reads zero once normalized
+        net.norm, net.shift = np.where(sites >= 0, norm[sites], 3.0), np.where(sites >= 0, shift[sites], 5.0)
         assert (net.rho, net.sigma_in, net.leak_rate) == (shared.rho, shared.sigma_in, 0.7)
 
     rng = np.random.default_rng(8)
     u, r = rng.normal(size=(12, 3)), rng.normal(size=(shared.N_r, 3))
+    # equal up to rounding, not bit for bit: the reservoir update is the same, but the readout multiplies
+    # Wout by N_ens columns in each patch network and by N_patches * N_ens columns in the shared network,
+    # and a BLAS library may sum a column in a different order for a different shape of the product
+    # (Accelerate does for these shapes), so the outputs can differ by a few units in the last place
+    tol = dict(rtol=1e-12, atol=1e-14)
     for out_local, out_shared in zip(local.step(u, r), shared.step(u, r)):
-        np.testing.assert_array_equal(out_local, out_shared)
-    np.testing.assert_array_equal(local.reservoir_to_physical(r), shared.reservoir_to_physical(r))
+        np.testing.assert_allclose(out_local, out_shared, **tol)
+    np.testing.assert_allclose(local.reservoir_to_physical(r), shared.reservoir_to_physical(r), **tol)
     # same blocks, summed in a different order
-    np.testing.assert_allclose(local.Jacobian(u, r), shared.Jacobian(u, r), rtol=1e-12, atol=1e-14)
+    np.testing.assert_allclose(local.Jacobian(u, r), shared.Jacobian(u, r), **tol)
     np.testing.assert_array_equal(local.state_positions, shared.state_positions)
 
 
@@ -339,7 +348,7 @@ def test_independent_patches_fit_one_ridge_regression_per_patch():
     data = rng.normal(size=(200, 8)).cumsum(axis=0) * 0.1
     esn = EchoStateNetwork(data.T, dt=1, N_units=12, upsample=1, patch_size=2, halo=1,
                            shared=False, t_train=150, t_val=30, t_test=0, N_wash=5, tikh=1e-6,
-                           hyperparameters_to_optimize=[], seed=0, verbose=False)
+                           hyperparameters_to_optimize=[], seed=0)
     esn.train(data, plot_training=False, add_noise=False)
     assert esn.trained and len(esn.patches) == 4
     # independent random realizations, one per patch
@@ -365,7 +374,7 @@ def test_independent_patches_select_their_hyperparameters_per_patch():
     esn = EchoStateNetwork(data.T, dt=1, N_units=12, upsample=1, patch_size=2, halo=1,
                            shared=False, t_train=120, t_val=30, t_test=40, N_wash=5, N_folds=2,
                            N_grid=2, N_func_evals=3, hyperparameters_to_optimize=['rho', 'sigma_in'],
-                           seed=0, verbose=False)
+                           seed=0)
     esn.train(data, plot_training=False)
     for net in esn.patches:            # one search of its own per patch
         assert net.bo_results['hp_names'] == ['rho', 'sigma_in']
@@ -375,6 +384,22 @@ def test_independent_patches_select_their_hyperparameters_per_patch():
     net = esn.patches[0]
     u_in = net._closed_loop_input(np.ones((4, 1)), np.zeros(4))
     np.testing.assert_array_equal(u_in[:, 0], [0, 1, 1, 0])
+
+
+@pytest.mark.parametrize('shared', [True, False])
+def test_patches_search_tikh_alone(shared):
+    # issue #1 with the parallel layout: the shared network, or the network of every patch, selects tikh from
+    # tikh_range in one evaluation of the validation strategy
+    data = np.random.default_rng(10).normal(size=(200, 8)).cumsum(axis=0) * 0.1
+    esn = EchoStateNetwork(data.T, dt=1, N_units=12, upsample=1, patch_size=2, halo=1, shared=shared,
+                           t_train=120, t_val=30, t_test=40, N_wash=5, N_folds=2,
+                           hyperparameters_to_optimize=['tikh'], seed=0)
+    esn.train(data, plot_training=False)
+    nets = [esn] if shared else esn.patches
+    for net in nets:
+        assert net.bo_results['hp_names'] == [] and len(net.bo_results['func_vals']) == 1
+        assert net.tikh in net.tikh_range and np.isfinite(net.Wout).all()
+    assert esn.training_summary().count('tikh alone') == len(nets)
 
 
 def test_independent_patches_survive_npz(tmp_path):

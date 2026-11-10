@@ -109,12 +109,19 @@ def describe(esn, strategy='RVC_Noise'):
                  rf'$\mathbf{{W}}$ {esn.N_units}$\times${esn.N_units},  '
                  rf'$\mathbf{{W}}_\mathrm{{out}}$ {esn._n_readout}$\times${esn._n_out}{times};  '
                  rf'$\mathbf{{r}}$: {esn.N_r} rows')
-    hp = list(esn.hyperparameters_to_optimize)
+    # the names that train() adds for the normalization of the parameters are listed as one item below
+    hp = [n for n in esn.hyperparameters_to_optimize if n in _SYMBOL]
     fixed = ', '.join(f'{_SYMBOL[n]} = {getattr(esn, n):g}' for n in _SYMBOL if n not in hp)
-    if hp:
+    # train() adds the shift and the scale of every parameter column to the search (optimize_parameter_normalization)
+    params = n_param if esn.input_parameters is not None and esn.optimize_parameter_normalization else 0
+    if hp or params:
         search = '; one search per patch' if ind else ''
-        lines.append(f'Bayesian optimization ({strategy}{search}): '
-                     + ', '.join(_range_text(n, esn) for n in hp))
+        # tikh alone: every evaluation of the strategy selects tikh from its grid, so the search is one evaluation
+        method = 'grid search, one evaluation' if set(hp) == {'tikh'} and not params else 'Bayesian optimization'
+        dims = [_range_text(n, esn) for n in hp]
+        if params:
+            dims.append(f"shift and scale of {params} parameter column{'s' if params > 1 else ''}")
+        lines.append(f'{method} ({strategy}{search}): ' + ', '.join(dims))
     lines.append(f'fixed: {fixed}' if fixed else 'all hyperparameters optimized')
     return lines
 

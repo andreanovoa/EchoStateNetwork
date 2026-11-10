@@ -128,7 +128,8 @@ The validation forecasts of a patch feed back only the sites of the patch and
 take the halo from the data, and the validation error scores only the sites of
 the patch, so that the search of one patch does not depend on the other
 patches. With `train(n_seeds=m)`, every patch keeps the best of its own $m$
-reservoir realizations.
+reservoir realizations. A warning raised by the networks of the patches, e.g.
+when fewer validation folds than `N_folds` fit, appears once per `train` call.
 
 The normalization is per patch: each network normalizes every position of its
 window with its own shift and scale, because its input matrix is its own and
