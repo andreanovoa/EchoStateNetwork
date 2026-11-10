@@ -139,7 +139,7 @@ def RVC_Noise(x, case, U_wtv, Y_wtv, tikh_opt, hp_names, print_convergence=True)
     # print(f'LHS shape: {LHS.shape}, RHS shape: {RHS.shape}')
 
     for tik_j in range(N_tikh):
-        Wout_tik[tik_j] = np.linalg.solve(case._regularized(LHS, case.tikh_range[tik_j]), RHS)
+        Wout_tik[tik_j] = case._ridge_solve(LHS, RHS, case.tikh_range[tik_j])
 
     # print(U_wtv.shape, Y_wtv.shape, 'U_wtv, Y_wtv shapes in RVC noise')
     # Perform Validation in different folds
@@ -364,7 +364,7 @@ def single_series_validation(x, case, U_wtv, Y_wtv, tikh_opt, hp_names,
             r_seed = r_washed
 
         for tik_j in range(N_tikh):
-            case.Wout = np.linalg.solve(case._regularized(LHS, case.tikh_range[tik_j]), RHS)
+            case.Wout = case._ridge_solve(LHS, RHS, case.tikh_range[tik_j])
 
             # Closed-loop seed: THIS candidate's readout of the shared
             # washed state -- equivalent to RVC_Noise's washout inside the
