@@ -3351,7 +3351,7 @@ class EchoStateNetwork:
 
             # Plot Bayesian optimization convergence
             fig1 = plt.figure()
-            plot_convergence(results['res'])
+            plot_convergence(results['res']).set_title('')     # no title: skopt's default is 'Convergence plot'
             all_figs.append(fig1)
             # Plot Gaussian Process reconstruction
             all_figs.extend(self._plot_BO(results))
@@ -3469,8 +3469,8 @@ class EchoStateNetwork:
         fig, ax = plt.subplots()
         im = ax.matshow(self.Wout.T, cmap="PRGn", aspect=4., vmin=-np.max(self.Wout), vmax=np.max(self.Wout))
         ax.tick_params(axis="x", bottom=True, top=False, labelbottom=True, labeltop=False)
-        plt.colorbar(im, orientation='horizontal', extend='both')
-        ax.set(ylabel='$N_u$', xlabel='$N_r$', title='$\\mathbf{W}_\\mathrm{out}$')
+        plt.colorbar(im, orientation='horizontal', extend='both', label='$\\mathbf{W}_\\mathrm{out}$')
+        ax.set(ylabel='$N_u$', xlabel='$N_r$')
         return fig
 
 
