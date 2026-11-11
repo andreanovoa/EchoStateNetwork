@@ -37,6 +37,15 @@ bias-aware data assimilation).
   parameters, input skip, leak rate, parallel layout, hyperparameter search),
   as a gallery and as an interactive explorer.
 
+## Contributors
+
+- [Andrea Nóvoa](https://github.com/andreanovoa) (maintainer)
+- [Alberto Racca](https://github.com/alberacca): the recycle-validation echo state network
+  ([alberacca/Echo-State-Networks](https://github.com/alberacca/Echo-State-Networks),
+  [MagriLab/Robust-Validation-ESN](https://github.com/MagriLab/Robust-Validation-ESN)), on which this package is based
+- [Defne Ozan](https://github.com/defneozan): the parametric and adjoint echo state network
+  ([MagriLab/Adjoint-ESN](https://github.com/MagriLab/Adjoint-ESN))
+
 ## Acknowledgements
 
 This repository is based on
