@@ -341,9 +341,10 @@ def single_series_validation(x, case, U_wtv, Y_wtv, tikh_opt, hp_names,
     # readout; P = 1 for a single reservoir), so step i owns rows [i * P, (i + 1) * P).
     P = case.N_patches
     R_rows = R.reshape(n_post * P, case.N_units)
-    r_aug = np.hstack([R_rows, np.ones((R_rows.shape[0], 1)) * case.bias_out])
+    r_aug = np.hstack([case._readout_states(R_rows, axis=1), np.ones((R_rows.shape[0], 1)) * case.bias_out])
     if case.readout_input:   # row i also reads the normalised input U_l[N_wash + i]
-        r_aug = np.hstack([R, case.normalize_input(U_l[case.N_wash:case.N_wash + R.shape[0]].T).T[:, case._readout_rows],
+        r_aug = np.hstack([case._readout_states(R, axis=1),
+                           case.normalize_input(U_l[case.N_wash:case.N_wash + R.shape[0]].T).T[:, case._readout_rows],
                            np.ones((R.shape[0], 1)) * case.bias_out])
     Y_t = Y_l[case.N_wash:]  # row i <-> input U_l[N_wash + i]
     Y_rows = Y_t.reshape(n_post * P, case._n_out)

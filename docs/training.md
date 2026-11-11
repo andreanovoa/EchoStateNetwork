@@ -33,6 +33,25 @@ conditioned on a physical parameter
 With partial observability, `observed_idx` selects which components of the
 full state are fed back as inputs.
 
+The readout is linear in the reservoir state, and the tanh reservoir is odd:
+without the biases, the network forecasts $-\mathbf{u}$ from $-\mathbf{u}$ as
+well as $\mathbf{u}$ from $\mathbf{u}$. Besides the biases, `r2_mode=True`
+breaks this symmetry in the readout, which then reads every second unit
+squared,
+
+$$
+\mathbf{u}_{n+1} = \mathbf{W}_\mathrm{out}^\top [\tilde{\mathbf{r}}_{n+1};\, b_\mathrm{out}],
+\qquad
+\tilde r_j = \begin{cases} r_j^2, & j \text{ odd},\\ r_j, & j \text{ even}, \end{cases}
+$$
+
+with the units numbered from 0 (Pathak et al. 2018; the `r2_mode` of
+[MagriLab/Adjoint-ESN](https://github.com/MagriLab/Adjoint-ESN)).
+$\mathbf{W}_\mathrm{out}$ keeps its size, the ridge regression and every
+validation strategy read the same squared units, and `Jacobian` includes the
+factor $2 r_j$ of the squared units. The option works with the parallel layout,
+and the networks of independent patches inherit it.
+
 For a spatially extended system, the *parallel* layout (`patch_size`, `halo`,
 `periodic`) advances one reservoir per patch of neighbouring sites with the
 same update, and the patches share the three matrices
@@ -177,7 +196,7 @@ and computes again
   the time step of the network, `dt_ESN = dt * upsample`, e.g.
   `esn.train(y, dt_ESN=0.5 * esn.upsample, force=True)` for `dt = 0.5`, or set
   the attribute `esn.dt_ESN`.
-- **The readout.** `readout_input` changes $\mathbf{W}_\mathrm{out}$ only.
+- **The readout.** `readout_input` and `r2_mode` change $\mathbf{W}_\mathrm{out}$ only.
 - **The noise on the inputs.** Training a single network again on the same
   data with the same options does not reproduce it: the noise on the inputs
   continues the generator `rng`, so the selected hyperparameters and
