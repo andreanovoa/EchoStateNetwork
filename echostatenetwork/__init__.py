@@ -18,6 +18,6 @@ from . import validation  # noqa: E402
 from .esn import EchoStateNetwork  # noqa: E402
 from .verbose import set_verbose  # noqa: E402
 
-__version__ = "0.3.0"
+__version__ = "0.4.0"
 
 __all__ = ["EchoStateNetwork", "set_verbose", "validation"]
