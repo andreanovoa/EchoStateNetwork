@@ -308,7 +308,7 @@ function syncControls() {
   for (const id of ["r-obs", "r-par", "r-pir", "r-read"]) $(id).classList.toggle("off", par);
   for (const id of ["nobs", "npar", "pir", "read-r", "read-u", "read-p"]) $(id).disabled = par;
   if (!par) { $("read-p").disabled = +$("npar").value === 0; $("pir").disabled = +$("npar").value === 0; }
-  $("inNote").textContent = par ? "The parallel layout reads and forecasts every site, without parameters or input skip." : "";
+  $("inNote").textContent = par ? "The parallel layout reads and forecasts every site. The builder draws it without parameters or input skip, which the package accepts (input_parameters, readout_input)." : "";
   for (const [k, ids] of [["rho", ["lo-rho", "hi-rho", "v-rho"]], ["sigma", ["lo-sigma", "hi-sigma", "v-sigma"]],
     ["tikh", ["g-tikh", "v-tikh"]], ["alpha", ["lo-alpha", "hi-alpha", "v-alpha"]]]) {
     const on = $("s-" + k).checked;
