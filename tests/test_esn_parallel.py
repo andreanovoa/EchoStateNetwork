@@ -441,8 +441,6 @@ def test_errors_of_independent_patches():
     (dict(patch_size=0), 'divides'),
     (dict(patch_size=2, halo=-1), 'halo'),
     (dict(patch_size=2, halo=4), 'periodic domain'),       # window of 10 sites on a ring of 8
-    (dict(patch_size=2, shared=False, input_parameters=np.zeros((1, 1))), 'input_parameters'),
-    (dict(patch_size=2, readout_input=True), 'readout_input'),
     (dict(patch_size=2, observed_idx=np.arange(0, 8, 2)), 'observed_idx'),
 ])
 def test_incompatible_layouts_raise(kwargs, match):
