@@ -288,7 +288,7 @@ def test_parametric_lorenz96_parallel_esn_trains_and_survives_npz(tmp_path):
     esn = EchoStateNetwork(data[0, :1].T, dt=dt, upsample=1, N_units=60, patch_size=5, halo=2,
                            N_wash=20, t_train=0.7 * n * dt, t_val=0.2 * n * dt, t_test=0.1 * n * dt,
                            rho=0.6, sigma_in=0.5, tikh=1e-6, noise=1e-3, seed=0,
-                           hyperparameters_to_optimize=[], verbose=False,
+                           hyperparameters_to_optimize=[],
                            input_parameters=np.array([forcings]))
     esn.train(data, plot_training=False)
     assert esn.trained and esn.Win.shape == (60, 9 + 1 + 1) and esn.Wout.shape == (61, 5)
@@ -756,6 +756,36 @@ def test_readout_params_parallel_esn_survives_npz(shared, tmp_path):
         assert np.array_equal(y1, y2) and np.array_equal(r1, r2)
         u1, u2 = esn.outputs_to_inputs(y1), back.outputs_to_inputs(y2)
     np.testing.assert_array_equal(back.Jacobian(u1, r1), esn.Jacobian(u1, r1))
+
+
+@pytest.mark.parametrize('layout', ['single', 'shared', 'independent'])
+def test_training_options_survive_npz(layout, tmp_path):
+    # param_in_reservoir, connect and optimize_parameter_normalization are read by a later training: a reloaded
+    # readout-only network must stay readout-only when train(force=True) rebuilds its reservoir
+    if layout == 'single':
+        data, forcings = _lorenz96_forcings(n=400)
+        esn = _l96_readout_params(data, forcings, shared=True, N_units=20, readout_input='params',
+                                  param_in_reservoir=False, patch_size=None, halo=None)
+        esn.train(data, plot_training=False)
+    else:
+        esn = _readout_parallel(N_dim=8, patch_size=2, halo=1, shared=layout == 'shared', periodic=False,
+                                param_in_reservoir=False)
+    esn.connect, esn.optimize_parameter_normalization = 4, 'data'
+    path = tmp_path / 'esn.npz'
+    np.savez_compressed(path, **esn.to_arrays())
+    back = EchoStateNetwork.from_arrays(np.load(path, allow_pickle=False))
+    assert back.param_in_reservoir is False
+    assert back.connect == 4 and back.optimize_parameter_normalization == 'data'
+    for net in (back.patches if layout == 'independent' else []):
+        assert net.param_in_reservoir is False
+
+
+def test_stores_without_training_options_keep_the_defaults(tmp_path):
+    esn = _readout_parallel(N_dim=8, patch_size=2, halo=1, shared=True, periodic=False, param_in_reservoir=False)
+    arrays = {k: v for k, v in esn.to_arrays().items()
+              if k not in ('param_in_reservoir', 'connect', 'optimize_parameter_normalization')}
+    back = EchoStateNetwork.from_arrays(arrays)
+    assert back.param_in_reservoir is True and back.connect == EchoStateNetwork.connect
 
 
 @pytest.mark.parametrize('shared', [True, False])

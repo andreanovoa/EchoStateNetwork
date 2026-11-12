@@ -2184,7 +2184,10 @@ class EchoStateNetwork:
         Matrices appear only when generated. A ragged (list) `input_parameters` is
         collapsed to ``np.zeros((N_param, 1))``: after training only its column
         count is read at run time. Dropped entirely: BO search state and ranges,
-        split/seed summaries, `WCout` and other derived caches. The rng is NOT
+        split/seed summaries, `WCout` and other derived caches. The options that a later
+        training reads (`param_in_reservoir`, `connect`, `optimize_parameter_normalization`)
+        are stored, so that ``train(force=True)`` on a reloaded model rebuilds the same
+        architecture. The rng is NOT
         stored -- a reloaded model's stochastic noise stream restarts from `seed`.
         The parallel layout (`patch_size`, `halo`, `periodic`, `shared`) is stored only
         when it is set, so a dict without these keys loads as a single reservoir;
@@ -2199,6 +2202,8 @@ class EchoStateNetwork:
                    Win_type=self.Win_type, norm_method=self.norm_method,
                    noise_type=self.noise_type, readout_input=str(self.readout_input),
                    r2_mode=bool(self.r2_mode),
+                   param_in_reservoir=bool(self.param_in_reservoir), connect=int(self.connect),
+                   optimize_parameter_normalization=str(self.optimize_parameter_normalization),
                    bias_in=np.asarray(self.bias_in), bias_out=np.asarray(self.bias_out),
                    observed_idx=np.asarray(self.observed_idx),
                    norm=np.asarray(self.norm), shift=np.asarray(self.shift))
@@ -2260,7 +2265,15 @@ class EchoStateNetwork:
                       str(np.asarray(arrays['readout_input'])),
                       str(np.asarray(arrays['readout_input'])))
                   if 'readout_input' in arrays else False,
-                  r2_mode=bool(np.asarray(arrays['r2_mode'])) if 'r2_mode' in arrays else False)
+                  r2_mode=bool(np.asarray(arrays['r2_mode'])) if 'r2_mode' in arrays else False,
+                  # options that a later training reads (stores written before they were saved keep the defaults)
+                  **({'param_in_reservoir': bool(np.asarray(arrays['param_in_reservoir']))}
+                     if 'param_in_reservoir' in arrays else {}),
+                  **({'connect': int(np.asarray(arrays['connect']))} if 'connect' in arrays else {}),
+                  **({'optimize_parameter_normalization': {'True': True, 'False': False}.get(
+                      str(np.asarray(arrays['optimize_parameter_normalization'])),
+                      str(np.asarray(arrays['optimize_parameter_normalization'])))}
+                     if 'optimize_parameter_normalization' in arrays else {}))
         esn.seed = int(np.asarray(arrays['seed']))
         esn.bias_in = np.asarray(arrays['bias_in'])
         esn.bias_out = np.asarray(arrays['bias_out'])
