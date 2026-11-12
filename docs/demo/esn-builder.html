@@ -225,7 +225,7 @@
     </div>
     <div class="panel">
       <div class="head"><h2>Code</h2><button id="copy">Copy</button></div>
-      <p class="sub">Run it locally on your record <code>data</code>, of shape (N<sub>t</sub>, N<sub>dim</sub>).</p>
+      <p class="sub" id="codeSub">Run it locally on your record <code>data</code>, of shape (N<sub>t</sub>, N<sub>dim</sub>).</p>
       <pre id="code"></pre>
     </div>
   </main>
@@ -246,8 +246,9 @@ const DEFAULTS = { N_units: 100, N_wash: 50, upsample: 5, noise: 1e-10, connect:
 function settings() {
   const N = +$("Ndim").value, layout = radio("layout"), par = layout !== "global";
   const G = par ? +$("G").value : N, H = par ? +$("H").value : 0;
-  const nobs = par ? N : Math.min(+$("nobs").value, N), npar = par ? 0 : +$("npar").value;
-  let read = par ? "r" : radio("read");
+  // the parallel layout reads every site (observed_idx must list them all); parameters and readout as for one reservoir
+  const nobs = par ? N : Math.min(+$("nobs").value, N), npar = +$("npar").value;
+  let read = radio("read");
   if (read === "p" && !npar) read = "r";
   const ups = Math.max(1, Math.round(num("ups", 5))), dt = num("dt", 0.01), dtE = dt * ups;
   const Ntr = Math.round(num("ttrain", 40) / dtE), Nval = Math.round(num("tval", 4) / dtE);
@@ -275,8 +276,9 @@ function settings() {
   s.bayes = s.dims.length > 0 || s.pnorm;                   // a Bayesian optimization
   s.nd = s.dims.length + (s.pnorm ? 2 * s.npar : 0);        // its dimensions
   s.observed = Array.from({ length: s.nobs }, (_, i) => (s.nobs === 1 ? 0 : Math.round(i * (N - 1) / (s.nobs - 1))));
-  s.nin = par ? G + 2 * H : s.nobs + s.npar;
-  s.readRows = s.read === "u" ? s.nobs + s.npar : s.read === "p" ? s.npar : 0;
+  s.nwin = par ? G + 2 * H : s.nobs;                       // state columns that a reservoir reads
+  s.nin = s.nwin + s.npar;
+  s.readRows = s.read === "u" ? s.nin : s.read === "p" ? s.npar : 0;
   s.Nt = s.Ntr + s.Nval - 1;
   return s;
 }
@@ -300,15 +302,21 @@ function syncControls() {
   if (+$("H").value > +$("H").max) $("H").value = $("H").max;
   $("HV").textContent = $("H").value;
   $("nobsV").textContent = par ? N : $("nobs").value;
-  $("nparV").textContent = par ? 0 : $("npar").value;
+  $("nparV").textContent = $("npar").value;
   $("NwashV").textContent = $("Nwash").value;
   $("NuV").textContent = $("Nu").value;
   for (const id of ["r-G", "r-H", "r-per"]) $(id).classList.toggle("off", !par);
   for (const id of ["G", "H", "per"]) $(id).disabled = !par;
-  for (const id of ["r-obs", "r-par", "r-pir", "r-read"]) $(id).classList.toggle("off", par);
-  for (const id of ["nobs", "npar", "pir", "read-r", "read-u", "read-p"]) $(id).disabled = par;
-  if (!par) { $("read-p").disabled = +$("npar").value === 0; $("pir").disabled = +$("npar").value === 0; }
-  $("inNote").textContent = par ? "The parallel layout reads and forecasts every site. The builder draws it without parameters or input skip, which the package accepts (input_parameters, readout_input)." : "";
+  // partial observation (observed_idx) is not accepted with the parallel layout, which reads every site
+  $("r-obs").classList.toggle("off", par);
+  $("nobs").disabled = par;
+  const nopar = +$("npar").value === 0;
+  $("read-p").disabled = nopar;
+  $("pir").disabled = nopar;
+  $("r-pir").classList.toggle("off", nopar);
+  $("inNote").textContent = !par ? "" : "With the parallel layout, every reservoir reads its window of the full state, so all the "
+    + "sites are observed. Every patch reads the same parameters after its window, and the readout of patch p reads "
+    + "the inputs of its own reservoir.";
   for (const [k, ids] of [["rho", ["lo-rho", "hi-rho", "v-rho"]], ["sigma", ["lo-sigma", "hi-sigma", "v-sigma"]],
     ["tikh", ["g-tikh", "v-tikh"]], ["alpha", ["lo-alpha", "hi-alpha", "v-alpha"]]]) {
     const on = $("s-" + k).checked;
@@ -316,7 +324,7 @@ function syncControls() {
   }
   // the budget of the Bayesian optimization applies when rho, sigma_in or the leak rate is searched, or, with
   // parameters, to the normalization of the parameters (optimize_parameter_normalization), whatever is ticked
-  const bayes = ["s-rho", "s-sigma", "s-alpha"].some((id) => $(id).checked) || (!par && +$("npar").value > 0);
+  const bayes = ["s-rho", "s-sigma", "s-alpha"].some((id) => $(id).checked) || +$("npar").value > 0;
   for (const id of ["r-nfe", "r-ngrid"]) $(id).classList.toggle("off", !bayes);
   for (const id of ["nfe", "ngrid"]) $(id).disabled = !bayes;
 }
@@ -338,6 +346,9 @@ const FS = 1.3;                                   // font scale of the architect
 const sub = (s) => `<tspan dy="${3 * FS}" font-size="0.72em">${s}</tspan><tspan dy="${-3 * FS}"> </tspan>`;
 const sup = (s) => `<tspan dy="${-5 * FS}" font-size="0.72em">${s}</tspan><tspan dy="${5 * FS}"> </tspan>`;
 const B = (s) => `<tspan font-weight="700">${s}</tspan>`;
+// subscript and superscript without the trailing space, for labels set inline (the text after them goes in `after`)
+const subT = (s, after) => `<tspan dy="${3 * FS}" font-size="0.72em">${s}</tspan><tspan dy="${-3 * FS}">${after}</tspan>`;
+const supT = (s, after) => `<tspan dy="${-5 * FS}" font-size="0.72em">${s}</tspan><tspan dy="${5 * FS}">${after}</tspan>`;
 // subscript stacked under a superscript: SVG cannot stack, so step back by the superscript's width
 // ponytail: width estimated from the glyph classes, exact enough for "(p)" and "(0)".."(9)"
 const subsup = (sb, sp, size) => {
@@ -506,19 +517,29 @@ function drawArch(s) {
   body += text(XOUT, y(Math.min(0, topRow)) - C / 2 - 8, `${B("û")}${sub("n+1")}`, out, 12);
 
   const stagger = H ? 3 : 1, label = G * C >= 22;
+  // the input arrows leave the staggered braces at xTip; the parameters join every input arrow on one bus at xj,
+  // right of every tip, and the bias stubs (staggered with the braces) move right of the bus
+  const xTipMax = XIN + CW / 2 + 3 + 8 * (stagger - 1) + 6, xj = xTipMax + 14;
+  const shiftBias = s.npar && s.pir && stagger > 1 ? 10 : 0;
+  const yParams = s.npar ? y(paramRows[0]) - (s.npar - 1) * C / 2 : -Infinity;
   let xTip = 0, xOtip = 0, yRes = 0;
+  const yPatch = [];
   const leaky = s.search.leak_rate || s.leak_rate < 0.999;
   windows.forEach(([lo, hi], p) => {
     yRes = y(p * G + (G - 1) / 2);
+    yPatch.push(yRes);
     [xTip] = brace(XIN + CW / 2 + 3 + 8 * (p % stagger), y(lo) - C / 2, y(hi) + C / 2, 6, inp);
     [xOtip] = brace(XOUT - CW / 2 - 3, y(p * G) - C / 2, y(p * G + G - 1) + C / 2, -6, out);
     body += line([[xTip, yRes], [XRES - R, yRes]], inp, "a-inp");
     body += line([[XRES + R, yRes], [xOtip, yRes]], out, "a-out");
     // input bias: from above into a junction of the input arrow; dashed when the sparse Win gives it to a few units
-    const xBias = xTip + 30, stub = Math.min(14, Math.max(6, 0.8 * G * C));
+    const stub = Math.min(14, Math.max(6, 0.8 * G * C)), xBias = xTip + 30 + shiftBias;
     body += line([[xBias, yRes - stub], [xBias, yRes - 4]], ink, "", 1.1, s.win === "sparse" ? "2,2" : "");
     body += `<path d="M${xBias},${yRes - 4} l4,4 l-4,4 l-4,-4 z" fill="${bg}" stroke="${ink}" stroke-width="1.1"/>`;
-    if (label || p === 0) body += text(xBias, yRes - stub - 3, `b${sub("in")}`, ink, 9);
+    if (label || p === 0) {                       // above the stub, or right of it when the parameter line is close above
+      if (yRes - stub - 3 - 9 * FS > yParams + 2) body += text(xBias, yRes - stub - 3, `b${sub("in")}`, ink, 9);
+      else body += text(xBias + 4, yRes - stub + 5, `b${sub("in")}`, ink, 9, "start");
+    }
     const scr = (lo) => (ind ? subsup(lo, `(${p})`, 10 * FS) : sub(lo));   // patch superscript over the subscript
     if (label || p === 0) {
       body += text((xTip + XRES - R) / 2 + 14, yRes - 4, `${B("W")}${scr("in")}`, inp, 10);
@@ -534,27 +555,31 @@ function drawArch(s) {
     }
   });
 
-  // parameters: right, then down into a junction of the input arrow and/or into the readout arrow
-  const xJoin = xOtip - 22;
+  // parameters: right, then down a bus into a junction of the input arrow of every reservoir and/or into the
+  // readout arrow of every reservoir (a dot marks a junction that the bus passes through)
+  const xJoin = xOtip - 22, ptil = `${B("p̃")}${ind ? sup("(p)") : ""}`;
+  const wout = par ? (ind ? subsup("out", "(p)", 9 * FS) : sub("out")) : sub("out");
   if (s.npar) {
     const [xp, yp] = brace(XIN + CW / 2 + 3, y(paramRows[paramRows.length - 1]) - C / 2, y(paramRows[0]) + C / 2, 6, parc);
     if (s.pir) {
-      const xj = xTip + 14;
       body += line([[xp, yp], [xj, yp], [xj, yRes - 4]], parc, "a-par");
-      body += `<path d="M${xj},${yRes - 4} l4,4 l-4,4 l-4,-4 z" fill="${bg}" stroke="${ink}" stroke-width="1.1"/>`;
+      for (const yp of yPatch) body += `<path d="M${xj},${yp - 4} l4,4 l-4,4 l-4,-4 z" fill="${bg}" stroke="${ink}" stroke-width="1.1"/>`;
     }
     if (s.read === "p" || (s.read === "u" && !s.pir)) {
       body += line([[xp, yp], [xJoin, yp], [xJoin, yRes - 1]], parc, "a-par");
-      body += text(XRES, yp - 4, `${B("W")}${sub("out")} reads ${B("p̃")}`, parc, 9);
+      for (const yq of yPatch.slice(0, -1)) body += `<circle cx="${xJoin}" cy="${yq}" r="2.4" fill="${parc}"/>`;
+      body += text(XRES, yp - 4, `${B("W")}${wout} reads ${ptil}${par ? " in every patch" : ""}`, parc, 9);
     }
   }
   let bottom = y(Math.max(...reads.keys())) + C / 2;
-  if (s.read === "u") {                           // input skip: down, right, up into the readout arrow
-    const xb = xTip + 46, yLow = yRes + R + 16;
+  if (s.read === "u") {                           // input skip: down, right, up into the readout arrow (last patch)
+    const xb = xTipMax + 46 + shiftBias, yLow = yRes + R + 16;
     body += line([[xb, yRes], [xb, yLow], [xJoin, yLow], [xJoin, yRes + 1]], inp, "a-inp", 1.4, "4,3");
-    const carried = s.npar && s.pir ? `; ${B("p̃")}` : "";
-    body += text((xb + xJoin) / 2, yLow + 12, `input skip: ${B("W")}${sub("out")} reads [${B("r")}; ${B("ũ")}${sub("n")}${carried}]`, inp, 9);
-    bottom = Math.max(bottom, yLow + 14);
+    const tail = s.npar ? `; ${B("p̃")}` + (ind ? supT("(p)", "]") : "]") : "]";
+    const rr = par ? B("r") + supT("(p)", "; ") : B("r") + "; ";
+    const uu = par ? B("ũ") + subT("n", "[𝓘") + supT("(p)", "]" + tail) : B("ũ") + subT("n", tail);
+    body += text((xb + xJoin) / 2, yLow + (par ? 16 : 12), `input skip${par ? " of every patch" : ""}: ${B("W")}${wout} reads [${rr}${uu}`, inp, 9);
+    bottom = Math.max(bottom, yLow + (par ? 18 : 14));
   }
   const yLoop = bottom + 18;                      // closed loop: down, across, up
   body += line([[XOUT, y(N - 1) + C / 2], [XOUT, yLoop], [XIN, yLoop], [XIN, y(Math.max(...reads.keys())) + C / 2 + 1]], inp, "a-inp");
@@ -588,11 +613,15 @@ function equations(s) {
       + `<b>s</b> and <b>d</b> are the mean and the range (maximum minus minimum) of each input over the training record, applied element by element`
       + (s.npar ? `, and <b>p</b> holds the ${s.npar} parameter${s.npar > 1 ? "s" : ""}` : "") + "."]);
   } else if (!ind) {
-    blocks.push(["Input", String.raw`\tilde{\bm u}_n = \frac{\bm u_n - s}{d}`,
-      "in which the shift, <i>s</i>, and the scale, <i>d</i>, are single numbers, computed from all the sites together, because the patches share <b>W</b><sub>in</sub>."]);
+    const pn = String.raw`,\qquad \tilde{\bm p} = \frac{\bm p - \bm s_p}{\bm d_p}`;
+    blocks.push(["Input", String.raw`\tilde{\bm u}_n = \frac{\bm u_n - s}{d}` + (s.npar ? pn : ""),
+      "in which the shift, <i>s</i>, and the scale, <i>d</i>, are single numbers, computed from all the sites together, because the patches share <b>W</b><sub>in</sub>"
+      + (s.npar ? `; <b>p</b> holds the ${s.npar} parameter${s.npar > 1 ? "s" : ""}, normalized as for a single reservoir, and every patch reads the same <b>p̃</b>.` : ".")]);
   } else {
-    blocks.push(["Input", String.raw`\tilde{\bm u}_n^{(p)} = \frac{\bm u_n[\mathcal I^{(p)}] - \bm s^{(p)}}{\bm d^{(p)}}`,
-      "every patch normalizes its own window with its own shift and scale."]);
+    const pn = String.raw`,\qquad \tilde{\bm p}^{(p)} = \frac{\bm p - \bm s_p^{(p)}}{\bm d_p^{(p)}}`;
+    blocks.push(["Input", String.raw`\tilde{\bm u}_n^{(p)} = \frac{\bm u_n[\mathcal I^{(p)}] - \bm s^{(p)}}{\bm d^{(p)}}` + (s.npar ? pn : ""),
+      "every patch normalizes its own window with its own shift and scale"
+      + (s.npar ? `; every patch reads the same ${s.npar > 1 ? `${s.npar} parameters` : "parameter"}, <b>p</b>, which the network of the patch normalizes with its own shift and scale.` : ".")]);
   }
   blocks.push(["Input noise (training inputs only)", s.noise > 1e-9
     ? String.raw`\bm u_n \leftarrow \bm u_n + \bm\epsilon_n,\qquad \bm\epsilon_n \sim \mathcal N\!\left(\bm 0,\ \eta^2\,\mathrm{diag}(\bm\sigma_u^2)\right),\qquad \eta = ${fmt(s.noise)}`
@@ -602,7 +631,11 @@ function equations(s) {
   const a = s.search.leak_rate ? (ind ? "\\alpha^{(p)}" : "\\alpha") : fmt(s.leak_rate);
   const sg = s.search.sigma_in ? (ind ? "\\sigma_\\mathrm{in}^{(p)}" : "\\sigma_\\mathrm{in}") : fmt(s.sigma_in);
   const rh = s.search.rho ? (ind ? "\\rho^{(p)}" : "\\rho") : fmt(s.rho);
-  const uin = par ? String.raw`\tilde{\bm u}_n[\mathcal I^{(p)}]` : (s.npar && !s.pir ? String.raw`\tilde{\bm u}_n[\mathcal O]` : String.raw`\tilde{\bm u}_n`);
+  // with the parallel layout, the window of the patch and the parameters (pt); the single reservoir carries them in u~
+  const uwin = ind ? String.raw`\tilde{\bm u}^{(p)}_n` : String.raw`\tilde{\bm u}_n[\mathcal I^{(p)}]`;
+  const pt = ind ? String.raw`\tilde{\bm p}^{(p)}` : String.raw`\tilde{\bm p}`;
+  const uin = par ? uwin + (s.npar && s.pir ? String.raw`;\, ${pt}` : "")
+    : (s.npar && !s.pir ? String.raw`\tilde{\bm u}_n[\mathcal O]` : String.raw`\tilde{\bm u}_n`);
   const arg = String.raw`${sg}\,\mathbf W_\mathrm{in}${q}[${uin};\, b_\mathrm{in}] + ${rh}\,\mathbf W${q}\,\bm r${pp}_n`;
   const plain = !s.search.leak_rate && s.leak_rate >= 0.999;
   const upd = plain ? String.raw`\bm r${pp}_{n+1} = \tanh\!\left(${arg}\right)`
@@ -610,18 +643,24 @@ function equations(s) {
   const win = s.periodic ? "taken modulo N on the periodic domain" : "zero outside the domain";
   blocks.push(["Reservoir", upd + (par ? String.raw`,\qquad p = 0,\dots,${P - 1}` : ""),
     (par ? `in which 𝓘<sup>(p)</sup> = {pG − H, …, pG + G + H − 1} is the window of patch p (G = ${s.G}, H = ${s.H}), ${win}; ` : "")
-    + `<b>r</b>${par ? "<sup>(p)</sup>" : ""} has ${s.Nu} units; <b>W</b><sub>in</sub>${ind ? "<sup>(p)</sup>" : ""} is ${s.Nu} × ${s.nin + 1} (${{ sparse: "sparse: one column per unit, so about one unit in " + (s.nin + 1) + " sees b<sub>in</sub>", sparse_dense_bias: "sparse with a dense bias column: one input column per unit, and b<sub>in</sub> in every unit", dense: "dense" }[s.win]}`
-    + `${s.win !== "dense" && s.npar && !par ? ", dense on the parameter columns" : ""}); <b>W</b>${ind ? "<sup>(p)</sup>" : ""} is ${s.Nu} × ${s.Nu} with about ${s.connect} connections per unit, scaled to unit spectral radius; `
+    + `<b>r</b>${par ? "<sup>(p)</sup>" : ""} has ${s.Nu} units; <b>W</b><sub>in</sub>${ind ? "<sup>(p)</sup>" : ""} is ${s.Nu} × ${s.nin + 1} (${{ sparse: "sparse: one state or bias column per unit, so about one unit in " + (s.nwin + 1) + " sees b<sub>in</sub>", sparse_dense_bias: "sparse with a dense bias column: one state column per unit, and b<sub>in</sub> in every unit", dense: "dense" }[s.win]}`
+    + `${s.win !== "dense" && s.npar && s.pir ? `, dense on the ${s.npar} parameter column${s.npar > 1 ? "s" : ""}` : ""}); <b>W</b>${ind ? "<sup>(p)</sup>" : ""} is ${s.Nu} × ${s.Nu} with about ${s.connect} connections per unit, scaled to unit spectral radius; `
     + `b<sub>in</sub> = 0.1` + (plain ? "; α = 1 is the plain update." : ".")
-    + (s.npar && !s.pir ? " The parameter columns of <b>W</b><sub>in</sub> are zero." : "")]);
+    + (s.npar && !s.pir ? ` ${s.npar > 1 ? `The ${s.npar} parameter columns` : "The parameter column"} of <b>W</b><sub>in</sub>${ind ? "<sup>(p)</sup>" : ""} ${s.npar > 1 ? "are" : "is"} zero, so the parameters do not enter the reservoir`
+      + (s.read === "r" ? " and, with this readout, do not reach the forecast." : " and reach the forecast only through the readout.") : "")]);
   // readout
-  const extra = s.read === "u" ? String.raw`;\, \tilde{\bm u}_n` : s.read === "p" ? String.raw`;\, \tilde{\bm p}` : "";
+  const extra = !par ? (s.read === "u" ? String.raw`;\, \tilde{\bm u}_n` : s.read === "p" ? String.raw`;\, \tilde{\bm p}` : "")
+    : (s.read === "u" ? String.raw`;\, ${uwin}` + (s.npar ? String.raw`;\, ${pt}` : "") : s.read === "p" ? String.raw`;\, ${pt}` : "");
   const outv = par ? String.raw`\hat{\bm u}_{n+1}[\mathcal P^{(p)}]` : String.raw`\hat{\bm u}_{n+1}`;
   const rows = s.Nu + 1 + s.readRows, cols = ind ? s.G + 2 * s.H : par ? s.G : s.N;
   blocks.push(["Readout", String.raw`${outv} = \mathbf W_\mathrm{out}^{${ind ? "(p)" : ""}\top}\,\bar{\bm r}${pp}_{n+1},\qquad \bar{\bm r}${pp}_{n+1} = \left[\bm r${pp}_{n+1}${extra};\, b_\mathrm{out}\right]`,
     (par ? `in which 𝓟<sup>(p)</sup> = {pG, …, pG + G − 1} are the sites of patch p; ` : "")
     + `<b>W</b><sub>out</sub>${ind ? "<sup>(p)</sup>" : ""} is ${rows} × ${cols}`
-    + (ind ? `: the network of patch p forecasts its whole window, and the parallel network keeps the ${s.G} columns of the sites of the patch` : "")
+    + (s.readRows ? ` (${s.Nu} units, ${s.readRows} input row${s.readRows > 1 ? "s" : ""} and the bias)` : "")
+    + (ind ? `: the network of patch p forecasts its whole window, and the parallel network keeps the ${s.G} columns of the sites of the patch`
+      : par ? `, one matrix that the ${P} patches share` : "")
+    + (par && s.read === "u" ? `; the readout of patch p reads the inputs of its own reservoir, i.e. its window${s.npar ? " and the parameters" : ""}` : "")
+    + (par && s.read === "p" ? "; the readout of every patch reads the same parameters" : "")
     + "; b<sub>out</sub> = 1."]);
   // washout
   blocks.push(["Washout (open loop)", String.raw`\bm r${pp}_0 = \bm 0,\qquad \bm r${pp}_{n+1} = \bm F\!\left(\bm r${pp}_n,\ \tilde{\bm u}_n\right),\qquad n = 0,\dots,N_\mathrm{wash}-1 = ${s.Nwash - 1}`,
@@ -824,15 +863,13 @@ function code(s) {
     kw.push(["patch_size", s.G], ["halo", s.H]);
     if (!s.periodic) kw.push(["periodic", false]);
     if (s.ind) kw.push(["shared", false]);
-  } else {
-    if (s.nobs < s.N) kw.push(["observed_idx", `RAW:np.round(np.linspace(0, ${s.N - 1}, ${s.nobs})).astype(int)`]);
-    if (s.npar) {
-      kw.push(["input_parameters", "RAW:params"]);
-      if (!s.pir) kw.push(["param_in_reservoir", false]);
-    }
-    if (s.read === "u") kw.push(["readout_input", true]);
-    if (s.read === "p") kw.push(["readout_input", "params"]);
+  } else if (s.nobs < s.N) kw.push(["observed_idx", `RAW:np.round(np.linspace(0, ${s.N - 1}, ${s.nobs})).astype(int)`]);
+  if (s.npar) {
+    kw.push(["input_parameters", "RAW:params"]);
+    if (!s.pir) kw.push(["param_in_reservoir", false]);
   }
+  if (s.read === "u") kw.push(["readout_input", true]);
+  if (s.read === "p") kw.push(["readout_input", "params"]);
   const hp = ["rho", "sigma_in", "tikh", "leak_rate"].filter((k) => s.search[k]);
   kw.push(["hyperparameters_to_optimize", hp]);
   for (const k of ["rho", "sigma_in", "tikh", "leak_rate"]) {       // always explicit: searched range or fixed value
@@ -851,9 +888,10 @@ function code(s) {
     : k.endsWith("_range") && k !== "tikh_range" ? pyTuple(v) : py(v));
   const imports = s.metric === "nMSE" && (s.bo || s.nseeds > 1) ? ", validation" : "";
   const lines = ["import numpy as np", `from echostatenetwork import EchoStateNetwork${imports}`, "",
-    `data = ...                          # (Nt, ${s.N}) record, time step dt = ${py(s.dt)}`];
-  if (s.npar) lines.push(`params = ...                        # (${s.npar}, L) parameter values, one column per segment`);
-  lines.push("", "esn = EchoStateNetwork(data[:1].T,");
+    s.npar ? `data = ...                          # (L, Nt, ${s.N}) records, one per parameter setting, time step dt = ${py(s.dt)}`
+      : `data = ...                          # (Nt, ${s.N}) record, time step dt = ${py(s.dt)}`];
+  if (s.npar) lines.push(`params = ...                        # (${s.npar}, L) parameter values, one column per record`);
+  lines.push("", `esn = EchoStateNetwork(${s.npar ? "data[0, :1].T" : "data[:1].T"},`);
   kw.forEach(([k, v], i) => lines.push(`                       ${k}=${val(k, v)}${i < kw.length - 1 ? "," : ")"}`));
   const targs = ["data"];
   if (s.strat !== "RVC_Noise" && (s.bo || s.nseeds > 1)) targs.push(`validation_strategy=EchoStateNetwork._${s.strat}`);
@@ -861,8 +899,9 @@ function code(s) {
   lines.push(`esn.train(${targs.join(", ")})`);
   if (s.nseeds > 1) lines.push(`print(esn.seed, esn.seed_scores)          # kept realization and the score of every seed`);
   lines.push("",
-    `# forecast: open-loop washout on ${s.Nwash} steps of data, then closed loop`,
-    "r = np.zeros((esn.N_r, 1))",
+    `# forecast: open-loop washout on ${s.Nwash} steps of data, then closed loop`);
+  if (s.npar) lines.push(`esn.input_parameters = params[:, :1]  # (${s.npar}, 1): the parameters of the forecast`);
+  lines.push("r = np.zeros((esn.N_r, 1))",
     `for u_in in wash:                   # wash: (${s.Nwash}, ${s.N}) data before the forecast`,
     "    u, r = esn.step(esn.outputs_to_inputs(u_in[:, None]), r)",
     "forecast = []",
@@ -883,6 +922,8 @@ function render() {
   renderEquations(s);
   const f = drawFolds(s);
   $("code").textContent = code(s);
+  $("codeSub").innerHTML = s.npar ? "Run it locally on your records <code>data</code>, of shape (L, N<sub>t</sub>, N<sub>dim</sub>), one per column of <code>params</code>."
+    : "Run it locally on your record <code>data</code>, of shape (N<sub>t</sub>, N<sub>dim</sub>).";
   const rows = s.Nu + 1 + s.readRows, cols = s.par ? (s.ind ? s.G + 2 * s.H : s.G) : s.N;
   $("t-steps").textContent = `${s.Nwash} / ${s.Ntr} / ${s.Nval}`;
   $("t-stepsU").textContent = `ESN step ${+s.dtE.toPrecision(4)} time units`;
@@ -928,6 +969,7 @@ function render() {
   if (s.Nwash >= s.Ntr) warn.push("The washout is longer than the training record: reduce N<sub>wash</sub> or increase t<sub>train</sub>.");
   if (s.Nval < 1) warn.push("t<sub>val</sub> is shorter than one ESN step.");
   if (s.dims.some((k) => s[k + "_range"][0] >= s[k + "_range"][1])) warn.push("A search range has its lower bound above its upper bound.");
+  if (s.npar && !s.pir && s.read === "r") warn.push("The parameters enter neither the reservoir nor the readout: tick <i>Parameters enter the reservoir</i>, or let the readout read them.");
   $("warn").innerHTML = warn.join("<br>");
   $("warn").style.display = warn.length ? "block" : "none";
 }

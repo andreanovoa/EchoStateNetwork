@@ -48,13 +48,16 @@ tiles show the resulting numbers of washout, training and validation steps.
 shared matrices or with independent patches (`patch_size`, `halo`, `periodic`, `shared`).
 The patch sizes on offer divide the number of sites, and the halo stops where the window
 of a patch would exceed a periodic domain. The parallel layout reads and forecasts every
-site, so it disables the controls of the inputs and the readout.
+site, so it disables the number of observed sites.
 
 **Inputs and readout.** The number of observed sites (`observed_idx`, spread evenly over
 the state), the number of physical parameters appended to the input
 (`input_parameters`), whether the parameters enter the reservoir
 (`param_in_reservoir`), what the readout reads besides the reservoir state
 (`readout_input`), and the level of the noise added to the training inputs (`noise`).
+With the parallel layout, every patch reads the same parameters after its window, and the
+readout of patch $p$ reads the inputs of its own reservoir: its window and the
+parameters with `readout_input=True`, the parameters only with `readout_input='params'`.
 
 **Reservoir.** The number of units of each reservoir (`N_units`), the number of
 connections per unit (`connect`), the input matrix (`Win_type`), and the number of realizations of the random matrices,
@@ -104,8 +107,9 @@ windows of the first and last patches wrap around a periodic domain (dashed copi
 sites) or read zeros outside a non-periodic one (grey cells). Unobserved sites are grey.
 The input bias, $b_\mathrm{in}$, joins each input arrow from above at a junction,
 dashed when the sparse input matrix gives it to only a few units. Parameters enter from above, in orange, at a junction of the input arrow or directly into
-the readout arrow. The arrow that leaves the input arrow downwards and enters the readout
-arrow from below is the input skip, the loop above a reservoir marks a leak rate below one,
+the readout arrow; with the parallel layout, one orange line joins the input arrows or the
+readout arrows of all the patches. The arrow that leaves the input arrow downwards and enters the readout
+arrow from below is the input skip (with the parallel layout, drawn for the last patch only), the loop above a reservoir marks a leak rate below one,
 and independent patches draw their networks in different colours.
 
 **Equations.** The normalization of the input and the input noise, the reservoir update,
