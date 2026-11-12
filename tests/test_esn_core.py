@@ -609,6 +609,21 @@ def test_readout_input_through_the_validation_strategies():
         assert esn.Wout.shape == (esn.N_units + esn.N_dim_in + 1, 3)
 
 
+@pytest.mark.parametrize("mode", ["data", False])   # True: one value of the parameter, no range to search
+@pytest.mark.parametrize("one_segment", [True, False])
+def test_parametric_network_trains_on_one_series(mode, one_segment):
+    # one series, (Nt, N_dim) or (1, Nt, N_dim): _set_norm keeps the axis of the segments, which the parameter
+    # columns of the normalization must not trip on
+    data = np.random.default_rng(23).normal(size=(1, 200, 3))
+    esn = EchoStateNetwork(data[0, :1].T, dt=1, N_units=10, upsample=1, t_train=120, t_val=30, t_test=10,
+                           N_wash=5, hyperparameters_to_optimize=[], input_parameters=np.array([[8.0]]),
+                           optimize_parameter_normalization=mode)
+    esn.train(data[0] if one_segment else data, plot_training=False)
+    assert esn.trained and esn.norm.shape == esn.shift.shape == (4,)
+    if mode == 'data':
+        assert esn.shift[-1] == 8.0
+
+
 @pytest.mark.parametrize("in_reservoir", [True, False])
 def test_readout_params_reads_only_the_parameter(in_reservoir):
     # readout_input='params': Wout^T [r; p_norm; bias]; param_in_reservoir=False zeroes

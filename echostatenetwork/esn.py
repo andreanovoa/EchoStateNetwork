@@ -2781,8 +2781,9 @@ class EchoStateNetwork:
                 norm_param, shift_param = self._norm[-N_param:], self._shift[-N_param:]
             else:
                 norm_param, shift_param = np.ones(N_param), np.zeros(N_param)
-            norm_obs = np.concatenate([norm_obs, norm_param])
-            shift_obs = np.concatenate([shift_obs, shift_param])
+            # np.ravel: with one segment (L = 1), _set_norm keeps the axis of the segments, (1, N_obs)
+            norm_obs = np.concatenate([np.ravel(norm_obs), norm_param])
+            shift_obs = np.concatenate([np.ravel(shift_obs), shift_param])
             if mode and not isinstance(mode, str):
                 # tune shift/norm per parameter via the same BO loop as rho/sigma_in/tikh,
                 # instead of leaving them fixed at identity (see class docstring above).
