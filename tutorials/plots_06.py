@@ -157,7 +157,7 @@ def draw_esn(esn, ax=None, strategy='RVC_Noise', title=None):
                 _cell(ax, X_IN, r, INP, hatches, dashed=True, text=f'$x_{{{site}}}$')
             else:
                 _cell(ax, X_IN, r, PAD, dashed=True, text='0')
-    param_rows = [-1.5 - j for j in range(n_param)]
+    param_rows = [min(reads) - 1.5 - j for j in range(n_param)]     # above the halo of the first patch
     for j, r in enumerate(param_rows):
         _cell(ax, X_IN, r, PAR, text=rf'$p_{{{n_param - 1 - j}}}$')
     top = min(min(reads), *param_rows) if param_rows else min(reads)
@@ -172,8 +172,9 @@ def draw_esn(esn, ax=None, strategy='RVC_Noise', title=None):
     # reservoirs, input windows and readouts
     radius = min(0.9, 0.42 * G * CELL)
     stagger = 3 if H else 1                      # ponytail: brace columns, enough while halo <= patch_size
+    ys_res = [_y(p * G + (G - 1) / 2) for p in range(P)]
     for p, rows in enumerate(windows):
-        y_res = _y(p * G + (G - 1) / 2)
+        y_res = ys_res[p]
         x_tip, y_tip = _brace(ax, X_IN + WIDTH / 2 + 0.06 + 0.2 * (p % stagger),
                               _y(rows[-1]) - CELL / 2, _y(rows[0]) + CELL / 2, INP)
         color = NET[p % len(NET)] if ind else RES
@@ -208,9 +209,9 @@ def draw_esn(esn, ax=None, strategy='RVC_Noise', title=None):
                    lw=1, head=7, zorder=6)
             ax.text(x_res + dx + 0.04, 0.5 * (yc + yt), r'$1-\alpha$', va='center', fontsize=7)
 
-    # single reservoir only (the parallel layout rejects these): parameters enter from above,
-    # right then down, at a junction of the input arrow and/or into the readout arrow; the
-    # input skip leaves the input arrow down, right, up into the readout arrow
+    # parameters enter from above, right then down, at a junction of the input arrow and/or into the readout
+    # arrow of every reservoir (white diamonds on the arrows of the patches above the last one); the input skip
+    # leaves the input arrow down, right, up into the readout arrow (drawn for the last patch)
     bottom = _y(max(max(reads), N - 1)) - CELL / 2
     x_join = x_otip - 0.3
     if n_param:
@@ -219,9 +220,12 @@ def draw_esn(esn, ax=None, strategy='RVC_Noise', title=None):
         if esn.param_in_reservoir:
             x_junc = x_tip + 0.25
             _route(ax, [(x_p, y_p), (x_junc, y_p), (x_junc, y_res + 0.07)], PAR)
-            ax.plot(x_junc, y_res, 'D', ms=5, mfc='white', mec='k', mew=1.2, zorder=7)
+            for y in ys_res:
+                ax.plot(x_junc, y, 'D', ms=5, mfc='white', mec='k', mew=1.2, zorder=7)
         if esn.readout_input == 'params' or (esn.readout_input is True and not esn.param_in_reservoir):
             _route(ax, [(x_p, y_p), (x_join, y_p), (x_join, y_res)], PAR)
+            for y in ys_res[:-1]:
+                ax.plot(x_join, y, 'D', ms=5, mfc='white', mec='k', mew=1.2, zorder=7)
             ax.text(X_RES, y_p + 0.05, r'$\mathbf{W}_\mathrm{out}$ reads $\tilde{\mathbf{p}}$',
                     ha='center', va='bottom', fontsize=8, color=PAR)
     if esn.readout_input is True:

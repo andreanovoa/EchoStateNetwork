@@ -160,6 +160,51 @@ the boundaries learn their own dynamics.
 
 In both cases, `patch_size` divides the number of sites.
 
+## Parameters and the readout
+
+A parametric network (`input_parameters`) appends $N_\mathrm{p}$ parameters,
+e.g. the forcing of Lorenz-96, to the input. With the parallel layout, every
+patch reads the same parameters after its window. With shared matrices, the
+sites share one shift and one scale, and the parameters are normalized as for a
+single reservoir (`optimize_parameter_normalization`); with independent
+patches, the network of every patch normalizes the parameters on its own.
+
+Two options decide where the parameters enter. By default, they enter the
+reservoir through $\mathbf{W}_\mathrm{in}$, which then has
+$G + 2H + N_\mathrm{p} + 1$ columns. With `readout_input`, the readout of patch
+$p$ also reads the normalized input of its reservoir, in the order of the
+single reservoir,
+
+$$
+\mathbf{u}_{n+1}[\mathcal{P}_p] = \mathbf{W}_\mathrm{out}^\top
+[\mathbf{r}_{p,n+1};\, \tilde{\mathbf{p}};\, b_\mathrm{out}],
+$$
+
+with `readout_input='params'`, where $\tilde{\mathbf{p}}$ is the normalized
+parameter vector; with `readout_input=True`, the readout reads
+$[\mathbf{r}_{p,n+1};\, \tilde{\mathbf{u}}_n[\mathcal{I}_p];\,
+\tilde{\mathbf{p}};\, b_\mathrm{out}]$. The ridge regression reads the same
+rows in the sample of every patch, and `Jacobian` adds the direct term of the
+readout, $\mathbf{W}_{\mathrm{out},u}^\top\,\mathrm{diag}(1/\texttt{norm})$,
+on the columns that the readout reads. One patch that covers the whole domain
+without a halo is the single reservoir with the same option.
+
+With `param_in_reservoir=False`, the parameter columns of
+$\mathbf{W}_\mathrm{in}$ are zero. The reservoir update then does not depend
+on the parameters, which reach the forecast only through the readout, as an
+affine term at a fixed reservoir state. In joint state and parameter estimation,
+for example, the members of an ensemble wash out their reservoirs on the data
+independently of the parameter values that the filter estimates.
+
+```python
+esn = EchoStateNetwork(X[:1].T, dt=0.02, upsample=1, N_units=500,
+                       patch_size=5, halo=2,         # Lorenz-96 with 10 sites: two patches
+                       input_parameters=forcings,     # (1, L): the forcing of each of the L records
+                       param_in_reservoir=False, readout_input='params')
+esn.train(records)                                    # records: (L, Nt, 10)
+esn.input_parameters = np.array([[8.0]])              # the forcing of the forecast
+```
+
 ## Positions for data assimilation
 
 Covariance localization in data assimilation tapers the covariance between two
@@ -243,16 +288,16 @@ local.patches[0].rho, local.patches[0].Win     # hyperparameters and matrices of
 | `N_r` | rows of the reservoir state, $P N_\mathrm{units}$ |
 | `patch_sites` | `(N_patches, G + 2H)` sites of each window, $-1$ outside a non-periodic domain |
 | `state_positions` | `(N_dim + N_r,)` position of every row of $[\mathbf{u}; \mathbf{r}]$ |
-| `Win`, `W`, `Wout` | shared matrices, `(N_units, G + 2H + N_param + 1)`, `(N_units, N_units)`, `(N_units + 1, G)`; with `input_parameters`, every patch reads the `N_param` parameters after its window |
+| `Win`, `W`, `Wout` | shared matrices, `(N_units, G + 2H + N_param + 1)`, `(N_units, N_units)`, `(N_units + 1, G)`; with `input_parameters`, every patch reads the `N_param` parameters after its window; with `readout_input`, `Wout` has `N_param` more rows (`'params'`), or `G + 2H + N_param` more rows (`True`) |
+| `param_in_reservoir`, `readout_input` | where the parameters enter: the reservoir (default), the readout, or both ([above](#parameters-and-the-readout)) |
 | `patches` | with `shared=False`: one `EchoStateNetwork` per patch, with its own matrices and hyperparameters |
 
 ## Limitations
 
 - The layout raises a `ValueError` when `patch_size` does not divide the number
   of sites, when the window exceeds a periodic domain, when it is combined with
-  `readout_input` or partial observability (`observed_idx`), when independent
-  patches (`shared=False`) are given `input_parameters`, and when `shared=False`
-  is set without `patch_size`.
+  partial observability (`observed_idx`), and when `shared=False` is set without
+  `patch_size`.
 - With independent patches, `Win`, `W` and `Wout` of the parallel network raise
   an `AttributeError` that points to `patches[p]`, and its `rho`, `sigma_in` and
   `tikh` are the starting values passed to every patch: the selected values live
