@@ -1,0 +1,1354 @@
+
+<!doctype html>
+<html lang="en" class="no-js">
+  <head>
+    
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width,initial-scale=1">
+      
+        <meta name="description" content="Echo state networks / reservoir computing in pure numpy">
+      
+      
+      
+        <link rel="canonical" href="https://andreanovoa.github.io/EchoStateNetwork/training/">
+      
+      
+        <link rel="prev" href="../getting-started/">
+      
+      
+        <link rel="next" href="../validation/">
+      
+      
+        
+      
+      
+      <link rel="icon" href="../assets/images/favicon.png">
+      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.8.1">
+    
+    
+      
+        <title>Training and forecasting - echostatenetwork</title>
+      
+    
+    
+      <link rel="stylesheet" href="../assets/stylesheets/main.57a0d79d.min.css">
+      
+        
+        <link rel="stylesheet" href="../assets/stylesheets/palette.fb2fffe2.min.css">
+      
+      
+
+
+    
+    
+      
+    
+    
+      
+        
+        
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+        <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Roboto:300,300i,400,400i,700,700i%7CRoboto+Mono:400,400i,700,700i&display=fallback">
+        <style>:root{--md-text-font:"Roboto";--md-code-font:"Roboto Mono"}</style>
+      
+    
+    
+      <link rel="stylesheet" href="../assets/_mkdocstrings.css">
+    
+    <script>__md_scope=new URL("..",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
+    
+      
+
+    
+    
+  </head>
+  
+  
+    
+    
+      
+    
+    
+    
+    
+    <body dir="ltr" data-md-color-scheme="default" data-md-color-primary="deep-purple" data-md-color-accent="indigo">
+  
+    
+    <input class="md-toggle" data-md-toggle="drawer" type="checkbox" id="__drawer" autocomplete="off">
+    <input class="md-toggle" data-md-toggle="search" type="checkbox" id="__search" autocomplete="off">
+    <label class="md-overlay" for="__drawer"></label>
+    <div data-md-component="skip">
+      
+        
+        <a href="#training-and-forecasting" class="md-skip">
+          Skip to content
+        </a>
+      
+    </div>
+    <div data-md-component="announce">
+      
+    </div>
+    
+    
+      
+
+  
+
+<header class="md-header md-header--shadow" data-md-component="header">
+  <nav class="md-header__inner md-grid" aria-label="Header">
+    <a href=".." title="echostatenetwork" class="md-header__button md-logo" aria-label="echostatenetwork" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    <label class="md-header__button md-icon" for="__drawer">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M3 6h18v2H3zm0 5h18v2H3zm0 5h18v2H3z"/></svg>
+    </label>
+    <div class="md-header__title" data-md-component="header-title">
+      <div class="md-header__ellipsis">
+        <div class="md-header__topic">
+          <span class="md-ellipsis">
+            echostatenetwork
+          </span>
+        </div>
+        <div class="md-header__topic" data-md-component="header-topic">
+          <span class="md-ellipsis">
+            
+              Training and forecasting
+            
+          </span>
+        </div>
+      </div>
+    </div>
+    
+      
+        <form class="md-header__option" data-md-component="palette">
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="(prefers-color-scheme: light)" data-md-color-scheme="default" data-md-color-primary="deep-purple" data-md-color-accent="indigo"  aria-label="Switch to dark mode"  type="radio" name="__palette" id="__palette_0">
+    
+      <label class="md-header__button md-icon" title="Switch to dark mode" for="__palette_1" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a4 4 0 0 0-4 4 4 4 0 0 0 4 4 4 4 0 0 0 4-4 4 4 0 0 0-4-4m0 10a6 6 0 0 1-6-6 6 6 0 0 1 6-6 6 6 0 0 1 6 6 6 6 0 0 1-6 6m8-9.31V4h-4.69L12 .69 8.69 4H4v4.69L.69 12 4 15.31V20h4.69L12 23.31 15.31 20H20v-4.69L23.31 12z"/></svg>
+      </label>
+    
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="(prefers-color-scheme: dark)" data-md-color-scheme="slate" data-md-color-primary="deep-purple" data-md-color-accent="indigo"  aria-label="Switch to light mode"  type="radio" name="__palette" id="__palette_1">
+    
+      <label class="md-header__button md-icon" title="Switch to light mode" for="__palette_0" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 18c-.89 0-1.74-.2-2.5-.55C11.56 16.5 13 14.42 13 12s-1.44-4.5-3.5-5.45C10.26 6.2 11.11 6 12 6a6 6 0 0 1 6 6 6 6 0 0 1-6 6m8-9.31V4h-4.69L12 .69 8.69 4H4v4.69L.69 12 4 15.31V20h4.69L12 23.31 15.31 20H20v-4.69L23.31 12z"/></svg>
+      </label>
+    
+  
+</form>
+      
+    
+    
+      <script>var palette=__md_get("__palette");if(palette&&palette.color){if("(prefers-color-scheme)"===palette.color.media){var media=matchMedia("(prefers-color-scheme: light)"),input=document.querySelector(media.matches?"[data-md-color-media='(prefers-color-scheme: light)']":"[data-md-color-media='(prefers-color-scheme: dark)']");palette.color.media=input.getAttribute("data-md-color-media"),palette.color.scheme=input.getAttribute("data-md-color-scheme"),palette.color.primary=input.getAttribute("data-md-color-primary"),palette.color.accent=input.getAttribute("data-md-color-accent")}for(var[key,value]of Object.entries(palette.color))document.body.setAttribute("data-md-color-"+key,value)}</script>
+    
+    
+    
+      
+      
+        <label class="md-header__button md-icon" for="__search">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        </label>
+        <div class="md-search" data-md-component="search" role="dialog">
+  <label class="md-search__overlay" for="__search"></label>
+  <div class="md-search__inner" role="search">
+    <form class="md-search__form" name="search">
+      <input type="text" class="md-search__input" name="query" aria-label="Search" placeholder="Search" autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false" data-md-component="search-query" required>
+      <label class="md-search__icon md-icon" for="__search">
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
+      </label>
+      <nav class="md-search__options" aria-label="Search">
+        
+        <button type="reset" class="md-search__icon md-icon" title="Clear" aria-label="Clear" tabindex="-1">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+        </button>
+      </nav>
+      
+    </form>
+    <div class="md-search__output">
+      <div class="md-search__scrollwrap" tabindex="0" data-md-scrollfix>
+        <div class="md-search-result" data-md-component="search-result">
+          <div class="md-search-result__meta">
+            Initializing search
+          </div>
+          <ol class="md-search-result__list" role="presentation"></ol>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+      
+    
+    
+      <div class="md-header__source">
+        <a href="https://github.com/andreanovoa/EchoStateNetwork" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
+  </div>
+  <div class="md-source__repository">
+    andreanovoa/EchoStateNetwork
+  </div>
+</a>
+      </div>
+    
+  </nav>
+  
+</header>
+    
+    <div class="md-container" data-md-component="container">
+      
+      
+        
+          
+        
+      
+      <main class="md-main" data-md-component="main">
+        <div class="md-main__inner md-grid">
+          
+            
+              
+              <div class="md-sidebar md-sidebar--primary" data-md-component="sidebar" data-md-type="navigation" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+
+
+<nav class="md-nav md-nav--primary" aria-label="Navigation" data-md-level="0">
+  <label class="md-nav__title" for="__drawer">
+    <a href=".." title="echostatenetwork" class="md-nav__button md-logo" aria-label="echostatenetwork" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    echostatenetwork
+  </label>
+  
+    <div class="md-nav__source">
+      <a href="https://github.com/andreanovoa/EchoStateNetwork" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
+  </div>
+  <div class="md-source__repository">
+    andreanovoa/EchoStateNetwork
+  </div>
+</a>
+    </div>
+  
+  <ul class="md-nav__list" data-md-scrollfix>
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href=".." class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Home
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../getting-started/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Getting started
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+    
+  
+  
+  
+    <li class="md-nav__item md-nav__item--active">
+      
+      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
+      
+      
+        
+      
+      
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Training and forecasting
+  
+
+    
+  </span>
+  
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
+      
+      <a href="./" class="md-nav__link md-nav__link--active">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Training and forecasting
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+      
+        
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#the-model" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        The model
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#training" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Training
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Training">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#training-again" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Training again
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Training again">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#details-and-edge-cases" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Details and edge cases
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#seeded-ensembles" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Seeded ensembles
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#forecasting" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Forecasting
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../validation/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Validation strategies
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../parallel/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Parallel echo state network
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../demo/esn/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Live demo: building an ESN
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../api/esn/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    API reference
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_8" >
+        
+          
+          <label class="md-nav__link" for="__nav_8" id="__nav_8_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Tutorial notebooks
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_8_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_8">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Tutorial notebooks
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../tutorials/01_echo_state_network/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Tutorial: the EchoStateNetwork class
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../tutorials/02_parametric_esn/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Tutorial: parametric ESN
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../tutorials/03_leaky_esn/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Tutorial: the leaky-integrator ESN
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../tutorials/04_validation_strategies/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Tutorial: validation strategies for chaotic time series
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../tutorials/05_parallel_esn_kuramoto_sivashinsky/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Tutorial: parallel echo state networks on the Kuramoto–Sivashinsky equation
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../tutorials/06_esn_architectures/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Tutorial: architectures of the echo state network
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+  </ul>
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+            
+              
+              <div class="md-sidebar md-sidebar--secondary" data-md-component="sidebar" data-md-type="toc" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#the-model" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        The model
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#training" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Training
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Training">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#training-again" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Training again
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Training again">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#details-and-edge-cases" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Details and edge cases
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#seeded-ensembles" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Seeded ensembles
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#forecasting" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Forecasting
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+          
+          
+            <div class="md-content" data-md-component="content">
+              
+              <article class="md-content__inner md-typeset">
+                
+                  
+
+
+  
+  
+
+
+<h1 id="training-and-forecasting">Training and forecasting</h1>
+<p>One <code>EchoStateNetwork</code> holds three matrices: a fixed random input matrix
+<span class="arithmatex">\(\mathbf{W}_\mathrm{in}\)</span>, a fixed random reservoir matrix <span class="arithmatex">\(\mathbf{W}\)</span>
+(sparse, rescaled to unit spectral radius when generated), and the trained
+readout <span class="arithmatex">\(\mathbf{W}_\mathrm{out}\)</span> — the only matrix that learning touches.</p>
+<h2 id="the-model">The model</h2>
+<p>One <code>step(u, r)</code> advances the reservoir open loop and reads out the physical
+state:</p>
+<div class="arithmatex">\[
+\mathbf{r}_{n+1} = (1-\alpha)\,\mathbf{r}_n + \alpha \tanh\!\big(
+\sigma_\mathrm{in} \mathbf{W}_\mathrm{in} [\tilde{\mathbf{u}}_n;\, b_\mathrm{in}]
++ \rho\, \mathbf{W} \mathbf{r}_n \big), \qquad
+\mathbf{u}_{n+1} = \mathbf{W}_\mathrm{out}^\top [\mathbf{r}_{n+1};\, b_\mathrm{out}]
+\]</div>
+<p>where <span class="arithmatex">\(\tilde{\mathbf{u}} = (\mathbf{u} - \texttt{shift}) / \texttt{norm}\)</span> is
+the shift-and-scale normalized input (set from the training data range by
+default), <span class="arithmatex">\(b_\mathrm{in}, b_\mathrm{out}\)</span> are symmetry-breaking biases, and
+<span class="arithmatex">\(\alpha\)</span> = <code>leak_rate</code> (the default <span class="arithmatex">\(\alpha = 1\)</span> is the plain tanh update; see
+the <a href="../tutorials/03_leaky_esn/">leaky-ESN tutorial</a>).
+The hyperparameters that matter are the effective spectral radius <code>rho</code>, the
+input scaling <code>sigma_in</code>, and the Tikhonov regularization <code>tikh</code>; by default,
+validation selects all three (below).</p>
+<p>For a <em>parametric</em> ESN, <code>input_parameters</code> appends parameter columns to the
+input, densely connected through <span class="arithmatex">\(\mathbf{W}_\mathrm{in}\)</span> — one reservoir
+conditioned on a physical parameter
+(<a href="../tutorials/02_parametric_esn/">tutorial 02</a>).
+With partial observability, <code>observed_idx</code> selects which components of the
+full state are fed back as inputs.</p>
+<p>The readout is linear in the reservoir state, and the tanh reservoir is odd:
+without the biases, the network forecasts <span class="arithmatex">\(-\mathbf{u}\)</span> from <span class="arithmatex">\(-\mathbf{u}\)</span> as
+well as <span class="arithmatex">\(\mathbf{u}\)</span> from <span class="arithmatex">\(\mathbf{u}\)</span>. Besides the biases, <code>r2_mode=True</code>
+breaks this symmetry in the readout, which then reads every second unit
+squared,</p>
+<div class="arithmatex">\[
+\mathbf{u}_{n+1} = \mathbf{W}_\mathrm{out}^\top [\tilde{\mathbf{r}}_{n+1};\, b_\mathrm{out}],
+\qquad
+\tilde r_j = \begin{cases} r_j^2, &amp; j \text{ odd},\\ r_j, &amp; j \text{ even}, \end{cases}
+\]</div>
+<p>with the units numbered from 0 (Pathak et al. 2018; the <code>r2_mode</code> of
+<a href="https://github.com/MagriLab/Adjoint-ESN">MagriLab/Adjoint-ESN</a>).
+<span class="arithmatex">\(\mathbf{W}_\mathrm{out}\)</span> keeps its size, the ridge regression and every
+validation strategy read the same squared units, and <code>Jacobian</code> includes the
+factor <span class="arithmatex">\(2 r_j\)</span> of the squared units. The option works with the parallel layout,
+and the networks of independent patches inherit it.</p>
+<p>For a spatially extended system, the <em>parallel</em> layout (<code>patch_size</code>, <code>halo</code>,
+<code>periodic</code>) advances one reservoir per patch of neighbouring sites with the
+same update, and the patches share the three matrices
+(<a href="../parallel/">parallel echo state network</a>).</p>
+<h2 id="training">Training</h2>
+<p><code>train(train_data)</code> accepts a single trajectory <code>(Nt, N_dim)</code>, a batch of
+segments <code>(L, Nt, N_dim)</code>, or a ragged list of segments of different lengths,
+and runs four steps:</p>
+<ol>
+<li><strong>Split</strong> the data into washout (<code>N_wash</code> steps, inside <code>t_train</code>),
+   training + validation (<code>t_train</code>, <code>t_val</code> — inferred from the data when
+   omitted), and an optional held-out test tail (<code>t_test</code>). Gaussian noise
+   (<code>noise</code>) is added to the training <em>inputs</em> only — targets stay clean — as
+   regularization.</li>
+<li><strong>Generate</strong> <span class="arithmatex">\(\mathbf{W}_\mathrm{in}\)</span> and <span class="arithmatex">\(\mathbf{W}\)</span> from <code>seed</code>, if not
+   already set, or when an option that defines them changed (see
+   <a href="#training-again">training again</a>).</li>
+<li>
+<p><strong>Select hyperparameters</strong> by Bayesian optimization over
+   <code>hyperparameters_to_optimize</code>, scoring each candidate with a
+   <a href="../validation/">validation strategy</a> — closed-loop error on folds carved
+   from the training series. The search trace is kept in <code>bo_results</code>.</p>
+<p>With <code>'tikh'</code> in <code>hyperparameters_to_optimize</code>, every evaluation of the
+validation strategy selects the Tikhonov factor, <code>tikh</code>, from the grid
+<code>tikh_range</code>, so <code>tikh</code> is not a dimension of the Bayesian optimization.
+Without <code>'tikh'</code>, every evaluation keeps the fixed <code>tikh</code>, and <code>tikh_range</code>
+is left as it was. A search over <code>'tikh'</code> alone is therefore a grid
+search: <code>train</code> evaluates the strategy once at the fixed <code>rho</code>, <code>sigma_in</code>
+and <code>leak_rate</code>, without Bayesian optimization and without
+scikit-optimize. <code>bo_results</code> then holds that evaluation: one value in
+<code>func_vals</code>, <code>x = []</code> and <code>hp_names = []</code>.</p>
+<p>A parametric network also searches the normalization of its parameters.
+With <code>optimize_parameter_normalization</code>, which is on by default with
+<code>input_parameters</code>, <code>train</code> adds the shift and the scale of every
+parameter column (<code>param_shift_i</code>, <code>param_norm_i</code>) to the search, which is
+then a Bayesian optimization with the budget <code>N_func_evals</code>, also for
+<code>hyperparameters_to_optimize=[]</code> or <code>['tikh']</code>. An empty
+<code>hyperparameters_to_optimize</code> therefore skips the search, and leaves
+<code>bo_results</code> None, only without <code>input_parameters</code> or with
+<code>optimize_parameter_normalization=False</code>.</p>
+<p><img alt="Bayesian hyperparameter search landscape" src="../img/bho_landscape.png" /></p>
+<p><em>Validation-error landscape over <code>(rho, sigma_in)</code> from
+<a href="../tutorials/01_echo_state_network/">tutorial 01</a>:
+markers are the evaluated points (initial grid + gp-hedge acquisitions),
+the star the selected optimum. <code>plot_training=True</code> produces this figure.</em>
+4. <strong>Solve</strong> the ridge regression for <span class="arithmatex">\(\mathbf{W}_\mathrm{out}\)</span> on the full
+   train + validation data with the selected <code>tikh</code>.</p>
+</li>
+</ol>
+<p>The keywords of <code>train</code> set attributes of the network before these steps, e.g.
+<code>esn.train(y, rho_range=(0.5, 1.0))</code>. A keyword that is not an option, e.g. a
+misspelt name, a method or a read-only property, is ignored, and one warning
+per call names it, also with <code>n_seeds &gt; 1</code> and with independent patches. A call
+of <code>train</code> that raises, or that is interrupted, leaves the network as it was,
+with the options and the matrices that it had before the call.</p>
+<p><code>training_summary()</code> returns the realized split, folds, and selected
+hyperparameters of the last call; with <code>echostatenetwork.set_verbose()</code>, <code>train</code>
+also logs it, with the table of the hyperparameter search.</p>
+<h3 id="training-again">Training again</h3>
+<p>A trained network is not trained again: a second <code>train</code> call warns and leaves
+the network unchanged, unless it passes <code>force=True</code>. A copy of a trained
+network (<code>esn.copy()</code>) and a network loaded with its matrices (<code>from_arrays</code>,
+<code>pickle</code>) are trained, so that training them on other data also needs
+<code>force=True</code>. With <code>force=True</code>, <code>train</code> keeps</p>
+<ul>
+<li>the reservoir (<span class="arithmatex">\(\mathbf{W}_\mathrm{in}\)</span>, <span class="arithmatex">\(\mathbf{W}\)</span>) while <code>N_units</code>,
+  <code>connect</code>, <code>Win_type</code>, the number of inputs (<code>observed_idx</code>) and of parameter
+  columns (<code>input_parameters</code>), <code>param_in_reservoir</code>, <code>patch_size</code> and <code>halo</code>
+  are unchanged, as keywords of <code>train</code> or as attributes, whatever the seed
+  given to <code>train</code>;</li>
+<li>a <code>t_train</code> or <code>t_val</code> that was given, to the constructor, to <code>train</code> or as
+  an attribute;</li>
+</ul>
+<p>and computes again</p>
+<ul>
+<li>the hyperparameter search and <span class="arithmatex">\(\mathbf{W}_\mathrm{out}\)</span>;</li>
+<li>the reservoir, when one of the options above changes, from the seed given to
+  <code>train</code>, else from the seed of the reservoir; a diagnostic message names the
+  option;</li>
+<li>a <code>t_train</code> or <code>t_val</code> that the previous call inferred, from the new data, so
+  that the same data give the same split, and shorter data still train;</li>
+<li><code>dt_ESN = dt * upsample</code> from a new <code>upsample</code>, with the time step of the
+  data, <code>dt</code>, unchanged; <code>t_train</code> and <code>t_val</code> remain times.</li>
+</ul>
+<h4 id="details-and-edge-cases">Details and edge cases</h4>
+<ul>
+<li><strong>The seed.</strong> A seed alone does not replace the reservoir:
+  <code>train(seed=s, force=True)</code> without a changed option keeps it, and warns
+  that <code>seed</code> is ignored unless <code>s</code> is the seed of the reservoir. A new network
+  trained with <code>train(seed=s)</code> draws the reservoir of <code>s</code>, and
+  <code>train(seed=s, n_seeds=m, force=True)</code> trains the realizations of the seeds
+  <code>s, s+1, ..., s+m-1</code>, each with its own reservoir, and keeps the best one
+  (see <a href="#seeded-ensembles">seeded ensembles</a>). A new reservoir comes from a
+  new generator: it is the reservoir that a new network with the same options
+  draws with <code>train(seed=...)</code>. The first call of <code>train</code> draws the reservoir
+  from the generator <code>rng</code> of the attribute <code>seed</code>, after the noise on the
+  inputs, so no seed reproduces this reservoir: a reservoir that <code>train</code> draws
+  again then comes from the attribute <code>seed</code>, and an option changed and then
+  changed back does not restore the reservoir of the first call. Setting the
+  attribute <code>seed</code>, e.g. <code>esn.seed = 7</code>, starts the noise on the inputs from a
+  new generator and keeps the reservoir.</li>
+<li><strong>Matrices set by hand and networks pickled by echostatenetwork 0.2.3 or
+  earlier.</strong> <code>train</code> treats a reservoir set by hand (<code>W</code>, <code>Win</code>,
+  <code>from_arrays</code>), or held by a 0.2.3 network, as a reservoir drawn with the
+  options that the network has at the start of the call: an option that the
+  call changes draws a new reservoir from the attribute <code>seed</code>, so that
+  networks that share one reservoir draw the same new one. When only one
+  matrix fits the options, e.g. after <code>esn.N_units = 20; esn.W = W20</code>, <code>train</code>
+  keeps that matrix and draws the other one alone.</li>
+<li><strong>The split of a network pickled by echostatenetwork 0.2.3</strong>, which has no
+  record of what it inferred. On one series, <code>train</code> takes <code>t_train</code> and
+  <code>t_val</code> as inferred when they are the split that it infers (the training and
+  validation steps fill 80% of the series, and <code>t_val</code> is 20% of these) and
+  <code>split_summary</code> says that <code>t_val</code> was inferred. For a network trained with
+  <code>n_seeds &gt; 1</code> (it holds <code>seed_scores</code>), whose summary may say that an
+  inferred <code>t_val</code> was given, the split alone decides, so that a given split
+  equal to the inferred one is inferred again. Otherwise, <code>train</code> infers
+  <code>t_val</code> again when the summary says so, and keeps <code>t_train</code>. To keep a
+  split, pass <code>t_train</code> and <code>t_val</code> to <code>train</code>.</li>
+<li><strong>Attributes set to an inferred value.</strong> An attribute set to the value that
+  the previous call inferred, e.g. <code>esn.t_val = esn.t_val</code>, cannot be told
+  from the inferred value and is inferred again: to keep it, pass it to
+  <code>train</code>, e.g. <code>esn.train(y, t_val=esn.t_val, force=True)</code>.</li>
+<li><strong>The normalization of the parameters.</strong> <code>train</code> adds again to
+  <code>hyperparameters_to_optimize</code> the names <code>param_shift_i</code> and <code>param_norm_i</code>
+  that the previous call added, only while the network has parameters and
+  <code>optimize_parameter_normalization</code>, unless the list was set since. Removing
+  the parameters (<code>input_parameters=None</code>) or setting
+  <code>optimize_parameter_normalization=False</code> therefore removes them from the
+  search. The ranges <code>param_shift_range</code> and <code>param_norm_range</code> that the first
+  call sized from the parameters are kept.</li>
+<li><strong>The time step of the data.</strong> <code>dt</code> is a parameter of the constructor, not
+  an option of the network: <code>train(dt=0.5, force=True)</code> ignores it, with a
+  warning that suggests <code>dt_ESN</code>. To change the time step of the data, pass
+  the time step of the network, <code>dt_ESN = dt * upsample</code>, e.g.
+  <code>esn.train(y, dt_ESN=0.5 * esn.upsample, force=True)</code> for <code>dt = 0.5</code>, or set
+  the attribute <code>esn.dt_ESN</code>.</li>
+<li><strong>The readout.</strong> <code>readout_input</code> and <code>r2_mode</code> change <span class="arithmatex">\(\mathbf{W}_\mathrm{out}\)</span> only.</li>
+<li><strong>The noise on the inputs.</strong> Training a single network again on the same
+  data with the same options does not reproduce it: the noise on the inputs
+  continues the generator <code>rng</code>, so the selected hyperparameters and
+  <span class="arithmatex">\(\mathbf{W}_\mathrm{out}\)</span> may change. With <code>n_seeds &gt; 1</code>, every realization
+  draws its noise from its own seed, and training again reproduces the
+  realizations.</li>
+<li><strong>Independent patches</strong> (<code>shared=False</code>). The network of every patch has
+  its own seed, <code>patches[p].seed</code>, which <code>train</code> spawns from the seed of the
+  parallel network when it builds the networks of the patches. The network of
+  a patch follows the rules above: an option that defines its reservoir draws
+  a new one from the seed of the patch, which a new single network with the
+  options of the patch reproduces with <code>train(seed=patches[p].seed)</code>, and a
+  new parallel network does not. <code>train</code> builds the networks again, with seeds
+  spawned from the seed given to <code>train</code>, else from the attribute <code>seed</code>, only
+  when <code>patch_size</code> or <code>halo</code> changes. Otherwise, a seed given to <code>train</code> is
+  ignored, with a warning: the networks keep their seeds, and their reservoirs
+  unless an option changes them. Setting the attribute <code>seed</code> of the parallel
+  network therefore changes neither the seeds nor the noise of the patches
+  until <code>train</code> builds the networks again. The networks of the patches take
+  the split and the time step of the parallel network. An option changed on
+  the parallel network, as a keyword of <code>train</code> or as an attribute (e.g.
+  <code>esn.N_units = 10</code>), reaches the network of every patch; the other options
+  of a patch, e.g. the <code>rho</code> that its own search selected, are kept.</li>
+</ul>
+<h3 id="seeded-ensembles">Seeded ensembles</h3>
+<p>The reservoir is a random draw, so <code>train(n_seeds=m)</code> trains <code>m</code> realizations
+(seeds <code>base, base+1, ...</code>) in parallel processes, keeps the network with the
+best validation score in place, and stores every score in <code>seed_scores</code> —
+selection by validation score consistently lands in the ensemble's best half
+on test error (see the
+<a href="../validation/#ensembles-of-reservoir-seeds">validation strategies</a> page).
+The score of a realization is the minimum of its search (<code>bo_results['fun']</code>)
+or, without a search, one evaluation of the validation strategy at the fixed
+hyperparameters of the realization, <code>tikh</code> included. The first seed, <code>base</code>, is
+the <code>seed</code> given to <code>train</code>. Without it, <code>base</code> is the first seed of the
+previous call with <code>n_seeds &gt; 1</code> while the attribute <code>seed</code> is one of the seeds
+of that call, as after it (the kept seed), so that training again with
+<code>force=True</code> on the same data and options selects the same realization;
+otherwise, e.g. on the first call, <code>base</code> is the attribute <code>seed</code>. A call with
+<code>n_seeds = 1</code> leaves <code>seed_scores</code>, which then hold the scores of the last call
+with <code>n_seeds &gt; 1</code>. A warning raised while the realizations train, e.g.
+when fewer validation folds than <code>N_folds</code> fit, appears once, at the line that
+calls <code>train</code>, and follows the warnings filters of the calling process. That is
+also where the warning points when it comes from code of the user that the
+package calls back, e.g. a validation strategy that calls <code>validation.WFV</code>; a
+single network points at that code instead.</p>
+<h2 id="forecasting">Forecasting</h2>
+<p>The ESN runs in two modes:</p>
+<p><img alt="Open-loop and closed-loop configurations" src="../img/esn_open_closed_loop.png" /></p>
+<p><em>(a) open loop: the reservoir is driven by data <span class="arithmatex">\(\phi(t_i)\)</span> and its readouts
+<span class="arithmatex">\(\hat{\phi}(t_{i+1})\)</span> are one-step-ahead predictions; (b) closed loop: each
+prediction is fed back as the next input and the network runs autonomously.</em></p>
+<ul>
+<li><strong>Open loop</strong>: <code>step()</code> is fed observed data; used for
+  training and for <em>washout</em> — driving the reservoir from
+  <span class="arithmatex">\(\mathbf{r}_0 = \mathbf{0}\)</span> through a short window of true history so it
+  synchronizes with the physical state before a forecast.</li>
+<li><strong>Closed loop</strong>: each prediction is fed back as the next input
+  (<code>outputs_to_inputs</code> selects the observed components and re-appends the
+  parameter columns); the model runs autonomously.</li>
+</ul>
+<div class="highlight"><pre><span></span><code><span class="n">r</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">zeros</span><span class="p">((</span><span class="n">esn</span><span class="o">.</span><span class="n">N_units</span><span class="p">,</span> <span class="mi">1</span><span class="p">))</span>
+<span class="n">u</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">zeros</span><span class="p">((</span><span class="n">esn</span><span class="o">.</span><span class="n">N_dim</span><span class="p">,</span> <span class="mi">1</span><span class="p">))</span>
+<span class="k">for</span> <span class="n">u_in</span> <span class="ow">in</span> <span class="n">wash</span><span class="p">:</span>                      <span class="c1"># open-loop washout on true history</span>
+    <span class="n">u</span><span class="p">,</span> <span class="n">r</span> <span class="o">=</span> <span class="n">esn</span><span class="o">.</span><span class="n">step</span><span class="p">(</span><span class="n">u_in</span><span class="p">[:,</span> <span class="kc">None</span><span class="p">],</span> <span class="n">r</span><span class="p">)</span>
+
+<span class="n">forecast</span> <span class="o">=</span> <span class="p">[]</span>
+<span class="k">for</span> <span class="n">_</span> <span class="ow">in</span> <span class="nb">range</span><span class="p">(</span><span class="n">n_steps</span><span class="p">):</span>               <span class="c1"># closed-loop forecast</span>
+    <span class="n">u</span><span class="p">,</span> <span class="n">r</span> <span class="o">=</span> <span class="n">esn</span><span class="o">.</span><span class="n">step</span><span class="p">(</span><span class="n">esn</span><span class="o">.</span><span class="n">outputs_to_inputs</span><span class="p">(</span><span class="n">u</span><span class="p">),</span> <span class="n">r</span><span class="p">)</span>
+    <span class="n">forecast</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="n">u</span><span class="p">[:,</span> <span class="mi">0</span><span class="p">])</span>
+</code></pre></div>
+<p>Alignment: the washout's last output is the one-step-ahead prediction of the
+frame <em>after</em> <code>wash</code>, so closed-loop prediction <code>i</code> corresponds to data row
+<code>len(wash) + 1 + i</code>.</p>
+<p><code>run_test()</code> packages this — open-loop washout, closed-loop forecast, error
+against truth — over the held-out test tail, with plots. For a fair error
+metric across components use <code>compute_nMAE(Y_true, Y_pred, norm=...)</code>, the
+range-normalized mean absolute error used throughout training and validation.</p>
+<p>See the
+<a href="../tutorials/01_echo_state_network/">EchoStateNetwork tutorial</a>
+for the full workflow on Lorenz 63, and the
+<a href="../api/esn/">API reference</a> for every attribute and method.</p>
+
+
+
+
+
+
+
+
+
+
+
+
+                
+              </article>
+            </div>
+          
+          
+<script>var target=document.getElementById(location.hash.slice(1));target&&target.name&&(target.checked=target.name.startsWith("__tabbed_"))</script>
+        </div>
+        
+      </main>
+      
+        <footer class="md-footer">
+  
+  <div class="md-footer-meta md-typeset">
+    <div class="md-footer-meta__inner md-grid">
+      <div class="md-copyright">
+  
+  
+    Made with
+    <a href="https://squidfunk.github.io/mkdocs-material/" target="_blank" rel="noopener">
+      Material for MkDocs
+    </a>
+  
+</div>
+      
+    </div>
+  </div>
+</footer>
+      
+    </div>
+    <div class="md-dialog" data-md-component="dialog">
+      <div class="md-dialog__inner md-typeset"></div>
+    </div>
+    
+    
+    
+      
+      
+      <script id="__config" type="application/json">{"annotate": null, "base": "..", "features": ["navigation.sections", "content.code.copy"], "search": "../assets/javascripts/workers/search.a7633da7.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": null}</script>
+    
+    
+      <script src="../assets/javascripts/bundle.a5f9d56c.min.js"></script>
+      
+        <script src="../js/mathjax.js"></script>
+      
+        <script src="https://unpkg.com/mathjax@3/es5/tex-mml-chtml.js"></script>
+      
+    
+  <script data-mkdocs-jupyter-mathjax="{&quot;url&quot;: &quot;https://cdn.jsdelivr.net/npm/mathjax@4.1.3/tex-mml-chtml.js&quot;, &quot;version&quot;: 4}">
+/* Shared by full pages and Material's instant navigation. */
+(() => {
+  const config = JSON.parse(document.currentScript.dataset.mkdocsJupyterMathjax);
+  if (window.mkdocsJupyterMathJax) return;
+
+  let loading;
+  let queue = Promise.resolve();
+  let previous = [];
+
+  const ready = async () => {
+    if (!loading) {
+      loading = (async () => {
+        let math = window.MathJax;
+        if (!math?.typesetPromise) {
+          const url = new URL(config.url, document.baseURI).href;
+          const existing = Array.from(document.scripts).find(script =>
+            script.src && (script.src === url || script.id === 'MathJax-script' ||
+              (/mathjax/i.test(script.src) &&
+               /\/(?:MathJax|latest|(?:tex|mml)(?:-mml)?-(?:chtml|svg))\.js(?:[?#]|$)/i.test(script.src))));
+          if (existing) {
+            if (!math?.startup?.promise) {
+              await new Promise((resolve, reject) => {
+                existing.addEventListener('load', resolve, { once: true });
+                existing.addEventListener('error', reject, { once: true });
+              });
+            }
+          } else {
+            // Keep site macros, delimiters and startup hooks when supplied.
+            const options = math || {};
+            window.MathJax = {
+              ...options,
+              loader: {
+                ...options.loader,
+                load: Array.from(new Set(['ui/safe', ...(options.loader?.load || [])]))
+              },
+              startup: { typeset: false, ...options.startup },
+              tex: {
+                tags: 'ams',
+                useLabelIds: true,
+                inlineMath: [['$', '$'], ['\\(', '\\)']],
+                displayMath: [['$$', '$$'], ['\\[', '\\]']],
+                processEscapes: true,
+                processEnvironments: true,
+                ...options.tex
+              }
+            };
+            await new Promise((resolve, reject) => {
+              const script = document.createElement('script');
+              script.src = config.url;
+              script.id = 'MathJax-script';
+              script.async = true;
+              script.onload = resolve;
+              script.onerror = reject;
+              document.head.appendChild(script);
+            });
+          }
+        }
+        math = window.MathJax;
+        await math.startup.promise;
+        return math;
+      })();
+    }
+    const math = await loading;
+    // A site owner can extend the v3 queue again on each navigation.
+    await math.startup.promise;
+    return math;
+  };
+
+  const unrendered = node => {
+    if (node.matches('mjx-container')) return [];
+    if (!node.querySelector('mjx-container')) return [node];
+    // In v3, scanning generated assistive MathML again produces nested output.
+    return Array.from(node.children).flatMap(unrendered);
+  };
+
+  const refresh = () => {
+    // A separate chain also serializes v3, without changing v4's startup promise.
+    queue = queue.then(async () => {
+      const notebooks = Array.from(document.querySelectorAll('.jupyter-wrapper'));
+      if (!notebooks.length && !previous.length) return;
+      if (notebooks.length === previous.length &&
+          notebooks.every((node, index) => node === previous[index])) return;
+      const math = await ready();
+      if (previous.length) {
+        math.typesetClear(previous);
+        math.texReset();
+      }
+      previous = notebooks.filter(node => node.isConnected);
+      const pending = previous.flatMap(unrendered);
+      if (pending.length) await math.typesetPromise(pending);
+    }).catch(error => console.error('mkdocs-jupyter: MathJax rendering failed', error));
+    return queue;
+  };
+
+  window.mkdocsJupyterMathJax = { refresh };
+  const start = () => {
+    if (typeof document$ !== 'undefined') document$.subscribe(refresh);
+    else refresh();
+  };
+  // Theme bundles and user-provided MathJax scripts can follow notebook content.
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', start, { once: true });
+  } else start();
+})();
+
+</script>
+</body>
+</html>
