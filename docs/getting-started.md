@@ -26,8 +26,10 @@ esn.train(y)                             # ridge regression + Bayesian hyperpara
 
 Training accepts a single trajectory `(Nt, N_dim)`, a batch of segments
 `(L, Nt, N_dim)`, or a ragged list of segments of different lengths. After
-training, `esn.step(u, r)` advances the reservoir one step; washout (open loop on
-observed data) followed by closed-loop prediction is shown end to end in the
+training, `esn.open_loop(U)` drives the network by the data `U` (washout) and
+`esn.forecast(u, r, n_steps)` runs the closed loop from its last output and
+reservoir state (see [Forecasting](training.md#forecasting)); `esn.step(u, r)`
+advances the reservoir one step. Both are shown end to end in the
 [tutorials](index.md#tutorials).
 
 Every option of `EchoStateNetwork`, i.e. a class attribute such as `N_units` or
