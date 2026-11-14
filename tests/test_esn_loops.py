@@ -1,4 +1,5 @@
-"""open_loop, closed_loop_step and forecast: the public loops of a trained network."""
+"""open_loop, closed_loop_step and forecast: the public loops of a trained network, and state_positions of a single
+reservoir."""
 import numpy as np
 import pytest
 
@@ -138,3 +139,18 @@ def test_from_arrays_has_the_loops():
             for x, y in zip((Y, R) + out, ref):
                 np.testing.assert_array_equal(x, y)
 
+
+def test_state_positions_of_a_single_reservoir():
+    for win in ('sparse', 'sparse_dense_bias'):
+        esn, _ = _trained(Win_type=win)
+        W = esn.Win[:, :esn.N_dim]
+        W = np.abs(W.toarray() if hasattr(W, 'toarray') else W)
+        expected = np.concatenate([np.arange(esn.N_dim), np.where(W.max(1) > 0, W.argmax(1), np.nan)])
+        np.testing.assert_array_equal(esn.state_positions, expected)
+        assert esn.state_positions.shape == (esn.N_dim + esn.N_r,)
+    # a unit that reads several components has no position
+    dense, _ = _trained(Win_type='dense')
+    with pytest.raises(ValueError, match='no position'):
+        dense.state_positions
+    with pytest.raises(ValueError, match='no position'):
+        EchoStateNetwork(np.zeros((8, 1))).state_positions

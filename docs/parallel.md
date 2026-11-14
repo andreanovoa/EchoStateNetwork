@@ -209,14 +209,17 @@ esn.input_parameters = np.array([[8.0]])              # the forcing of the forec
 
 Covariance localization in data assimilation tapers the covariance between two
 state components with the distance between them, which requires a position for
-every component. The rows of a single reservoir have no position: through the
-reservoir matrix, every unit depends on every site, and the readout maps every
-unit to every site. With the parallel layout, every reservoir row belongs to
-one patch, which reads only its window. `state_positions`
+every component. With the parallel layout, every reservoir row belongs to one
+patch, which reads only its window. `state_positions`
 returns the position, in units of sites, of every row of the state
 $[\mathbf{u}; \mathbf{r}]$: output $i$ lies at site $i$, and every row of
 $\mathbf{r}_p$ lies at the centre of patch $p$, $pG + (G-1)/2$. On a ring, the
-positions are periodic with period $N$. These are the positions that a local
+positions are periodic with period $N$. A single reservoir whose input matrix
+connects every unit to one site at most (`Win_type` `'sparse'` or
+`'sparse_dense_bias'`) places each unit at the site that it reads; a unit fed
+only by the bias has no position (`nan`). This position is approximate: through
+the reservoir matrix, every unit depends on every site. A dense input matrix
+has no positions (`ValueError`). These are the positions that a local
 ensemble transform Kalman filter requires, e.g. the `state_positions` argument
 of biasda, with `loc_period` equal to $N$ on a ring.
 
@@ -249,14 +252,8 @@ esn = EchoStateNetwork(X[:1].T, dt=0.02, upsample=1,
                        t_train=200.0, t_val=40.0)
 esn.train(X)                           # one readout, fitted on the 20 patches at once
 
-r = np.zeros((esn.N_r, 1))             # 20 reservoirs of 300 units, stacked: 6000 rows
-for u_in in wash:                      # open-loop washout on observed data
-    u, r = esn.step(u_in[:, None], r)
-
-forecast = []
-for _ in range(n_steps):               # closed-loop forecast
-    u, r = esn.step(esn.outputs_to_inputs(u), r)
-    forecast.append(u[:, 0])
+Y, R = esn.open_loop(wash)             # washout; R: 20 reservoirs of 300 units, stacked: 6000 rows
+forecast, u, r = esn.forecast(Y[-1], R[-1], n_steps)   # closed-loop forecast
 
 positions = esn.state_positions        # (40 + 6000,): sites of the rows of [u; r]
 ```

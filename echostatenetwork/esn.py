@@ -872,9 +872,13 @@ class EchoStateNetwork:
     def state_positions(self) -> np.ndarray:
         """np.ndarray: Position, in units of sites, of every row of the state
         ``[u; r]`` with ``u`` the ``N_dim`` outputs and ``r`` the ``N_r`` reservoir
-        rows, shape ``(N_dim + N_r,)``. Output ``i`` lies at site ``i`` and every
-        row of the reservoir of patch ``p`` lies at the centre of the patch,
-        ``p * patch_size + (patch_size - 1) / 2``. These are the positions that
+        rows, shape ``(N_dim + N_r,)``. Output ``i`` lies at site ``i``. With the
+        parallel layout, every row of the reservoir of patch ``p`` lies at the centre
+        of the patch, ``p * patch_size + (patch_size - 1) / 2``. A single reservoir
+        whose `Win` connects every unit to at most one state component (``Win_type``
+        'sparse' or 'sparse_dense_bias') places each unit at the site of that
+        component, ``observed_idx[argmax |Win[i, :n_obs]|]``; a unit fed only by the
+        bias (or the parameters) has no position (nan). These are the positions that
         covariance localization in data assimilation requires (e.g. the
         ``state_positions`` of a local ensemble transform Kalman filter); on a
         periodic domain the period is ``N_dim`` sites. The reservoir rows alone are
@@ -883,12 +887,23 @@ class EchoStateNetwork:
         Raises
         ------
         ValueError
-            Without the parallel layout: a single reservoir reads every site, so
-            its rows have no position.
+            For a single reservoir before `Win` is drawn, or whose `Win` connects a
+            unit to more than one state component (e.g. ``Win_type='dense'``): such a
+            unit reads several sites, so it has no position.
         """
         if self.patch_size is None:
-            raise ValueError('a single reservoir reads every site, so its rows have no position: '
-                             'set patch_size for the parallel layout.')
+            if getattr(self, '_Win', None) is None:
+                raise ValueError('a single reservoir has no position before Win is drawn: train the network or '
+                                 'call _generate_W_Win.')
+            n_obs = len(self.observed_idx)
+            W = self.Win[:, :n_obs]
+            W = abs(W.toarray() if issparse(W) else np.asarray(W))
+            if ((W > 0).sum(axis=1) > 1).any():
+                raise ValueError('a unit of this single reservoir reads more than one state component, so it has '
+                                 'no position: use Win_type sparse or sparse_dense_bias, or the parallel layout '
+                                 '(patch_size).')
+            sites = np.where(W.max(axis=1) > 0, np.asarray(self.observed_idx)[W.argmax(axis=1)], np.nan)
+            return np.concatenate([np.arange(self.N_dim, dtype=float), sites])
         centres = np.arange(self.N_patches) * self.patch_size + (self.patch_size - 1) / 2
         return np.concatenate([np.arange(self.N_dim, dtype=float), np.repeat(centres, self.N_units)])
 

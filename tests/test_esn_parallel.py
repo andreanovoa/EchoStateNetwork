@@ -452,7 +452,7 @@ def test_errors_of_the_parallel_api():
     # a non-periodic domain pads the windows, so the halo may exceed the domain
     padded = EchoStateNetwork(np.zeros((8, 1)), patch_size=2, halo=4, periodic=False)
     assert (padded.patch_sites == -1).any()
-    # a single reservoir has no positions and no patches
+    # a single reservoir has no patches (and no positions before Win is drawn)
     single = EchoStateNetwork(np.zeros((8, 1)))
     assert (single.N_patches, single.N_r) == (1, single.N_units)
     with pytest.raises(ValueError, match='no position'):
