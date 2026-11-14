@@ -10,7 +10,7 @@ import logging
 import os
 import pickle
 from concurrent.futures import ProcessPoolExecutor
-from contextlib import redirect_stdout, suppress
+from contextlib import contextmanager, redirect_stdout, suppress
 from copy import deepcopy
 
 # Validation methods
@@ -872,9 +872,13 @@ class EchoStateNetwork:
     def state_positions(self) -> np.ndarray:
         """np.ndarray: Position, in units of sites, of every row of the state
         ``[u; r]`` with ``u`` the ``N_dim`` outputs and ``r`` the ``N_r`` reservoir
-        rows, shape ``(N_dim + N_r,)``. Output ``i`` lies at site ``i`` and every
-        row of the reservoir of patch ``p`` lies at the centre of the patch,
-        ``p * patch_size + (patch_size - 1) / 2``. These are the positions that
+        rows, shape ``(N_dim + N_r,)``. Output ``i`` lies at site ``i``. With the
+        parallel layout, every row of the reservoir of patch ``p`` lies at the centre
+        of the patch, ``p * patch_size + (patch_size - 1) / 2``. A single reservoir
+        whose `Win` connects every unit to at most one state component (``Win_type``
+        'sparse' or 'sparse_dense_bias') places each unit at the site of that
+        component, ``observed_idx[argmax |Win[i, :n_obs]|]``; a unit fed only by the
+        bias (or the parameters) has no position (nan). These are the positions that
         covariance localization in data assimilation requires (e.g. the
         ``state_positions`` of a local ensemble transform Kalman filter); on a
         periodic domain the period is ``N_dim`` sites. The reservoir rows alone are
@@ -883,12 +887,23 @@ class EchoStateNetwork:
         Raises
         ------
         ValueError
-            Without the parallel layout: a single reservoir reads every site, so
-            its rows have no position.
+            For a single reservoir before `Win` is drawn, or whose `Win` connects a
+            unit to more than one state component (e.g. ``Win_type='dense'``): such a
+            unit reads several sites, so it has no position.
         """
         if self.patch_size is None:
-            raise ValueError('a single reservoir reads every site, so its rows have no position: '
-                             'set patch_size for the parallel layout.')
+            if getattr(self, '_Win', None) is None:
+                raise ValueError('a single reservoir has no position before Win is drawn: train the network or '
+                                 'call _generate_W_Win.')
+            n_obs = len(self.observed_idx)
+            W = self.Win[:, :n_obs]
+            W = abs(W.toarray() if issparse(W) else np.asarray(W))
+            if ((W > 0).sum(axis=1) > 1).any():
+                raise ValueError('a unit of this single reservoir reads more than one state component, so it has '
+                                 'no position: use Win_type sparse or sparse_dense_bias, or the parallel layout '
+                                 '(patch_size).')
+            sites = np.where(W.max(axis=1) > 0, np.asarray(self.observed_idx)[W.argmax(axis=1)], np.nan)
+            return np.concatenate([np.arange(self.N_dim, dtype=float), sites])
         centres = np.arange(self.N_patches) * self.patch_size + (self.patch_size - 1) / 2
         return np.concatenate([np.arange(self.N_dim, dtype=float), np.repeat(centres, self.N_units)])
 
@@ -1428,6 +1443,131 @@ class EchoStateNetwork:
         else:
             return np.concatenate([observed_state, self.input_parameters], axis=0)
 
+
+    # ______________________________________________________________________________ OPEN AND CLOSED LOOP
+    @contextmanager
+    def _parameters_of_columns(self, input_parameters, n_cols):
+        """Set `input_parameters` to one column per ensemble member for the duration of the block, and restore the
+        network's own afterwards, also after an exception. `input_parameters`: None (the network's own, unchanged),
+        a scalar or an ``(N_param,)`` vector (the same for every column), ``(n_cols,)`` with one parameter, or
+        ``(N_param, n_cols)``."""
+        if input_parameters is None:
+            yield
+            return
+        if self.input_parameters is None:
+            raise ValueError('input_parameters given to a network trained without input_parameters')
+        n_param = self._n_param(self.input_parameters)
+        p = np.asarray(input_parameters, dtype=float)
+        if p.ndim < 2:
+            p = p.reshape(1, -1) if n_param == 1 else p.reshape(n_param, 1)
+        p = np.array(np.broadcast_to(p, (n_param, n_cols)))
+        own = self.input_parameters
+        self.input_parameters = p
+        try:
+            yield
+        finally:
+            self.input_parameters = own
+
+    def closed_loop_step(self, u, r, input_parameters=None):
+        """One closed-loop step: the output `u` fed back as the next input (`outputs_to_inputs`), then `step`.
+
+        Parameters
+        ----------
+        u : np.ndarray
+            Physical output of the previous step, every site, shape ``(N_dim, N_ens)`` (or ``(N_dim,)``).
+        r : np.ndarray
+            Reservoir state, shape ``(N_r, N_ens)``.
+        input_parameters : float or np.ndarray, optional
+            Parameters of a parametric network for this step: a scalar or ``(N_param,)`` for every member,
+            ``(N_ens,)`` (one parameter) or ``(N_param, N_ens)`` for one per member. None (default) uses the
+            network's own `input_parameters`. The network's own are restored afterwards.
+
+        Returns
+        -------
+        u_out : np.ndarray
+            Physical output, shape ``(N_dim, N_ens)``: the prediction of the next frame.
+        r_out : np.ndarray
+            Reservoir state, shape ``(N_r, N_ens)``.
+        """
+        n_cols = 1 if np.ndim(u) == 1 else np.shape(u)[-1]
+        with self._parameters_of_columns(input_parameters, n_cols):
+            return self.step(self.outputs_to_inputs(u), r)
+
+    def _single_step(self, u, r):
+        """Alias of `closed_loop_step` (the name of earlier versions)."""
+        return self.closed_loop_step(u, r)
+
+    def open_loop(self, U, r0=None, input_parameters=None):
+        """Drive the network open loop by the data `U`, from the reservoir state `r0` (default zero): a washout,
+        or a run of one-step-ahead predictions.
+
+        Each row of `U` is a physical state (every site); `outputs_to_inputs` selects the observed components and
+        appends the parameters. Output ``k`` is the prediction of the frame after ``U[k]``: the last output,
+        ``Y[-1]``, predicts the frame after the data, and starts the closed loop (`forecast`).
+
+        Parameters
+        ----------
+        U : np.ndarray
+            Data, shape ``(n, N_dim)`` for one network or ``(n, N_dim, N_ens)`` for an ensemble.
+        r0 : np.ndarray, optional
+            Initial reservoir state, ``(N_r, N_ens)``; zeros by default.
+        input_parameters : float or np.ndarray, optional
+            Parameters of a parametric network during the drive, as in `closed_loop_step`.
+
+        Returns
+        -------
+        Y : np.ndarray
+            Outputs after each datum, ``(n, N_dim)`` (or ``(n, N_dim, N_ens)``).
+        R : np.ndarray
+            Reservoir states after each datum, ``(n, N_r)`` (or ``(n, N_r, N_ens)``).
+        """
+        U = np.asarray(U)
+        n_cols = 1 if U.ndim == 2 else U.shape[-1]
+        r = np.zeros((self.N_r, n_cols)) if r0 is None else np.asarray(r0).reshape(self.N_r, n_cols)
+        Y, R = np.empty((len(U), self.N_dim, n_cols)), np.empty((len(U), self.N_r, n_cols))
+        with self._parameters_of_columns(input_parameters, n_cols):
+            for k, u_in in enumerate(U):
+                Y[k], R[k] = self.step(self.outputs_to_inputs(u_in.reshape(self.N_dim, n_cols)), r)
+                r = R[k]
+        return (Y[..., 0], R[..., 0]) if U.ndim == 2 else (Y, R)
+
+    def forecast(self, u, r, n_steps, input_parameters=None):
+        """Closed-loop forecast of `n_steps` steps from the output `u` and reservoir state `r` (e.g. the last
+        output and state of an open-loop washout, `open_loop`).
+
+        Alignment: `u` is the prediction of a frame, say data row ``k``; ``Y[i]`` is the output after ``i + 1``
+        steps, the prediction of row ``k + 1 + i``. After a washout on ``wash``, ``u = Y_open[-1]`` predicts row
+        ``len(wash)`` and the forecast ``Y[i]`` row ``len(wash) + 1 + i``; prepend `u` for a forecast that starts
+        at row ``len(wash)``.
+
+        Parameters
+        ----------
+        u : np.ndarray
+            Physical output, every site, ``(N_dim, N_ens)`` (or ``(N_dim,)``).
+        r : np.ndarray
+            Reservoir state, ``(N_r, N_ens)`` (or ``(N_r,)``).
+        n_steps : int
+            Number of closed-loop steps.
+        input_parameters : float or np.ndarray, optional
+            Parameters of a parametric network during the forecast, as in `closed_loop_step`.
+
+        Returns
+        -------
+        Y : np.ndarray
+            Outputs, ``(n_steps, N_dim, N_ens)``.
+        u : np.ndarray
+            Last output, ``(N_dim, N_ens)`` (``Y[-1]``; `u` itself when ``n_steps = 0``).
+        r : np.ndarray
+            Last reservoir state, ``(N_r, N_ens)``: ``forecast(u, r, n)`` continues the forecast.
+        """
+        u = np.asarray(u).reshape(self.N_dim, -1)
+        r = np.asarray(r).reshape(self.N_r, -1)
+        Y = np.empty((n_steps,) + u.shape)
+        with self._parameters_of_columns(input_parameters, u.shape[1]):
+            for i in range(n_steps):
+                u, r = self.closed_loop_step(u, r)
+                Y[i] = u
+        return Y, u, r
 
     def Jacobian(self, u_in, r_in, open_loop_J=True):
         r"""Analytical Jacobian of the one-step map, $\mathbf{J} = \partial\mathbf{u}_{n+1}/\partial\mathbf{u}_n$,

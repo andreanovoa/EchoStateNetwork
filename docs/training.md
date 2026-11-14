@@ -264,20 +264,25 @@ prediction is fed back as the next input and the network runs autonomously.*
   parameter columns); the model runs autonomously.
 
 ```python
-r = np.zeros((esn.N_units, 1))
-u = np.zeros((esn.N_dim, 1))
-for u_in in wash:                      # open-loop washout on true history
-    u, r = esn.step(u_in[:, None], r)
-
-forecast = []
-for _ in range(n_steps):               # closed-loop forecast
-    u, r = esn.step(esn.outputs_to_inputs(u), r)
-    forecast.append(u[:, 0])
+Y_wash, R_wash = esn.open_loop(wash)   # open-loop washout on true history, from r = 0
+forecast, u, r = esn.forecast(Y_wash[-1], R_wash[-1], n_steps)   # closed loop
 ```
 
-Alignment: the washout's last output is the one-step-ahead prediction of the
-frame *after* `wash`, so closed-loop prediction `i` corresponds to data row
-`len(wash) + 1 + i`.
+`open_loop(U, r0=None)` drives the network by the rows of `U`, shape
+`(n, N_dim)`, or `(n, N_dim, N_ens)` for an ensemble, and returns the output and
+the reservoir state after each row. `forecast(u, r, n_steps)` feeds every output
+back as the next input and returns the `(n_steps, N_dim, N_ens)` outputs with the
+last output and reservoir state, from which a later call continues.
+`closed_loop_step(u, r)` is one step of that loop,
+`step(outputs_to_inputs(u), r)`. Each of the three takes
+`input_parameters=` for a parametric network: a scalar or an `(N_param,)` vector
+for every member, or one column per member, `(N_param, N_ens)`. The network's
+own `input_parameters` are restored afterwards, also after an exception.
+
+Alignment: the washout's last output, `Y_wash[-1]`, is the one-step-ahead
+prediction of the frame *after* `wash`, so closed-loop prediction `forecast[i]`
+corresponds to data row `len(wash) + 1 + i`. Prepend `Y_wash[-1]` for a forecast
+that starts at row `len(wash)`.
 
 `run_test()` packages this — open-loop washout, closed-loop forecast, error
 against truth — over the held-out test tail, with plots. For a fair error
