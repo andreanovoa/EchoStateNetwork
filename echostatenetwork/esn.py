@@ -310,6 +310,9 @@ class EchoStateNetwork:
 
     bias_in = np.array([0.1])
     bias_in_range = (0.0, 2.0)   # searched when 'bias_in' is in hyperparameters_to_optimize
+    # scale_bias_in: True multiplies the bias column by sigma_in, like the state (sigma_in W_in [u; b_in]);
+    # False leaves it out of the input scaling, so bias_in alone sets the offset b_in W_in,b of each neuron
+    scale_bias_in = True
     bias_out = np.array([1.0])
     regularize_bias_out = True   # False: the Tikhonov factor leaves the bias row of the readout out
 
@@ -1285,6 +1288,12 @@ class EchoStateNetwork:
             if ratio.ndim and self.patch_size is not None:       # per-member values: the patches are columns
                 ratio = np.tile(ratio, self.N_patches)
             u_aug[first:first + n_par] = u_aug[first:first + n_par] * ratio
+        if not self.scale_bias_in:
+            # the bias row unscaled: divide out the sigma_in that the product below applies
+            inv = 1.0 / np.asarray(self.sigma_in, dtype=float)
+            if inv.ndim and self.patch_size is not None:         # per-member values: the patches are columns
+                inv = np.tile(inv, self.N_patches)
+            u_aug[-1:] = u_aug[-1:] * inv
 
         # Forecast the reservoir state (leaky-integrator; leak_rate=1 -> plain tanh)
         x_tanh = np.tanh(self.sigma_in * self.Win.dot(u_aug) + self.rho * self.W.dot(r))
@@ -2346,6 +2355,7 @@ class EchoStateNetwork:
                    param_in_reservoir=bool(self.param_in_reservoir), connect=int(self.connect),
                    optimize_parameter_normalization=str(self.optimize_parameter_normalization),
                    bias_in=np.asarray(self.bias_in), bias_out=np.asarray(self.bias_out),
+                   scale_bias_in=bool(self.scale_bias_in),
                    observed_idx=np.asarray(self.observed_idx),
                    norm=np.asarray(self.norm), shift=np.asarray(self.shift))
         if self.patch_size is not None:
@@ -2411,6 +2421,8 @@ class EchoStateNetwork:
                   **({'param_in_reservoir': bool(np.asarray(arrays['param_in_reservoir']))}
                      if 'param_in_reservoir' in arrays else {}),
                   **({'connect': int(np.asarray(arrays['connect']))} if 'connect' in arrays else {}),
+                  **({'scale_bias_in': bool(np.asarray(arrays['scale_bias_in']))}
+                     if 'scale_bias_in' in arrays else {}),
                   **({'optimize_parameter_normalization': {'True': True, 'False': False}.get(
                       str(np.asarray(arrays['optimize_parameter_normalization'])),
                       str(np.asarray(arrays['optimize_parameter_normalization'])))}

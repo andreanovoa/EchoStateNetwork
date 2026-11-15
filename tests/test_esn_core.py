@@ -322,6 +322,25 @@ def test_leak_rate_default_is_plain_tanh_step():
     np.testing.assert_allclose(esn.step(u, r)[1], expected)
 
 
+def test_unscaled_bias_enters_without_sigma_in():
+    # scale_bias_in=False: tanh(sigma_in W_in,1 u + b_in W_in,b + rho W r), and the option survives to_arrays
+    rng = np.random.default_rng(13)
+    data = rng.normal(size=(60, 3))
+    esn = EchoStateNetwork(data.T, dt=1, N_units=12, upsample=1, t_train=30, t_val=10, t_test=10, N_wash=5,
+                           sigma_in=0.01, bias_in=np.array([0.7]), scale_bias_in=False,
+                           hyperparameters_to_optimize=[])
+    esn.train(data, plot_training=False)
+    u, r = data[:1].T, rng.normal(size=(esn.N_units, 2))
+    u = np.repeat(u, 2, axis=1)
+    Win = esn.Win.toarray()
+    expected = np.tanh(esn.sigma_in * Win[:, :-1] @ esn.normalize_input(u) + 0.7 * Win[:, -1:]
+                       + esn.rho * esn.W.dot(r))
+    np.testing.assert_allclose(esn.step(u, r)[1], expected)
+    loaded = EchoStateNetwork.from_arrays(esn.to_arrays())
+    assert loaded.scale_bias_in is False
+    np.testing.assert_allclose(loaded.step(u, r)[1], expected)
+
+
 def test_leaky_step_matches_leaky_integrator_formula():
     rng = np.random.default_rng(12)
     data = rng.normal(size=(60, 3))
