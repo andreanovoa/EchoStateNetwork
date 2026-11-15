@@ -65,13 +65,12 @@ $\mathbf{W}_\mathrm{in}$ and $\mathbf{W}$, with the seed of the first one
 (`train(n_seeds=...)`, `seed`). With more than one realization, `train()` trains every
 realization in its own process, with its own hyperparameter search, and keeps the
 realization with the lowest validation score. The sparse input matrix
-(`'sparse'`, the class default) connects each unit to one column of
+(`'sparse'`) connects each unit to one column of
 $[\tilde{\boldsymbol u}_n;\, b_\mathrm{in}]$, so only about one unit in $N_\mathrm{in}+1$ sees
 the input bias. The other units are odd in the input, because the tanh is odd, and a
 reservoir of such units can learn a mirror image of the attractor (Herteux & Räth,
 2020). The dense bias column (`'sparse_dense_bias'`) keeps one input column per unit
-but gives the bias to every unit, which breaks this symmetry, so the builder selects
-it by default. The dense matrix (`'dense'`) connects every unit to every column.
+but gives the bias to every unit, which breaks this symmetry; it is the default. The dense matrix (`'dense'`) connects every unit to every column.
 
 **Hyperparameters.** For each of the spectral radius, $\rho$, the input scaling,
 $\sigma_\mathrm{in}$, the Tikhonov factor, $\beta$, and the leak rate, $\alpha$: either a

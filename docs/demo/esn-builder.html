@@ -858,7 +858,7 @@ function code(s) {
   opt("noise", s.noise, DEFAULTS.noise);
   opt("connect", s.connect, DEFAULTS.connect);
   if (s.seed !== 0 || s.nseeds > 1) kw.push(["seed", s.seed]);
-  if (s.win !== "sparse") kw.push(["Win_type", s.win]);
+  if (s.win !== "sparse_dense_bias") kw.push(["Win_type", s.win]);
   if (s.par) {
     kw.push(["patch_size", s.G], ["halo", s.H]);
     if (!s.periodic) kw.push(["periodic", false]);
