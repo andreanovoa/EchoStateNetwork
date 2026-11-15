@@ -74,7 +74,7 @@ def test_the_first_train_keeps_a_reservoir_drawn_before_it_whatever_the_seed():
 
 
 @pytest.mark.parametrize('option', [dict(N_units=30), dict(connect=6), dict(Win_type='dense'),
-                                    dict(Win_type='sparse_dense_bias'), dict(observed_idx=np.array([0, 2]))])
+                                    dict(Win_type='sparse'), dict(observed_idx=np.array([0, 2]))])
 def test_a_changed_option_draws_the_reservoir_that_a_new_network_draws(option):
     # issue #7, item 1: a changed option draws the reservoir, and fits the readout, that a new network with this
     # option draws from the same seed

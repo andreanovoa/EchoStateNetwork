@@ -408,7 +408,7 @@ class EchoStateNetwork:
     t_train = None
     t_test = 0.5
     upsample = 5
-    Win_type = 'sparse'
+    Win_type = 'sparse_dense_bias'
     norm_method = 'range'
 
     # Default hyperparameters and optimization ranges.
@@ -599,13 +599,14 @@ class EchoStateNetwork:
     @property
     def Win(self) -> np.ndarray | csr_matrix:
         """The input matrix, shape ``(N_units, N_dim_in + 1)`` (the last column
-        multiplies the input bias `bias_in`). Sparse (``Win_type='sparse'``, one
-        random connection per neuron to a state or bias column, but densely
-        connected to any `input_parameters` columns), sparse with a dense bias
+        multiplies the input bias `bias_in`). By default sparse with a dense bias
         column (``Win_type='sparse_dense_bias'``: one state column per neuron, and
         every neuron sees the bias, which breaks the odd symmetry of the tanh
-        reservoir in all units; Herteux & Räth 2020) or dense
-        (``Win_type='dense'``); see `_generate_W_Win`. With the parallel layout
+        reservoir in all units; Herteux & Räth 2020). The alternatives are sparse
+        (``Win_type='sparse'``: one random connection per neuron to a state or bias
+        column, so only about one neuron in ``N_dim_in + 1`` sees the bias) and
+        dense (``Win_type='dense'``). Both sparse types connect every neuron to any
+        `input_parameters` columns; see `_generate_W_Win`. With the parallel layout
         (`patch_size`), the input matrix that the patches share, shape
         ``(N_units, patch_size + 2 * halo + 1)``: its columns are the sites of a
         window (`patch_sites`) and the bias. With independent patches
