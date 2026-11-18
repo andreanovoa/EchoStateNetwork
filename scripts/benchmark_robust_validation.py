@@ -480,7 +480,12 @@ def report_step2(s2):
         ol = 'yes' if d['ref_folds'][0][2] else 'no'
         lines.append(f'  {name:<4} {_spans(d["ref_folds"], 9):<46} {_spans(d["pkg_folds"], 9):<46} {ol:>6}')
     lines += ['  (OL 1st: the first scored step of the reference is the open-loop readout of the washed-out '
-              'state; every scored step of the package is closed loop)', '',
+              'state; every scored step of the package is closed loop)',
+              '  (Fold placement is a convention, not a bug. The package does not score the open-loop readout, so it '
+              'has one target fewer than the reference after the washout:',
+              f'   KFC fits 8 of the 9 folds 1 LT apart, and RVC spreads its folds {N_WTV - 1 - N_WASH - N_VAL} // 8 = '
+              f'{(N_WTV - 1 - N_WASH - N_VAL) // 8} rows apart from row {N_WASH + 1}. The grid ranking and the '
+              'argmin agree (rS above).)', '',
               f'  at (rho, sigma_in) = {HP_PROBE}:  objective of each code, both metrics',
               f'  {"":4} {"ref log10MSE":>13} {"pkg log10MSE":>13} {"ref log10nMAE":>14} {"pkg log10nMAE":>14}'
               f' {"tikh=1e-6: ref":>15} {"pkg":>8}',
