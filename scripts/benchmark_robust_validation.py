@@ -33,7 +33,7 @@ Four comparisons, in order:
    log10 MSE, which leaves the fold conventions and the Gaussian-process kernel as the only
    differences) and ``native`` (the package with its own conventions and matrices of the same
    seed; only data, budget, ranges and Tikhonov factor shared). ``--quick``: 5 seeds, a
-   3 x 3 grid + 3 points and 20 test intervals (about 30 s on 20 workers).
+   3 x 3 grid + 3 points and 20 test intervals (about a minute on 4 workers).
 4. Runtime of one training, one validation evaluation and one full search, both codes.
 
 Outputs (written next to this script): ``benchmark_robust_validation.npz`` (all numbers,
@@ -41,7 +41,7 @@ the stdout report included) and ``benchmark_robust_validation.{pdf,png}`` (step 
 prediction horizon per strategy, both codes, seeds as points).
 
 Run:  git clone --depth 1 https://github.com/MagriLab/Robust-Validation-ESN <dir>
-      python scripts/benchmark_robust_validation.py --reference <dir> [--quick]
+      python scripts/benchmark_robust_validation.py --reference <dir> [--quick] [--workers N]
       [--report-only]   # reload the npz and regenerate the report and the figure
 """
 import os
@@ -555,11 +555,11 @@ def member_task(task):
                 mse=float(mse), ph=float(ph), t_search=t_search, wall=time.perf_counter() - t0, **extra)
 
 
-def run_step3(ref_dir, cfg):
+def run_step3(ref_dir, cfg, n_workers):
     tasks = [dict(arm=arm, strategy=name, seed=seed, ref_dir=str(ref_dir), **{k: cfg[k] for k in
                   ('n_grid', 'n_func_evals', 'n_test')})
              for arm in ARMS for name in E2E_STRATEGIES for seed in cfg['seeds']]
-    n_workers = max(1, min(len(tasks), os.cpu_count() - 4))
+    n_workers = max(1, min(len(tasks), n_workers))
     print(f'{len(tasks)} searches on {n_workers} workers ...', flush=True)
     results, t0 = [], time.perf_counter()
     with ProcessPoolExecutor(max_workers=n_workers, mp_context=get_context('spawn')) as ex:
@@ -759,6 +759,8 @@ def main():
     parser.add_argument('--reference', default=os.environ.get('ROBUST_VALIDATION_ESN'),
                         help='the clone of MagriLab/Robust-Validation-ESN (or its source/ folder)')
     parser.add_argument('--quick', action='store_true', help='5 seeds, 3x3 grid + 3 points, 20 test intervals')
+    parser.add_argument('--workers', type=int, default=int(os.environ.get('N_WORKERS', 4)),
+                        help='worker processes of step 3 (default 4, or N_WORKERS; each takes a few hundred MB)')
     parser.add_argument('--report-only', action='store_true', help='reload the npz, redo the report and figure')
     args = parser.parse_args()
     matplotlib.use('Agg')
@@ -793,7 +795,7 @@ def main():
     rep2 = report_step2(s2) + '\n\n  RVC washout from r = 0 over 1 LT vs the state of the open-loop pass, ' \
         'max |dr| over the fold starts: ' + ', '.join(f'rho {k:.3g}: {v:.1e}' for k, v in esc.items())
     print('\n' + rep2, flush=True)
-    results = run_step3(ref_dir, cfg)
+    results = run_step3(ref_dir, cfg, args.workers)
     rep3 = report_step3(results, cfg)
     print('\n' + rep3, flush=True)
     s4 = step4(ref_dir, results)
