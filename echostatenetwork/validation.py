@@ -171,7 +171,7 @@ def RVC_Noise(x, case, U_wtv, Y_wtv, tikh_opt, hp_names, print_convergence=True)
 
     # Train using tv: Wout_tik is passed with all the combinations of tikh_ and target noise
     # This must result in L-Xa timeseries
-    LHS, RHS, _, _ = case._compute_RR_terms(U_wtv, Y_wtv)
+    LHS, RHS, _, _ = case._compute_RR_terms(U_wtv, Y_wtv, keep_states=False)
     Wout_tik = np.empty((N_tikh,) + RHS.shape)
 
     # print(f'Computing Wout for tikhonov values: {case.tikh_range}')
