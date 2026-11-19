@@ -112,6 +112,7 @@ def test_parameters_added_or_removed_by_train():
     esn.train(two, plot_training=False)
     esn.train(two, plot_training=False, input_parameters=np.array([[0.0, 1.0]]), force=True)
     assert esn.Win.shape == (15, 5) and esn.Wout.shape == (16, 3) and np.isfinite(esn.Wout).all()
+    assert esn.optimize_parameter_normalization and 'param_shift_0' in esn.hyperparameters_to_optimize
     esn = EchoStateNetwork(DATA.T, **QUICK, **GIVEN, input_parameters=np.array([[0.0, 1.0]]), N_grid=1,
                            N_func_evals=2)
     esn.train(two, plot_training=False)
