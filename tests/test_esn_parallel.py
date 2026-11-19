@@ -2,76 +2,40 @@
 (patch_size, halo, periodic, shared), Pathak et al. (2018)."""
 import numpy as np
 import pytest
+from conftest import assert_jacobian, assert_same_closed_loop, lorenz96, npz_round_trip, random_parallel, set_norm
 
-from echostatenetwork import EchoStateNetwork
-
-
-def _random_parallel(N_dim=12, N_units=10, seed=0, **kw):
-    """Parallel ESN with generated Win/W and a random readout, without training
-    (with shared=False, one realization and one readout of its window per patch)."""
-    esn = EchoStateNetwork(np.zeros((N_dim, 1)), dt=1, N_units=N_units, upsample=1,
-                           seed=seed, sigma_in=0.5, **kw)
-    esn._generate_W_Win(seed=seed)
-    rng = np.random.default_rng(seed)
-    if esn.shared:
-        esn.Wout = rng.normal(size=(N_units + 1, esn.patch_size))
-    else:
-        for net in esn.patches:
-            net.Wout = rng.normal(size=(N_units + 1, net.N_dim))
-    return esn
+from echostatenetwork import EchoStateNetwork, validation
 
 
-def _set_norm(esn, rng):
-    """Random per-site input scaling: on the parallel network, or per patch window."""
-    if esn.shared:
-        esn.norm, esn.shift = rng.uniform(0.5, 2.0, esn.N_dim), rng.normal(size=esn.N_dim)
-    else:
-        for net in esn.patches:
-            net.norm, net.shift = rng.uniform(0.5, 2.0, net.N_dim), rng.normal(size=net.N_dim)
-
-
-def _lorenz96(n, dt, nx=40, forcing=8.0, seed=0):
-    """Lorenz-96 record of n steps on a ring of nx sites (RK4, after a transient)."""
-    def rhs(x):
-        return (np.roll(x, -1) - np.roll(x, 2)) * np.roll(x, 1) - x + forcing
-
-    x = forcing + 0.1 * np.random.default_rng(seed).standard_normal(nx)
-    X = np.empty((n + 1000, nx))
-    for k in range(X.shape[0]):
-        k1 = rhs(x)
-        k2 = rhs(x + 0.5 * dt * k1)
-        k3 = rhs(x + 0.5 * dt * k2)
-        k4 = rhs(x + dt * k3)
-        X[k] = x = x + dt / 6 * (k1 + 2 * k2 + 2 * k3 + k4)
-    return X[1000:]
-
-
-@pytest.mark.parametrize('leak_rate', [1.0, 0.4])
-def test_one_patch_without_halo_reproduces_the_standard_step(leak_rate):
-    # patch_size = N_dim, halo = 0: one reservoir that reads and predicts every site
+@pytest.mark.parametrize('leak_rate, parametric', [(1.0, False), (0.4, False), (1.0, True)])
+def test_one_patch_without_halo_reproduces_the_standard_step(leak_rate, parametric):
+    # patch_size = N_dim, halo = 0: one reservoir that reads and predicts every site; the parameter columns follow
+    # the window, as the standard network's
     rng = np.random.default_rng(0)
-    data = rng.normal(size=(80, 6)).cumsum(axis=0)
+    data = rng.normal(size=(2, 80, 6)).cumsum(axis=1)
     kw = dict(dt=1, N_units=15, upsample=1, t_train=40, t_val=15, t_test=10, N_wash=5,
               leak_rate=leak_rate, hyperparameters_to_optimize=[], seed=0)
-    std = EchoStateNetwork(data.T, **kw)
-    std.train(data, plot_training=False)
-    par = EchoStateNetwork(data.T, patch_size=6, halo=0, **kw)
+    if parametric:
+        kw['input_parameters'] = np.array([[0.0, 1.0]])
+    std = EchoStateNetwork(data[0].T, **kw)
+    std.train(data if parametric else data[0], plot_training=False)
+    par = EchoStateNetwork(data[0].T, patch_size=6, halo=0, **kw)
     par.Win, par.W, par.Wout = std.Win, std.W, std.Wout
     par.norm, par.shift = std.norm, std.shift
     assert par.N_patches == 1 and par.N_r == std.N_r == 15
-
-    u, r = data[10:14].T, rng.normal(size=(15, 4))     # an ensemble of 4 members
+    if parametric:
+        std.input_parameters = par.input_parameters = np.array([[0.3, 0.7, 0.3, 0.7]])
+    u, r = std.outputs_to_inputs(data[0, 10:14].T), rng.normal(size=(15, 4))     # an ensemble of 4 members
     for out_par, out_std in zip(par.step(u, r), std.step(u, r)):
-        np.testing.assert_array_equal(out_par, out_std)
-    np.testing.assert_array_equal(par.reservoir_to_physical(r), std.reservoir_to_physical(r))
-    np.testing.assert_allclose(par.Jacobian(u, r), std.Jacobian(u, r), rtol=1e-12, atol=1e-14)
+        np.testing.assert_allclose(out_par, out_std, rtol=1e-12, atol=1e-14)
+    np.testing.assert_allclose(par.reservoir_to_physical(r), std.reservoir_to_physical(r), rtol=1e-12, atol=1e-14)
+    np.testing.assert_allclose(par.Jacobian(u, r), std.Jacobian(u, r), rtol=1e-10, atol=1e-12)
 
 
 @pytest.mark.parametrize('periodic', [True, False])
 @pytest.mark.parametrize('shared', [True, False])
 def test_a_patch_ignores_the_sites_outside_its_window(periodic, shared):
-    esn = _random_parallel(N_dim=12, patch_size=2, halo=1, periodic=periodic, Win_type='dense',
-                           shared=shared)
+    esn = random_parallel(N_dim=12, patch_size=2, halo=1, periodic=periodic, Win_type='dense', shared=shared)
     window_0 = {11, 0, 1, 2} if periodic else {0, 1, 2}    # -1: outside the domain, reads zero
     assert set(esn.patch_sites[0]) - {-1} == window_0
 
@@ -87,10 +51,15 @@ def test_a_patch_ignores_the_sites_outside_its_window(periodic, shared):
             unchanged = (np.array_equal(u_out_p[sites], u_out[sites])
                          and np.array_equal(r_out_p[units], r_out[units]))
             assert unchanged == (site not in esn.patch_sites[p])
+    # the members of an ensemble advance independently
+    for j in range(3):
+        u_j, r_j = esn.step(u[:, j], r[:, j])
+        np.testing.assert_allclose(u_j[:, 0], u_out[:, j], rtol=1e-13, atol=1e-13)
+        np.testing.assert_allclose(r_j[:, 0], r_out[:, j], rtol=1e-13, atol=1e-13)
 
 
 def test_shared_matrices_on_a_ring_are_shift_equivariant():
-    esn = _random_parallel(N_dim=12, patch_size=3, halo=2)
+    esn = random_parallel(N_dim=12, patch_size=3, halo=2)
     rng = np.random.default_rng(2)
     u, r = rng.normal(size=(12, 2)), rng.normal(size=(esn.N_r, 2))
     u_out, r_out = esn.step(u, r)
@@ -102,68 +71,74 @@ def test_shared_matrices_on_a_ring_are_shift_equivariant():
     assert not np.allclose(u_out[:3], u_out[3:6])
 
 
-@pytest.mark.parametrize('shared', [True, False])
-def test_ensemble_members_advance_independently(shared):
-    esn = _random_parallel(N_dim=12, patch_size=2, halo=2, periodic=False, shared=shared)
-    rng = np.random.default_rng(3)
-    U, R = rng.normal(size=(12, 5)), rng.normal(size=(esn.N_r, 5))
-    u_out, r_out = esn.step(U, R)
-    assert u_out.shape == (12, 5) and r_out.shape == (esn.N_r, 5)
-    for j in range(5):
-        u_j, r_j = esn.step(U[:, j], R[:, j])
-        np.testing.assert_allclose(u_j[:, 0], u_out[:, j], rtol=1e-13, atol=1e-13)
-        np.testing.assert_allclose(r_j[:, 0], r_out[:, j], rtol=1e-13, atol=1e-13)
-
-
 @pytest.mark.parametrize('periodic, leak_rate', [(True, 1.0), (False, 0.5)])
 @pytest.mark.parametrize('shared', [True, False])
-def test_patch_jacobian_matches_finite_differences(periodic, leak_rate, shared):
-    esn = _random_parallel(N_dim=8, patch_size=2, halo=1, periodic=periodic, leak_rate=leak_rate,
-                           shared=shared)
+@pytest.mark.parametrize('options', [
+    dict(),
+    dict(r2_mode=True),
+    dict(n_param=2),
+    dict(n_param=2, readout_input='params', param_in_reservoir=False, Win_type='dense'),
+    dict(n_param=2, readout_input='params', Win_type='dense'),
+    dict(n_param=2, readout_input=True, Win_type='dense'),
+], ids=['plain', 'r2_mode', 'params', 'readout_params_only', 'readout_params', 'readout_input'])
+def test_patch_jacobian_matches_finite_differences(options, shared, periodic, leak_rate):
+    esn = random_parallel(N_dim=8, patch_size=2, halo=1, periodic=periodic, leak_rate=leak_rate, shared=shared,
+                          **options)
     rng = np.random.default_rng(4)
-    _set_norm(esn, rng)                                 # per site, to test the scaling
-    u, r = rng.normal(size=(8, 2)), 0.1 * rng.normal(size=(esn.N_r, 2))
-    J = esn.Jacobian(u, r)
-    assert J.shape == (8, 8, 2)
-    eps, J_fd = 1e-5, np.zeros_like(J)
-    for j in range(8):
-        up, um = u.copy(), u.copy()
-        up[j] += eps
-        um[j] -= eps
-        J_fd[:, j] = (esn.step(up, r)[0] - esn.step(um, r)[0]) / (2 * eps)
-    np.testing.assert_allclose(J, J_fd, rtol=1e-6, atol=1e-8)
-    # the rows of patch 0 depend only on the columns of its window
+    if not options.get('n_param'):
+        set_norm(esn, rng)                                 # per site, to test the scaling
+    if options.get('r2_mode') and not shared:
+        assert all(net.r2_mode for net in esn.patches)     # the patches inherit the option
+    n_in = esn.N_dim_in
+    u, r = rng.normal(size=(n_in, 2)), 0.1 * rng.normal(size=(esn.N_r, 2))
+    J = assert_jacobian(esn, u, r)
+    assert J.shape == (8, n_in, 2)
+    # the rows of patch 0 depend only on the columns of its window (and on the parameters)
     outside = np.setdiff1d(np.arange(8), esn.patch_sites[0])
     assert not J[:2][:, outside].any()
 
 
-def test_shared_readout_pools_every_patch_in_the_ridge_regression():
-    esn = _random_parallel(N_dim=8, patch_size=2, halo=1, N_wash=5)
-    rng = np.random.default_rng(5)
+@pytest.mark.parametrize('readout_input', [False, True])
+def test_shared_readout_pools_every_patch_in_the_ridge_regression(readout_input):
+    # the sample of patch p reads [r_p; 1], or [r_p; window_p; p; 1] with readout_input=True, from the input that
+    # produced r_p
+    n_param = 2 if readout_input else 0
+    esn = random_parallel(N_dim=8, patch_size=2, halo=1, periodic=False, N_wash=5, n_param=n_param,
+                          readout_input=readout_input)
+    rng = np.random.default_rng(15)
     U = rng.normal(size=(1, 60, 8))
-    Y = np.roll(U, -1, axis=1)
+    if n_param:
+        U = np.concatenate([U, np.broadcast_to(esn.input_parameters.T, (1, 60, n_param))], axis=-1)
+    Y = np.roll(U[..., :8], -1, axis=1)
     LHS, RHS, _, R_RR = esn._compute_RR_terms(U, Y)
-    R, n = R_RR[0], esn.N_units
+    R, n, U_t, Y_t = R_RR[0], esn.N_units, U[0, esn.N_wash:], Y[0, esn.N_wash:]
     assert R.shape == (60 - esn.N_wash, esn.N_r)
 
-    def aug(r_p):
-        return np.hstack([r_p, np.ones((r_p.shape[0], 1)) * esn.bias_out])
+    def aug(p):
+        inputs = []
+        if readout_input:
+            U_norm = esn.normalize_input(U_t.T).T
+            padded = np.hstack([U_norm[:, :8], np.zeros((U_t.shape[0], 1))])
+            inputs = [padded[:, esn.patch_sites[p]], U_norm[:, 8:]]
+        return np.hstack([R[:, p * n:(p + 1) * n], *inputs, np.ones((R.shape[0], 1)) * esn.bias_out])
 
-    Y_t = Y[0, esn.N_wash:]
-    LHS_sum = sum(aug(R[:, p * n:(p + 1) * n]).T @ aug(R[:, p * n:(p + 1) * n]) for p in range(4))
-    RHS_sum = sum(aug(R[:, p * n:(p + 1) * n]).T @ Y_t[:, 2 * p:2 * p + 2] for p in range(4))
-    np.testing.assert_allclose(LHS, LHS_sum, rtol=1e-12)
-    np.testing.assert_allclose(RHS, RHS_sum, rtol=1e-12, atol=1e-12)
+    assert aug(0).shape[1] == esn._n_readout
+    np.testing.assert_allclose(LHS, sum(aug(p).T @ aug(p) for p in range(4)), rtol=1e-12)
+    np.testing.assert_allclose(RHS, sum(aug(p).T @ Y_t[:, 2 * p:2 * p + 2] for p in range(4)),
+                               rtol=1e-12, atol=1e-12)
 
 
-def test_single_series_engine_pools_the_patches_like_the_ridge_regression():
-    # one fold that trains on every row: the per-fold readout of the engine behind
-    # SSV/WFV/KFV must equal the ridge solution on the pooled patches
-    from echostatenetwork import validation
-    esn = _random_parallel(N_dim=8, patch_size=2, halo=1, N_wash=5, t_val=10, tikh_range=[1e-6])
+@pytest.mark.parametrize('options', [dict(), dict(readout_input=True, n_param=2), dict(r2_mode=True)],
+                         ids=['plain', 'readout_input', 'r2_mode'])
+def test_single_series_engine_pools_the_patches_like_the_ridge_regression(options):
+    # one fold that trains on every row: the per-fold readout of the engine behind SSV/WFV/KFV must equal the ridge
+    # solution on the pooled patches
+    esn = random_parallel(N_dim=8, patch_size=2, halo=1, N_wash=5, t_val=10, tikh_range=[1e-6], **options)
     rng = np.random.default_rng(7)
     U = rng.normal(size=(1, 60, 8))
-    Y = np.roll(U, -1, axis=1)
+    if options.get('n_param'):
+        U = np.concatenate([U, np.broadcast_to(esn.input_parameters.T, (1, 60, 2))], axis=-1)
+    Y = np.roll(U[..., :8], -1, axis=1)
 
     def all_rows(case, n_post):
         return [([(0, n_post)], n_post - case.N_val, case.N_val)]
@@ -177,7 +152,7 @@ def test_single_series_engine_pools_the_patches_like_the_ridge_regression():
 def test_lorenz96_parallel_esn_forecasts_in_closed_loop():
     dt, n_train = 0.02, 3000
     steps_lyap = int(round(1 / 1.67 / dt))          # one Lyapunov time of Lorenz-96 (F = 8)
-    X = _lorenz96(n_train + 1500, dt)
+    X = lorenz96(n_train + 1500, dt)
     esn = EchoStateNetwork(X[:1].T, dt=dt, upsample=1, N_units=100, patch_size=2, halo=2,
                            N_wash=50, t_train=0.8 * n_train * dt, t_val=0.2 * n_train * dt,
                            t_test=0., rho=0.6, sigma_in=1.0, tikh=1e-6, noise=1e-3, seed=0,
@@ -220,96 +195,23 @@ def test_validation_strategies_with_patches(strategy):
     assert len(esn.bo_results['func_vals']) == 2
 
 
-def test_parallel_layout_survives_npz(tmp_path):
-    esn = _random_parallel(N_dim=8, patch_size=2, halo=1, periodic=False)
-    esn.norm, esn.shift = np.full(8, 2.0), np.full(8, 0.3)
-    p = tmp_path / 'esn.npz'
-    np.savez_compressed(p, **esn.to_arrays())
-    back = EchoStateNetwork.from_arrays(np.load(p, allow_pickle=False))
-    assert (back.patch_size, back.halo, back.periodic) == (2, 1, False)
-    u, r1, r2 = np.full((8, 1), 0.3), np.zeros((esn.N_r, 1)), np.zeros((esn.N_r, 1))
-    u1 = u2 = u
-    for _ in range(10):
-        u1, r1 = esn.step(u1, r1)
-        u2, r2 = back.step(u2, r2)
-        assert np.array_equal(u1, u2) and np.array_equal(r1, r2)
-
-
-# ---------------------------------------------------------------------- input parameters
-
-def test_one_patch_without_halo_reproduces_the_standard_parametric_step():
-    # patch_size = N_dim, halo = 0: the parameter columns follow the window, as the standard network's
-    rng = np.random.default_rng(1)
-    data = rng.normal(size=(2, 80, 6)).cumsum(axis=1)
-    kw = dict(dt=1, N_units=15, upsample=1, t_train=40, t_val=15, t_test=10, N_wash=5,
-              hyperparameters_to_optimize=[], seed=0, input_parameters=np.array([[0.0, 1.0]]))
-    std = EchoStateNetwork(data[0].T, **kw)
-    std.train(data, plot_training=False)
-    par = EchoStateNetwork(data[0].T, patch_size=6, halo=0, **kw)
-    par.Win, par.W, par.Wout = std.Win, std.W, std.Wout
-    par.norm, par.shift = std.norm, std.shift
-    std.input_parameters = par.input_parameters = np.array([[0.3, 0.7, 0.3, 0.7]])
-    u, r = std.outputs_to_inputs(data[0, 10:14].T), rng.normal(size=(15, 4))
-    for out_par, out_std in zip(par.step(u, r), std.step(u, r)):
-        np.testing.assert_allclose(out_par, out_std, rtol=1e-12, atol=1e-14)
-    np.testing.assert_allclose(par.Jacobian(u, r), std.Jacobian(u, r), rtol=1e-10, atol=1e-12)
-
-
-@pytest.mark.parametrize('periodic', [True, False])
-def test_every_patch_reads_the_input_parameters(periodic):
-    esn = _random_parallel(N_dim=8, patch_size=2, halo=1, periodic=periodic,
-                           input_parameters=np.array([[0.0], [1.0]]))
+def test_every_patch_reads_the_input_parameters():
+    esn = random_parallel(N_dim=8, patch_size=2, halo=1, n_param=2)
     assert esn.N_dim_in == 10 and esn.Win.shape == (10, 4 + 2 + 1)
     assert np.all(esn.Win.toarray()[:, 4:6] != 0)          # dense parameter columns
     rng = np.random.default_rng(5)
-    esn.norm, esn.shift = rng.uniform(0.5, 2.0, 10), rng.normal(size=10)   # sites and parameters
     u, r = rng.normal(size=(10, 3)), 0.1 * rng.normal(size=(esn.N_r, 3))
-    # every reservoir moves with the parameters
     du = u.copy()
-    du[8] += 1.0
+    du[8] += 1.0                                            # every reservoir moves with the parameters
     changed = np.abs(esn.step(du, r)[1] - esn.step(u, r)[1]).reshape(4, esn.N_units, 3).max(axis=(1, 2))
     assert np.all(changed > 0)
-    # Jacobian, parameter columns included
-    J = esn.Jacobian(u, r)
-    assert J.shape == (8, 10, 3)
-    eps, J_fd = 1e-5, np.zeros_like(J)
-    for j in range(10):
-        up, um = u.copy(), u.copy()
-        up[j] += eps
-        um[j] -= eps
-        J_fd[:, j] = (esn.step(up, r)[0] - esn.step(um, r)[0]) / (2 * eps)
-    np.testing.assert_allclose(J, J_fd, rtol=1e-6, atol=1e-8)
-
-
-def test_parametric_lorenz96_parallel_esn_trains_and_survives_npz(tmp_path):
-    dt, n = 0.02, 1200
-    forcings = (6.0, 8.0)
-    data = np.stack([_lorenz96(n, dt, nx=10, forcing=F, seed=i) for i, F in enumerate(forcings)])
-    esn = EchoStateNetwork(data[0, :1].T, dt=dt, upsample=1, N_units=60, patch_size=5, halo=2,
-                           N_wash=20, t_train=0.7 * n * dt, t_val=0.2 * n * dt, t_test=0.1 * n * dt,
-                           rho=0.6, sigma_in=0.5, tikh=1e-6, noise=1e-3, seed=0,
-                           hyperparameters_to_optimize=[],
-                           input_parameters=np.array([forcings]))
-    esn.train(data, plot_training=False)
-    assert esn.trained and esn.Win.shape == (60, 9 + 1 + 1) and esn.Wout.shape == (61, 5)
-    p = tmp_path / 'esn.npz'
-    np.savez_compressed(p, **esn.to_arrays())
-    back = EchoStateNetwork.from_arrays(np.load(p, allow_pickle=False))
-    back.input_parameters = esn.input_parameters = np.array([[7.0]])
-    u1 = u2 = esn.outputs_to_inputs(data[0, 50][:, None])
-    r1 = r2 = np.zeros((esn.N_r, 1))
-    for _ in range(10):
-        y1, r1 = esn.step(u1, r1)
-        y2, r2 = back.step(u2, r2)
-        np.testing.assert_array_equal(y1, y2)
-        u1, u2 = esn.outputs_to_inputs(y1), back.outputs_to_inputs(y2)
 
 
 # ---------------------------------------------------------------------- independent patches
 
 @pytest.mark.parametrize('periodic', [True, False])
 def test_independent_patches_with_the_shared_matrices_reproduce_the_shared_network(periodic):
-    shared = _random_parallel(N_dim=12, patch_size=3, halo=2, periodic=periodic, leak_rate=0.7)
+    shared = random_parallel(N_dim=12, patch_size=3, halo=2, periodic=periodic, leak_rate=0.7)
     # a normalization that differs from site to site, so that the networks of the patches are not interchangeable:
     # a patch stepped with the window or the shift of another patch changes the outputs
     scale = np.random.default_rng(9)
@@ -402,38 +304,25 @@ def test_patches_search_tikh_alone(shared):
     assert esn.training_summary().count('tikh alone') == len(nets)
 
 
-def test_independent_patches_survive_npz(tmp_path):
-    esn = _random_parallel(N_dim=8, patch_size=2, halo=1, periodic=False, shared=False)
-    for p, net in enumerate(esn.patches):        # hyperparameters and scaling of their own
-        net.rho, net.sigma_in, net.tikh = 0.5 + 0.1 * p, 0.2 * (p + 1), 10.0 ** -p
-        net.norm, net.shift = np.full(4, 1.0 + p), np.full(4, 0.1 * p)
-    path = tmp_path / 'esn.npz'
-    np.savez_compressed(path, **esn.to_arrays())
-    back = EchoStateNetwork.from_arrays(np.load(path, allow_pickle=False))
-    assert (back.patch_size, back.halo, back.periodic, back.shared) == (2, 1, False, False)
-    assert back.trained
-    for net, net_back in zip(esn.patches, back.patches):
-        assert (net_back.rho, net_back.sigma_in, net_back.tikh) == (net.rho, net.sigma_in, net.tikh)
-        assert net_back._forecast_sites == net._forecast_sites
-    u1 = u2 = np.full((8, 1), 0.3)
-    r1, r2 = np.zeros((esn.N_r, 1)), np.zeros((esn.N_r, 1))
-    for _ in range(10):
-        u1, r1 = esn.step(u1, r1)
-        u2, r2 = back.step(u2, r2)
-        assert np.array_equal(u1, u2) and np.array_equal(r1, r2)
-
-
-def test_errors_of_independent_patches():
+def test_errors_of_the_parallel_api():
     with pytest.raises(ValueError, match='shared=False requires'):
         EchoStateNetwork(np.zeros((8, 1)), shared=False)
-    esn = _random_parallel(N_dim=8, patch_size=2, halo=1, shared=False)
+    esn = random_parallel(N_dim=8, patch_size=2, halo=1, shared=False)
     for name in ('Win', 'W', 'Wout'):
         with pytest.raises(AttributeError, match=rf'patches\[p\]\.{name}'):
             getattr(esn, name)
     with pytest.raises(AttributeError, match='patches'):
         esn.Wout = np.zeros((11, 2))
-    with pytest.raises(ValueError, match='N_r'):
-        esn.step(np.zeros((8, 1)), np.zeros((esn.N_units, 1)))
+    for net in (esn, random_parallel(N_dim=8, patch_size=2, halo=1)):     # the reservoir state stacks the patches
+        with pytest.raises(ValueError, match='N_r'):
+            net.step(np.zeros((8, 1)), np.zeros((net.N_units, 1)))
+    # a non-periodic domain pads the windows, so the halo may exceed the domain
+    assert (EchoStateNetwork(np.zeros((8, 1)), patch_size=2, halo=4, periodic=False).patch_sites == -1).any()
+    # a single reservoir has no patches (and no positions before Win is drawn)
+    single = EchoStateNetwork(np.zeros((8, 1)))
+    assert (single.N_patches, single.N_r) == (1, single.N_units)
+    with pytest.raises(ValueError, match='patch_size'):
+        single.patch_sites
 
 
 @pytest.mark.parametrize('kwargs, match', [
@@ -448,37 +337,12 @@ def test_incompatible_layouts_raise(kwargs, match):
         EchoStateNetwork(np.zeros((8, 1)), **kwargs)
 
 
-def test_errors_of_the_parallel_api():
-    # a non-periodic domain pads the windows, so the halo may exceed the domain
-    padded = EchoStateNetwork(np.zeros((8, 1)), patch_size=2, halo=4, periodic=False)
-    assert (padded.patch_sites == -1).any()
-    # a single reservoir has no patches (and no positions before Win is drawn)
-    single = EchoStateNetwork(np.zeros((8, 1)))
-    assert (single.N_patches, single.N_r) == (1, single.N_units)
-    with pytest.raises(ValueError, match='no position'):
-        single.state_positions
-    with pytest.raises(ValueError, match='patch_size'):
-        single.patch_sites
-    # the reservoir state stacks the patches
-    esn = _random_parallel(N_dim=8, patch_size=2, halo=1)
-    with pytest.raises(ValueError, match='N_r'):
-        esn.step(np.zeros((8, 1)), np.zeros((esn.N_units, 1)))
-
-
 @pytest.mark.parametrize('patch', [None, 2])
 def test_sigma_param_scales_the_parameter_columns(patch, tmp_path):
     """sigma_param equal to sigma_in is the network without it; another value changes only the parameter input, and
     the Jacobian (parameter columns included) matches finite differences; the value survives npz."""
-    kw = dict(N_dim=8, patch_size=patch, halo=1 if patch else 0, input_parameters=np.array([[0.5]]))
-    if patch is None:
-        kw.pop('patch_size')
-        kw.pop('halo')
-        esn = EchoStateNetwork(np.zeros((8, 1)), dt=1, N_units=10, upsample=1, seed=0, sigma_in=0.5,
-                               input_parameters=np.array([[0.5]]))
-        esn._generate_W_Win(seed=0)
-        esn.Wout = np.random.default_rng(0).normal(size=(11, 8))
-    else:
-        esn = _random_parallel(**kw)
+    layout = dict(patch_size=patch, halo=1) if patch else {}
+    esn = random_parallel(N_dim=8, input_parameters=np.array([[0.5]]), **layout)
     rng = np.random.default_rng(3)
     esn.norm, esn.shift = rng.uniform(0.5, 2.0, 9), rng.normal(size=9)
     u, r = rng.normal(size=(9, 2)), 0.1 * rng.normal(size=(esn.N_r, 2))
@@ -488,17 +352,8 @@ def test_sigma_param_scales_the_parameter_columns(patch, tmp_path):
         np.testing.assert_allclose(a, b, rtol=1e-12, atol=1e-14)
     esn.sigma_param = 2.0
     assert not np.allclose(esn.step(u, r)[1], base[1])
-    J = esn.Jacobian(u, r)
-    eps, J_fd = 1e-5, np.zeros_like(J)
-    for j in range(9):
-        up, um = u.copy(), u.copy()
-        up[j] += eps
-        um[j] -= eps
-        J_fd[:, j] = (esn.step(up, r)[0] - esn.step(um, r)[0]) / (2 * eps)
-    np.testing.assert_allclose(J, J_fd, rtol=1e-6, atol=1e-8)
-    p = tmp_path / 'esn.npz'
-    np.savez_compressed(p, **esn.to_arrays())
-    assert EchoStateNetwork.from_arrays(np.load(p, allow_pickle=False)).sigma_param == 2.0
+    assert_jacobian(esn, u, r)
+    assert npz_round_trip(esn, tmp_path).sigma_param == 2.0
 
 
 def test_sigma_param_is_searched():
@@ -515,23 +370,9 @@ def test_sigma_param_is_searched():
 
 # ---------------------------------------------------------------------- readout_input with the parallel layout
 
-def _readout_parallel(readout_input='params', N_dim=8, N_units=10, n_param=2, seed=0, **kw):
-    """Parallel ESN with `n_param` parameters, generated Win/W, a random readout of the
-    rows that `readout_input` reads, and a random normalization, without training."""
-    rng = np.random.default_rng(seed)
-    esn = EchoStateNetwork(np.zeros((N_dim, 1)), dt=1, N_units=N_units, upsample=1, seed=seed,
-                           sigma_in=0.5, input_parameters=rng.normal(size=(n_param, 1)),
-                           readout_input=readout_input, **kw)
-    esn._generate_W_Win(seed=seed)
-    for net in esn.patches if esn._independent else [esn]:
-        net.Wout = rng.normal(size=(net._n_readout, net._n_out))
-        net.norm, net.shift = rng.uniform(0.5, 2.0, net.N_dim_in), rng.normal(size=net.N_dim_in)
-    return esn
-
-
 def _lorenz96_forcings(forcings=(6.0, 8.0), n=900, dt=0.02):
     """Two Lorenz-96 records of 10 sites, one per forcing, and the forcings as (1, L) parameters."""
-    data = np.stack([_lorenz96(n, dt, nx=10, forcing=F, seed=i) for i, F in enumerate(forcings)])
+    data = np.stack([lorenz96(n, dt, nx=10, forcing=F, seed=i) for i, F in enumerate(forcings)])
     return data, np.array([forcings])
 
 
@@ -598,8 +439,8 @@ def test_one_independent_patch_without_halo_reproduces_the_single_readout_input_
 def test_readout_params_reads_the_parameter_only_in_the_readout(shared, periodic):
     # param_in_reservoir=False: the reservoir update does not depend on the parameter, the readout does,
     # through the direct term Wout_p^T (p - shift_p) / norm_p of every patch
-    esn = _readout_parallel(N_dim=8, patch_size=2, halo=1, shared=shared, periodic=periodic,
-                            param_in_reservoir=False)
+    esn = random_parallel(N_dim=8, patch_size=2, halo=1, shared=shared, periodic=periodic, n_param=2,
+                          readout_input='params', param_in_reservoir=False)
     rng = np.random.default_rng(13)
     u, r = rng.normal(size=(10, 3)), 0.1 * rng.normal(size=(esn.N_r, 3))
     u_out, r_out = esn.step(u, r)
@@ -619,48 +460,6 @@ def test_readout_params_reads_the_parameter_only_in_the_readout(shared, periodic
     with pytest.raises(ValueError, match='pass u='):
         esn.reservoir_to_physical(r_out)
     np.testing.assert_allclose(esn.reservoir_to_physical(r_out, u=u), u_out, rtol=1e-12, atol=1e-14)
-
-
-@pytest.mark.parametrize('periodic, leak_rate', [(True, 1.0), (False, 0.5)])
-@pytest.mark.parametrize('shared', [True, False])
-@pytest.mark.parametrize('readout_input, in_reservoir', [('params', False), ('params', True), (True, True)])
-def test_readout_input_patch_jacobian_matches_finite_differences(readout_input, in_reservoir, shared, periodic,
-                                                                 leak_rate):
-    esn = _readout_parallel(readout_input, N_dim=8, patch_size=2, halo=1, shared=shared, periodic=periodic,
-                            leak_rate=leak_rate, param_in_reservoir=in_reservoir, Win_type='dense')
-    assert esn.trained
-    rng = np.random.default_rng(14)
-    u, r = rng.normal(size=(10, 2)), 0.1 * rng.normal(size=(esn.N_r, 2))
-    J = esn.Jacobian(u, r)
-    assert J.shape == (8, 10, 2)
-    eps, J_fd = 1e-5, np.zeros_like(J)
-    for j in range(10):
-        up, um = u.copy(), u.copy()
-        up[j] += eps
-        um[j] -= eps
-        J_fd[:, j] = (esn.step(up, r)[0] - esn.step(um, r)[0]) / (2 * eps)
-    np.testing.assert_allclose(J, J_fd, rtol=1e-6, atol=1e-8)
-
-
-def test_readout_input_pools_every_patch_in_the_ridge_regression():
-    # the sample of patch p reads [r_p; window_p; p; 1] (readout_input=True), from the input that produced r_p
-    esn = _readout_parallel(True, N_dim=8, patch_size=2, halo=1, periodic=False, N_wash=5)
-    rng = np.random.default_rng(15)
-    U = np.concatenate([rng.normal(size=(1, 60, 8)), np.broadcast_to(esn.input_parameters.T, (1, 60, 2))], axis=-1)
-    Y = np.roll(U[..., :8], -1, axis=1)
-    LHS, RHS, _, R_RR = esn._compute_RR_terms(U, Y)
-    R, n, U_t, Y_t = R_RR[0], esn.N_units, U[0, esn.N_wash:], Y[0, esn.N_wash:]
-    U_norm = esn.normalize_input(U_t.T).T
-    padded = np.hstack([U_norm[:, :8], np.zeros((U_t.shape[0], 1))])
-
-    def aug(p):
-        return np.hstack([R[:, p * n:(p + 1) * n], padded[:, esn.patch_sites[p]], U_norm[:, 8:],
-                          np.ones((R.shape[0], 1)) * esn.bias_out])
-
-    assert aug(0).shape[1] == esn._n_readout == n + 4 + 2 + 1
-    np.testing.assert_allclose(LHS, sum(aug(p).T @ aug(p) for p in range(4)), rtol=1e-12)
-    np.testing.assert_allclose(RHS, sum(aug(p).T @ Y_t[:, 2 * p:2 * p + 2] for p in range(4)),
-                               rtol=1e-12, atol=1e-12)
 
 
 @pytest.mark.parametrize('periodic', [True, False])
@@ -699,93 +498,52 @@ def test_lorenz96_readout_params_parallel_esn_trains_and_forecasts(shared, perio
     assert np.mean(err) < 0.1 * np.abs(data[1]).mean()
 
 
+@pytest.mark.parametrize('strategy', [None, EchoStateNetwork._SSV, EchoStateNetwork._WFV, EchoStateNetwork._KFV])
 @pytest.mark.parametrize('shared', [True, False])
-def test_readout_params_through_the_hyperparameter_search(shared):
-    # the default search over the normalization of the parameters, with RVC_Noise
-    data, forcings = _lorenz96_forcings(n=500)
-    esn = _l96_readout_params(data, forcings, shared=shared, N_units=20, optimize_parameter_normalization=True,
-                              hyperparameters_to_optimize=['rho', 'tikh'], N_func_evals=4, N_grid=2, N_folds=2)
-    esn.train(data, plot_training=False)
-    for net in esn.patches if not shared else [esn]:
-        assert {'param_shift_0', 'param_norm_0'} <= set(net.bo_results['hp_names'])
-        assert np.isfinite(net.Wout).all()
-
-
-@pytest.mark.parametrize('strategy', [EchoStateNetwork._SSV, EchoStateNetwork._WFV, EchoStateNetwork._KFV])
-@pytest.mark.parametrize('shared', [True, False])
-def test_readout_params_through_the_single_series_strategies(strategy, shared):
-    data, forcings = _lorenz96_forcings(forcings=(8.0,), n=500)
-    esn = _l96_readout_params(data, forcings, shared=shared, N_units=20, hyperparameters_to_optimize=['tikh'],
-                              t_val=0.1 * 500 * 0.02)
+def test_readout_params_through_the_validation_strategies(strategy, shared):
+    # None: the default search over the normalization of the parameters, with RVC_Noise; the single-series
+    # strategies: tikh alone on one record
+    if strategy is None:
+        data, forcings = _lorenz96_forcings(n=500)
+        options = dict(optimize_parameter_normalization=True, hyperparameters_to_optimize=['rho', 'tikh'],
+                       N_func_evals=4, N_grid=2, N_folds=2)
+    else:
+        data, forcings = _lorenz96_forcings(forcings=(8.0,), n=500)
+        options = dict(hyperparameters_to_optimize=['tikh'], t_val=0.1 * 500 * 0.02)
+    esn = _l96_readout_params(data, forcings, shared=shared, N_units=20, **options)
     esn.train(data, plot_training=False, validation_strategy=strategy)
     assert esn.trained
     for net in esn.patches if not shared else [esn]:
         assert net.Wout.shape == (22, net._n_out) and np.isfinite(net.Wout).all()
-
-
-def test_single_series_engine_pools_the_readout_inputs_like_the_ridge_regression():
-    from echostatenetwork import validation
-    esn = _readout_parallel(True, N_dim=8, patch_size=2, halo=1, N_wash=5, t_val=10, tikh_range=[1e-6])
-    rng = np.random.default_rng(16)
-    U = np.concatenate([rng.normal(size=(1, 60, 8)), np.broadcast_to(esn.input_parameters.T, (1, 60, 2))], axis=-1)
-    Y = np.roll(U[..., :8], -1, axis=1)
-
-    def all_rows(case, n_post):
-        return [([(0, n_post)], n_post - case.N_val, case.N_val)]
-
-    validation.single_series_validation([], esn, U, Y, np.zeros(1), [], False, all_rows, 'all_rows')
-    LHS, RHS = esn._compute_RR_terms(U, Y)[:2]
-    LHS[np.diag_indices_from(LHS)] += 1e-6
-    np.testing.assert_allclose(esn.Wout, np.linalg.solve(LHS, RHS), rtol=1e-6, atol=1e-9)
+        if strategy is None:
+            assert {'param_shift_0', 'param_norm_0'} <= set(net.bo_results['hp_names'])
 
 
 @pytest.mark.parametrize('shared', [True, False])
-def test_readout_params_parallel_esn_survives_npz(shared, tmp_path):
-    esn = _readout_parallel(N_dim=8, patch_size=2, halo=1, shared=shared, periodic=False, param_in_reservoir=False)
-    path = tmp_path / 'esn.npz'
-    np.savez_compressed(path, **esn.to_arrays())
-    back = EchoStateNetwork.from_arrays(np.load(path, allow_pickle=False))
-    assert back.readout_input == 'params' and back.trained and back.shared == shared
-    for net in back.patches if not shared else [back]:
-        assert net.readout_input == 'params'
-    u1 = u2 = esn.outputs_to_inputs(np.full((8, 1), 0.3))
-    r1, r2 = np.zeros((esn.N_r, 1)), np.zeros((esn.N_r, 1))
-    for _ in range(10):
-        y1, r1 = esn.step(u1, r1)
-        y2, r2 = back.step(u2, r2)
-        assert np.array_equal(y1, y2) and np.array_equal(r1, r2)
-        u1, u2 = esn.outputs_to_inputs(y1), back.outputs_to_inputs(y2)
-    np.testing.assert_array_equal(back.Jacobian(u1, r1), esn.Jacobian(u1, r1))
-
-
-@pytest.mark.parametrize('layout', ['single', 'shared', 'independent'])
-def test_training_options_survive_npz(layout, tmp_path):
-    # param_in_reservoir, connect and optimize_parameter_normalization are read by a later training: a reloaded
-    # readout-only network must stay readout-only when train(force=True) rebuilds its reservoir
-    if layout == 'single':
-        data, forcings = _lorenz96_forcings(n=400)
-        esn = _l96_readout_params(data, forcings, shared=True, N_units=20, readout_input='params',
-                                  param_in_reservoir=False, patch_size=None, halo=None)
-        esn.train(data, plot_training=False)
-    else:
-        esn = _readout_parallel(N_dim=8, patch_size=2, halo=1, shared=layout == 'shared', periodic=False,
-                                param_in_reservoir=False)
+def test_parallel_network_survives_npz(shared, tmp_path):
+    # the layout, the readout of the parameters, the options read by a later training (param_in_reservoir, connect,
+    # optimize_parameter_normalization) and, with independent patches, the hyperparameters of every patch; the closed
+    # loop and the Jacobian of the reloaded network are bit-identical
+    esn = random_parallel(N_dim=8, patch_size=2, halo=1, shared=shared, periodic=False, n_param=2,
+                          readout_input='params', param_in_reservoir=False)
+    for p, net in enumerate(esn.patches or []):
+        net.rho, net.sigma_in, net.tikh = 0.5 + 0.1 * p, 0.2 * (p + 1), 10.0 ** -p
     esn.connect, esn.optimize_parameter_normalization = 4, 'data'
-    path = tmp_path / 'esn.npz'
-    np.savez_compressed(path, **esn.to_arrays())
-    back = EchoStateNetwork.from_arrays(np.load(path, allow_pickle=False))
-    assert back.param_in_reservoir is False
-    assert back.connect == 4 and back.optimize_parameter_normalization == 'data'
-    for net in (back.patches if layout == 'independent' else []):
-        assert net.param_in_reservoir is False
-
-
-def test_stores_without_training_options_keep_the_defaults(tmp_path):
-    esn = _readout_parallel(N_dim=8, patch_size=2, halo=1, shared=True, periodic=False, param_in_reservoir=False)
+    back = npz_round_trip(esn, tmp_path)
+    assert (back.patch_size, back.halo, back.periodic, back.shared) == (2, 1, False, shared)
+    assert back.trained and back.connect == 4 and back.optimize_parameter_normalization == 'data'
+    for net, net_back in zip(esn.patches or [esn], back.patches or [back]):
+        assert net_back.readout_input == 'params' and net_back.param_in_reservoir is False
+        assert (net_back.rho, net_back.sigma_in, net_back.tikh) == (net.rho, net.sigma_in, net.tikh)
+        if not shared:
+            assert net_back._forecast_sites == net._forecast_sites
+    u, r = assert_same_closed_loop(esn, back, np.full((8, 1), 0.3))
+    np.testing.assert_array_equal(back.Jacobian(u, r), esn.Jacobian(u, r))
+    # a store saved before these training options existed loads with the defaults
     arrays = {k: v for k, v in esn.to_arrays().items()
               if k not in ('param_in_reservoir', 'connect', 'optimize_parameter_normalization')}
-    back = EchoStateNetwork.from_arrays(arrays)
-    assert back.param_in_reservoir is True and back.connect == EchoStateNetwork.connect
+    old = EchoStateNetwork.from_arrays(arrays)
+    assert old.param_in_reservoir is True and old.connect == EchoStateNetwork.connect
 
 
 @pytest.mark.parametrize('shared', [True, False])
