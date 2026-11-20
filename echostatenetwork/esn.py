@@ -428,6 +428,8 @@ class EchoStateNetwork:
     sigma_param_range = (-3, 0.477)
     tikh = 1e-12
     tikh_range = [1e-8, 1e-10, 1e-12, 1e-16]
+    # open-loop steps per batch of the ridge sums (_compute_RR_terms): a long record costs one batch of states
+    readout_batch = 5000
     leak_rate = 1.0
     leak_rate_range = (0.1, 1.0)
 
@@ -2551,7 +2553,7 @@ class EchoStateNetwork:
             self._reservoir_key = dict(self._reservoir_options(), seed=seed)
 
 
-    def _compute_RR_terms(self, U_wtv, Y_wtv):
+    def _compute_RR_terms(self, U_wtv, Y_wtv, keep_states=True, batch=None):
         """
         Computes the Ridge Regression (RR) terms, including left-hand side (LHS) and right-hand side (RHS)
         matrices, for training the output weights.
@@ -2562,6 +2564,11 @@ class EchoStateNetwork:
             Wash-train-validation input data. L segments, each with Nt time steps and N_dim dimensions.
         Y_wtv : np.ndarray (L x Nt x N_dim)
             Corresponding output labels for input data.
+        keep_states : bool
+            Return the open-loop states and outputs (U_RR, R_RR). False returns two lists of None and holds only
+            one batch of states at a time: the sums LHS and RHS are all the ridge regression needs.
+        batch : int, optional
+            Open-loop steps per batch of the sums (default `readout_batch`).
 
         Returns
         -------
@@ -2574,19 +2581,19 @@ class EchoStateNetwork:
 
         With the parallel layout, every time step contributes one regression sample
         per patch, ``[r_p; bias_out] -> y[sites of p]``, so LHS and RHS sum over the
-        time steps and the patches of the shared readout.
+        time steps and the patches of the shared readout. The sums are accumulated `batch` steps at a time, so that a
+        long record costs one batch of states, not the record's (with keep_states=False).
         """
 
         LHS = np.zeros((self._n_readout, self._n_readout))
         RHS = np.zeros((self._n_readout, self._n_out))
         R_RR = [None] * len(U_wtv)
         U_RR = [None] * len(U_wtv)
-
+        batch = int(batch or self.readout_batch)
 
         for ll in range(len(U_wtv)):
 
             U_wash_l = U_wtv[ll][:self.N_wash]
-            # Y_wash_l = Y_wtv[ll][:self.N_wash]
             Uin_l = U_wtv[ll][self.N_wash:]
             Yout_l = Y_wtv[ll][self.N_wash:]
 
@@ -2606,26 +2613,32 @@ class EchoStateNetwork:
                 assert Yout_l.shape[-1] == 1, f'Yout_l has shape {Yout_l.shape}, only 1 sample at a time is allowed'
                 Yout_l = Yout_l[..., 0]
 
-            # Open-loop train phase: one pass over the whole segment, states filled
-            r_open = np.zeros((Uin_l.shape[0], self.N_r, N_ens))
-            y_open = np.zeros((Uin_l.shape[0], self.N_dim, N_ens))
-            for ii, u_in in enumerate(Uin_l):
-                u_out, r_out = self.step(u_in, r_out)
-                y_open[ii], r_open[ii] = u_out, r_out
+            # Open-loop train phase, one batch of steps at a time; the states are kept only if asked for
+            n_l = Uin_l.shape[0]
+            if keep_states:
+                r_open = np.zeros((n_l, self.N_r))
+                y_open = np.zeros((n_l, self.N_dim))
+            for j0 in range(0, n_l, batch):
+                n = min(batch, n_l - j0)
+                r_b = np.zeros((n, self.N_r, N_ens))
+                y_b = np.zeros((n, self.N_dim, N_ens))
+                for ii in range(n):
+                    u_out, r_out = self.step(Uin_l[j0 + ii], r_out)
+                    y_b[ii], r_b[ii] = u_out, r_out
+                y_b, r_b = y_b.squeeze(axis=-1), r_b.squeeze(axis=-1)
+                if keep_states:
+                    r_open[j0:j0 + n], y_open[j0:j0 + n] = r_b, y_b
 
-            if y_open.ndim > 2:
-                y_open, r_open = y_open.squeeze(axis=-1), r_open.squeeze(axis=-1)
+                # one sample per step (and per patch, row t * N_patches + p: the patches share Wout), which also
+                # reads the input rows of readout_input, from the (normalised) input that produced r_b[t]
+                U_b = Uin_l[j0:j0 + n]
+                r_aug = self._readout_features(r_b, U_b[..., 0] if U_b.ndim == 3 else U_b)
+                LHS += np.dot(r_aug.T, r_aug)
+                RHS += np.dot(r_aug.T, Yout_l[j0:j0 + n].reshape(-1, self._n_out))
 
-            R_RR[ll] = r_open # type: ignore
-            U_RR[ll] = y_open # type: ignore
-
-            # one sample per step (and per patch, row t * N_patches + p: the patches share Wout), which also reads
-            # the input rows of readout_input, from the (normalised) input that produced r_open[t]
-            r_aug = self._readout_features(r_open, Uin_l[..., 0] if Uin_l.ndim == 3 else Uin_l)
-            Yout_l = Yout_l.reshape(-1, self._n_out)
-
-            LHS += np.dot(r_aug.T, r_aug)
-            RHS += np.dot(r_aug.T, Yout_l)
+            if keep_states:
+                R_RR[ll] = r_open  # type: ignore
+                U_RR[ll] = y_open  # type: ignore
 
         return LHS, RHS, U_RR, R_RR
 
@@ -2645,7 +2658,7 @@ class EchoStateNetwork:
         -------
             np.ndarray: Computed output weight matrix (Wout).
         """
-        LHS, RHS = self._compute_RR_terms(U_wtv, Y_wtv)[:2]
+        LHS, RHS = self._compute_RR_terms(U_wtv, Y_wtv, keep_states=False)[:2]
         return self._ridge_solve(LHS, RHS, self.tikh)
 
     def _ridge_solve(self, LHS, RHS, tikh):
