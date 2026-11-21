@@ -69,7 +69,9 @@ def test_jacobian_matches_finite_differences(leak_rate):
     esn.train(data, plot_training=False)
     rng = np.random.default_rng(2)
     u, r = data[5].reshape(-1, 1).copy(), 0.3 * rng.normal(size=(esn.N_units, 1))
-    J, eps = esn.Jacobian(u, r), 1e-5
+    # the readout of this small network has entries of order 1e5, so the round-off of the differences grows as
+    # 1e5 * 1e-16 / eps: a step of 1e-3 keeps it below the tolerance (the truncation error is about 1e-8)
+    J, eps = esn.Jacobian(u, r), 1e-3
     J_fd = np.zeros_like(J)
     for j in range(u.shape[0]):
         up, um = u.copy(), u.copy()
