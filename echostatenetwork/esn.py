@@ -2354,7 +2354,7 @@ class EchoStateNetwork:
                    rho=self.rho, sigma_in=self.sigma_in, tikh=self.tikh,
                    **({} if self.sigma_param is None else dict(sigma_param=self.sigma_param)),
                    leak_rate=self.leak_rate, noise=self.noise,
-                   Win_type=self.Win_type, norm_method=self.norm_method,
+                   Win_type=self.Win_type, norm_method=str(self.norm_method),     # None as 'None': no object array
                    noise_type=self.noise_type, readout_input=str(self.readout_input),
                    r2_mode=bool(self.r2_mode),
                    param_in_reservoir=bool(self.param_in_reservoir), connect=int(self.connect),
@@ -2411,7 +2411,7 @@ class EchoStateNetwork:
                   dt=f('dt_ESN') / upsample,
                   N_units=n_units, N_wash=int(np.asarray(arrays['N_wash'])),
                   upsample=upsample, Win_type=s('Win_type'),
-                  norm_method=s('norm_method'), noise_type=s('noise_type'),
+                  norm_method=None if s('norm_method') == 'None' else s('norm_method'), noise_type=s('noise_type'),
                   noise=f('noise'), rho=f('rho'), sigma_in=f('sigma_in'),
                   **({'sigma_param': f('sigma_param')} if 'sigma_param' in arrays else {}),
                   tikh=f('tikh'), leak_rate=f('leak_rate'),
