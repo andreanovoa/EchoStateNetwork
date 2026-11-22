@@ -40,7 +40,7 @@ def _manual_open_loop(esn, U, r):
 
 
 @pytest.mark.parametrize('make', [_trained, _parallel])
-def test_open_loop_is_a_manual_step_loop(make):
+def test_open_loop_and_forecast_are_manual_step_loops(make):
     esn, data = make()
     Y, R = esn.open_loop(data[:12])
     Y0, R0 = _manual_open_loop(esn, data[:12], np.zeros((esn.N_r, 1)))
@@ -50,27 +50,21 @@ def test_open_loop_is_a_manual_step_loop(make):
     # from a given state, and an ensemble (n, N_dim, m)
     U = np.stack([data[:6], data[3:9]], axis=-1)
     r0 = np.random.default_rng(2).normal(size=(esn.N_r, 2))
-    Y, R = esn.open_loop(U, r0=r0)
+    Y_ens, R_ens = esn.open_loop(U, r0=r0)
     Y0, R0 = _manual_open_loop(esn, U, r0)
-    np.testing.assert_array_equal(Y, Y0)
-    np.testing.assert_array_equal(R, R0)
-
-
-@pytest.mark.parametrize('make', [_trained, _parallel])
-def test_forecast_is_a_manual_single_step_loop(make):
-    esn, data = make()
-    Y_open, R_open = esn.open_loop(data[:10])
-    u, r = Y_open[-1][:, None], R_open[-1][:, None]
-    Y, u_end, r_end = esn.forecast(u, r, 15)
+    np.testing.assert_array_equal(Y_ens, Y0)
+    np.testing.assert_array_equal(R_ens, R0)
+    # the forecast is a loop of _single_step from the last state of the washout, and continues from its last state
+    u, r = Y[-1][:, None], R[-1][:, None]
+    F, u_end, r_end = esn.forecast(u, r, 15)
     for i in range(15):
         u, r = esn._single_step(u, r)
-        np.testing.assert_array_equal(Y[i], u)
+        np.testing.assert_array_equal(F[i], u)
     np.testing.assert_array_equal(u_end, u)
     np.testing.assert_array_equal(r_end, r)
-    assert Y.shape == (15, esn.N_dim, 1)
-    # the forecast continues from its last state
-    Y2 = esn.forecast(u_end, r_end, 5)[0]
-    np.testing.assert_array_equal(np.concatenate([Y, Y2]), esn.forecast(Y_open[-1], R_open[-1], 20)[0])
+    assert F.shape == (15, esn.N_dim, 1)
+    F2 = esn.forecast(u_end, r_end, 5)[0]
+    np.testing.assert_array_equal(np.concatenate([F, F2]), esn.forecast(Y[-1], R[-1], 20)[0])
 
 
 def test_alignment_of_the_washout_and_the_forecast():
@@ -125,19 +119,6 @@ def test_input_parameters_are_restored():
     plain, _ = _trained()
     with pytest.raises(ValueError, match='without input_parameters'):
         plain.closed_loop_step(data[0], np.zeros(plain.N_r), input_parameters=1.0)
-
-
-def test_from_arrays_has_the_loops():
-    esn, data = _trained(parametric=True)
-    back = EchoStateNetwork.from_arrays(esn.to_arrays())
-    for net in (esn, back):
-        Y, R = net.open_loop(data[:10], input_parameters=0.8)
-        out = net.forecast(Y[-1], R[-1], 12, input_parameters=0.8)
-        if net is esn:
-            ref = (Y, R) + out
-        else:
-            for x, y in zip((Y, R) + out, ref):
-                np.testing.assert_array_equal(x, y)
 
 
 def test_state_positions_of_a_single_reservoir():

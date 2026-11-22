@@ -1,270 +1,131 @@
-"""Tests for the parametric EchoStateNetwork (src/esn_core.py)."""
+"""The single network: segments and input parameters, the data split, the reservoir equation and its Jacobian, the
+readout options, the validation strategies and their folds, the stability gate, the ridge regression and the search
+over tikh alone."""
 import re
 import sys
 import warnings
 
 import numpy as np
 import pytest
+from conftest import assert_jacobian
 
-from echostatenetwork import EchoStateNetwork
+from echostatenetwork import EchoStateNetwork, validation
 
 
-def test_parametric_esn_trains_and_shapes():
-    rng = np.random.default_rng(0)
-    N_dim, Nt, L = 4, 80, 2
-    data = rng.normal(size=(L, Nt, N_dim))
-    params = np.array([[0.0, 1.0]])  # (N_param=1, L=2), e.g. cluster id per segment
+def _segments(lengths, N_dim, seed):
+    rng = np.random.default_rng(seed)
+    return [rng.normal(size=(nt, N_dim)) for nt in lengths]
 
-    esn = EchoStateNetwork(data[0].T, dt=1, N_units=20, upsample=1,
-                            t_train=40, t_val=10, t_test=10, N_wash=5,
-                            hyperparameters_to_optimize=[],
-                            input_parameters=params)
-    esn.train(data, plot_training=False)
 
-    assert esn.N_dim_in == N_dim + 1
-    assert esn.Wout.shape == (esn.N_units + 1, N_dim)
-    # An un-normalized parameter column would swamp the reservoir through Win's dense
-    # parameter connections, so the constructor auto-enables optimize_parameter_normalization
-    # for any parametric ESN unless the caller opts out (see esn_core.py's class docstring) --
-    # the parameter column is tuned to O(1) via the same BHO loop as rho/sigma_in/tikh, not
-    # left at the identity (norm=1, shift=0).
+@pytest.mark.parametrize('per_step', [False, True])
+def test_parametric_network_trains_on_ragged_segments(per_step):
+    # Segments (e.g. cluster-dwell chunks) may differ in length, and the parameter may be one value per segment,
+    # (N_param, L), or vary within a segment, a list of (Nt_l, N_param) arrays. An unnormalized parameter column would
+    # swamp the reservoir through Win, so a parametric network tunes its normalization unless the caller opts out.
+    lengths = [60, 90, 45, 120, 75]
+    segments = _segments(lengths, 4, seed=2)
+    if per_step:
+        params = [np.full((nt, 1), float(i)) for i, nt in enumerate(lengths)]
+        params[1][lengths[1] // 2:] = 5.0                                 # flips mid-segment
+    else:
+        params = np.array([[0.0, 1.0, 2.0, 0.0, 1.0]])
+    esn = EchoStateNetwork(segments[0].T, dt=1, N_units=20, upsample=1, t_train=30, t_val=10, N_wash=5,
+                           hyperparameters_to_optimize=[], input_parameters=params)
+    esn.train(segments, plot_training=False)
+    assert esn.N_dim_in == 5 and esn.Wout.shape == (esn.N_units + 1, 4)
     assert esn.optimize_parameter_normalization is True
     assert esn.param_norm_range[0] <= esn.norm[-1] <= esn.param_norm_range[1]
 
 
-def test_parametric_esn_closed_loop_hyperparameter_search():
-    # Exercises _RVC_Noise's closed-loop run (outputs_to_inputs) with input_parameters set.
-    rng = np.random.default_rng(1)
-    N_dim, Nt, L = 3, 80, 2
-    data = rng.normal(size=(L, Nt, N_dim))
-    params = np.array([[0.0, 1.0]])
-
-    esn = EchoStateNetwork(data[0].T, dt=1, N_units=15, upsample=1,
-                            t_train=40, t_val=10, t_test=10, N_wash=5,
-                            N_folds=2, N_grid=2, N_func_evals=2,
-                            hyperparameters_to_optimize=['rho'],
-                            input_parameters=params)
-    esn.train(data, plot_training=False)
-
-    assert esn.trained
+def test_search_with_per_step_parameters_and_leak_rate():
+    # _RVC_Noise and run_test slice off the parameter columns with input_parameters.shape[0], which must work for a
+    # per-timestep list as well; leak_rate is searched as rho is
+    lengths = [60, 90, 45]
+    per_step = [np.full((nt, 1), float(i)) for i, nt in enumerate(lengths)]
+    esn = EchoStateNetwork(np.zeros((2, 1)), dt=1, N_units=15, upsample=1, t_train=30, t_val=10, N_wash=5,
+                           N_folds=2, N_grid=2, N_func_evals=5, hyperparameters_to_optimize=['rho', 'leak_rate'],
+                           input_parameters=per_step, optimize_parameter_normalization=False)
+    esn.train(_segments(lengths, 2, seed=4), plot_training=False)
+    assert esn.trained and esn.bo_results['hp_names'] == ['rho', 'leak_rate']
+    assert esn.leak_rate_range[0] <= esn.leak_rate <= esn.leak_rate_range[1]
 
 
 def test_bo_results_exposed_after_training():
-    # Downstream code (e.g. qlrom's per-chart ESNs) plots BHO convergence traces from
-    # esn.bo_results['func_vals'] -- the per-evaluation validation-loss trace -- so
-    # train() must keep the optimization output instead of discarding it. It is a
-    # SLIMMED copy: the raw skopt OptimizeResult retains the training corpus and GP
-    # models, which would bloat (or, with closure validation strategies, break)
-    # every pickle of a trained ESN.
+    # Downstream code (qlroms' per-chart ESNs) plots esn.bo_results['func_vals'], so train() keeps a SLIMMED copy of
+    # the search: the raw skopt OptimizeResult holds the corpus and the GP models, which bloat (or, with a closure as
+    # validation strategy, break) every pickle of a trained network.
     import pickle
-
-    rng = np.random.default_rng(9)
-    data = rng.normal(size=(2, 80, 3))
-    n_func_evals = 3
-
-    esn = EchoStateNetwork(data[0].T, dt=1, N_units=15, upsample=1,
-                            t_train=40, t_val=10, t_test=10, N_wash=5,
-                            N_folds=2, N_grid=2, N_func_evals=n_func_evals,
-                            hyperparameters_to_optimize=['rho'])
-    assert esn.bo_results is None  # nothing to inspect before training
-
-    def local_strategy(*args, **kwargs):  # unpicklable closure, the regression case
-        return EchoStateNetwork._RVC_Noise(*args, **kwargs)
-
-    esn.train(data, plot_training=False, validation_strategy=local_strategy)
-
-    assert isinstance(esn.bo_results, dict)
-    assert len(esn.bo_results['func_vals']) == n_func_evals
-    assert esn.bo_results['hp_names'] == ['rho']
-    pickle.dumps(esn)  # must not choke on (or retain) the BHO internals
-
-    esn_no_bho = EchoStateNetwork(data[0].T, dt=1, N_units=15, upsample=1,
-                                   t_train=40, t_val=10, t_test=10, N_wash=5,
-                                   hyperparameters_to_optimize=[])
-    esn_no_bho.train(data, plot_training=False)
-    assert esn_no_bho.bo_results is None
-
-
-def test_parametric_esn_ragged_segments():
-    # Segments (e.g. cluster-dwell chunks) may have different lengths; train_data can
-    # be a list of (Nt_l, N_dim) arrays instead of a regular (L, Nt, N_dim) array.
-    rng = np.random.default_rng(2)
-    N_dim = 4
-    lengths = [60, 90, 45, 120, 75]
-    segments = [rng.normal(size=(nt, N_dim)) for nt in lengths]
-    params = np.array([[0.0, 1.0, 2.0, 0.0, 1.0]])  # (1, L=5) cluster id per segment
-
-    esn = EchoStateNetwork(segments[0].T, dt=1, N_units=20, upsample=1,
-                            t_train=30, t_val=10, N_wash=5,
-                            hyperparameters_to_optimize=[],
-                            input_parameters=params)
-    esn.train(segments, plot_training=False)
-
-    assert esn.N_dim_in == N_dim + 1
-    assert esn.Wout.shape == (esn.N_units + 1, N_dim)
-    assert esn.optimize_parameter_normalization is True
-    assert esn.param_norm_range[0] <= esn.norm[-1] <= esn.param_norm_range[1]
-
-
-def test_parametric_esn_per_timestep_varying_parameter():
-    # input_parameters can be a list of (Nt_l, N_param) arrays instead of a constant
-    # (N_param, L) array, for segments where the parameter itself varies within the
-    # segment (e.g. a window straddling a cluster transition).
-    rng = np.random.default_rng(3)
-    N_dim = 2
-    lengths = [60, 90, 45]
-    segments = [rng.normal(size=(nt, N_dim)) for nt in lengths]
-
-    per_step = []
-    for i, nt in enumerate(lengths):
-        label = np.full((nt, 1), float(i))
-        if i == 1:
-            label[nt // 2:] = 5.0  # flips mid-segment
-        per_step.append(label)
-
-    esn = EchoStateNetwork(segments[0].T, dt=1, N_units=20, upsample=1,
-                            t_train=30, t_val=10, N_wash=5,
-                            hyperparameters_to_optimize=[],
-                            input_parameters=per_step)
-    esn.train(segments, plot_training=False)
-
-    assert esn.N_dim_in == N_dim + 1
-    assert esn.optimize_parameter_normalization is True
-    assert esn.param_norm_range[0] <= esn.norm[-1] <= esn.param_norm_range[1]
-
-
-def test_parametric_esn_per_timestep_varying_parameter_with_bho():
-    # _RVC_Noise and run_test's predict_Y both read input_parameters.shape[0] to slice
-    # off the parameter columns for their own closed-loop runs; this must also work
-    # when input_parameters is a per-timestep list rather than a constant ndarray.
-    rng = np.random.default_rng(4)
-    N_dim = 2
-    lengths = [60, 90, 45]
-    segments = [rng.normal(size=(nt, N_dim)) for nt in lengths]
-    per_step = [np.full((nt, 1), float(i)) for i, nt in enumerate(lengths)]
-
-    esn = EchoStateNetwork(segments[0].T, dt=1, N_units=15, upsample=1,
-                            t_train=30, t_val=10, N_wash=5,
-                            N_folds=2, N_grid=2, N_func_evals=2,
-                            hyperparameters_to_optimize=['rho'],
-                            input_parameters=per_step)
-    esn.train(segments, plot_training=False)
-
-    assert esn.trained
+    data = np.random.default_rng(9).normal(size=(2, 80, 3))
+    esn = EchoStateNetwork(data[0].T, dt=1, N_units=15, upsample=1, t_train=40, t_val=10, t_test=10, N_wash=5,
+                           N_folds=2, N_grid=2, N_func_evals=3, hyperparameters_to_optimize=['rho'])
+    assert esn.bo_results is None
+    esn.train(data, plot_training=False, validation_strategy=lambda *a, **k: EchoStateNetwork._RVC_Noise(*a, **k))
+    assert len(esn.bo_results['func_vals']) == 3 and esn.bo_results['hp_names'] == ['rho']
+    pickle.dumps(esn)
 
 
 def test_ragged_segments_ignore_t_train_budget():
-    # Short segments must survive as long as they yield one trainable pair past
-    # their own washout (N_wash + 2 raw points -- t_val must NOT gate training
-    # inclusion). t_train must NOT cap a segmented corpus: read as a total pair
-    # budget it shrank every segment to a couple of steps. Every usable segment is
-    # kept in full whether or not t_train is given, and t_train is written back
-    # from what was kept.
-    rng = np.random.default_rng(5)
-    N_dim = 2
+    # A segment survives if it yields one trainable pair past its own washout (t_val does not gate it), and t_train
+    # does not cap a segmented corpus (read as a total budget of pairs, it shrank every segment to a couple of
+    # steps): every usable segment is kept in full, and t_train is written back from what was kept.
     lengths = [15, 20, 500, 30, 18]
-    segments = [rng.normal(size=(nt, N_dim)) for nt in lengths]
-    params = np.array([[float(i) for i in range(len(lengths))]])
-
-    # t_train=100 is far below the corpus (~550 trainable pairs): ignored, not a cap
-    esn = EchoStateNetwork(segments[0].T, dt=1, N_units=15, upsample=1,
-                            t_train=100, t_val=10, N_wash=3,
-                            hyperparameters_to_optimize=[],
-                            input_parameters=params)
-    U_wtv, Y_wtv, U_test, _ = esn._split_and_format_data(segments)
-
-    assert len(U_wtv) == 4 and len(U_test) == 1     # 80/20 segment split, none dropped
-    assert [u.shape[0] for u in U_wtv] == [nt - 1 for nt in lengths[:4]]  # kept in full
-    kept_pairs = sum(u.shape[0] - esn.N_wash for u in U_wtv)
-    assert esn.N_train == max(kept_pairs - esn.N_val, 1)   # written back from the data
-    for u, y in zip(U_wtv, Y_wtv):
-        assert u.shape[0] == y.shape[0]  # washout+train windows stay aligned
-
-    # a generous t_train gives exactly the same split -- it is informational here
-    esn_all = EchoStateNetwork(segments[0].T, dt=1, N_units=15, upsample=1,
-                                t_train=1000, t_val=10, N_wash=3,
-                                hyperparameters_to_optimize=[],
-                                input_parameters=params)
-    U_full, _, _, _ = esn_all._split_and_format_data(segments)
-    assert [u.shape[0] for u in U_full] == [u.shape[0] for u in U_wtv]
-
+    segments = _segments(lengths, 2, seed=5)
+    splits = []
+    for t_train in (100, 1000):                       # far below, and above, the ~550 trainable pairs
+        esn = EchoStateNetwork(segments[0].T, dt=1, N_units=15, upsample=1, t_train=t_train, t_val=10, N_wash=3,
+                               hyperparameters_to_optimize=[], input_parameters=np.array([np.arange(5.0)]))
+        U_wtv, Y_wtv, U_test, _ = esn._split_and_format_data(segments)
+        splits.append([u.shape[0] for u in U_wtv])
+        assert len(U_test) == 1 and splits[-1] == [nt - 1 for nt in lengths[:4]]    # 80/20, none dropped
+        assert esn.N_train == max(sum(u.shape[0] - esn.N_wash for u in U_wtv) - esn.N_val, 1)
+        assert all(u.shape[0] == y.shape[0] for u, y in zip(U_wtv, Y_wtv))
     esn.train(segments, plot_training=False)
     assert esn.trained
 
 
 def test_rvc_fold_placement_adapts_to_each_segments_own_length():
-    # _RVC_Noise's fold spacing/count used to be derived once from the nominal
-    # N_train, as if every segment were that long. With segments now genuinely
-    # variable-length (some far shorter than N_train), that silently sliced out of
-    # bounds for later folds on short segments -- an empty U_wash/Y_val, NaN in
-    # compute_nMAE, and a NaN-catch that *reset* the whole accumulated score to a
-    # constant, making every hyperparameter combination look identical. Fold
-    # placement must instead be computed per segment.
+    # _RVC_Noise placed its folds from the nominal N_train, as if every segment were that long: on short segments the
+    # later folds sliced out of bounds, gave NaN in compute_nMAE, and a NaN-catch reset the accumulated score to a
+    # constant, so every candidate looked identical. Fold placement is computed per segment.
     rng = np.random.default_rng(6)
-    N_dim = 2
-    # most segments far shorter than N_train=500 (below), a couple long enough for
-    # all N_folds folds at the old, nominal spacing
-    lengths = list(rng.integers(50, 200, size=20)) + [900, 950]
-    segments = [rng.normal(size=(nt, N_dim)).cumsum(axis=0) * 0.1 for nt in lengths]
-    params = np.array([[float(i % 2) for i in range(len(lengths))]])
-
-    esn = EchoStateNetwork(segments[0].T, dt=1, N_units=15, upsample=1,
-                            t_train=500, t_val=50, N_wash=5, N_folds=4,
-                            hyperparameters_to_optimize=['rho', 'sigma_in'],
-                            N_grid=2, N_func_evals=4,
-                            input_parameters=params, seed=0)
+    lengths = list(rng.integers(50, 200, size=20)) + [900, 950]          # most far shorter than N_train=500
+    segments = [rng.normal(size=(nt, 2)).cumsum(axis=0) * 0.1 for nt in lengths]
+    esn = EchoStateNetwork(segments[0].T, dt=1, N_units=15, upsample=1, t_train=500, t_val=50, N_wash=5, N_folds=4,
+                           hyperparameters_to_optimize=['rho', 'sigma_in'], N_grid=2, N_func_evals=4,
+                           input_parameters=np.array([np.arange(22) % 2.0]), seed=0)
     with warnings.catch_warnings():
         warnings.simplefilter("error", RuntimeWarning)  # "Mean of empty slice" -> fail
         esn.train(segments, plot_training=False)
-
     assert esn.trained
 
 
-def test_omitted_t_train_uses_all_data_and_infers_t_val():
-    """No t_train -> ALL the data is used with an 80/20 train-val/test split of the
-    segments; no t_val -> inferred from the median segment (dwell) length. The
-    inferred values are written back so N_train/N_val are defined afterwards."""
-    rng = np.random.default_rng(7)
-    N_dim = 2
+def test_omitted_t_train_and_t_val_are_inferred():
+    """No t_train: ALL the data, split 80/20 into train/val and test (whole segments, or one series); no t_val: the
+    post-washout length of the median segment, or 20% of the train/val window of one series. The inferred values are
+    written back; t_test=0 trains on every segment."""
     lengths = [40, 45, 50, 55, 60, 42, 48, 52, 58, 44]
-    segments = [rng.normal(size=(nt, N_dim)) for nt in lengths]
-    params = np.array([[float(i) for i in range(len(lengths))]])
-
-    esn = EchoStateNetwork(segments[0].T, dt=1, N_units=15, upsample=1,
-                            N_wash=5, hyperparameters_to_optimize=[],
-                            input_parameters=params)   # t_train/t_val omitted
+    segments = _segments(lengths, 2, seed=7)
+    esn = EchoStateNetwork(segments[0].T, dt=1, N_units=15, upsample=1, N_wash=5, hyperparameters_to_optimize=[],
+                           input_parameters=np.array([np.arange(10.0)]))
     assert esn.t_train is None and esn.t_val is None
-
-    U_wtv, Y_wtv, U_test, Y_test = esn._split_and_format_data(segments)
-
-    # 80/20 segment split: 8 train/val segments kept whole, 2 held out for test
-    assert len(U_wtv) == 8
-    assert len(U_test) == 2
+    U_wtv, _, U_test, _ = esn._split_and_format_data(segments)
+    assert len(U_wtv) == 8 and len(U_test) == 2
     assert [u.shape[0] for u in U_wtv] == [nt - 1 for nt in lengths[:8]]
-
-    # t_val inferred from the median segment length's post-washout tail
-    assert esn.t_val is not None and esn.t_train is not None
-    assert esn.N_val == int(np.median(lengths)) - esn.N_wash - 1
-
+    assert esn.t_train is not None and esn.N_val == int(np.median(lengths)) - esn.N_wash - 1
     esn.train(segments, plot_training=False)
     assert esn.trained
 
-
-def test_omitted_t_train_single_trajectory_80_20():
-    """Single unsegmented trajectory, nothing provided: 80% train/val, 20% test,
-    t_val = 20% of the train/val window."""
-    rng = np.random.default_rng(8)
-    data = rng.normal(size=(200, 2)).cumsum(axis=0) * 0.1
-
-    esn = EchoStateNetwork(data.T, dt=1, N_units=15, upsample=1, N_wash=5,
-                            hyperparameters_to_optimize=[])
-    U_wtv, Y_wtv, U_test, Y_test = esn._split_and_format_data(data)
-
+    data = np.random.default_rng(8).normal(size=(200, 2)).cumsum(axis=0) * 0.1
+    esn = EchoStateNetwork(data.T, dt=1, N_units=15, upsample=1, N_wash=5, hyperparameters_to_optimize=[])
+    U_wtv, _, U_test, _ = esn._split_and_format_data(data)
     n_wtv = esn.N_train + esn.N_val
-    assert n_wtv == 160                      # 80% of 200
-    assert esn.N_val == round(0.2 * 160)     # 20% of the train/val window
-    assert U_wtv.shape[1] == n_wtv - 1
-    assert U_test.shape[1] == data.shape[0] - n_wtv - 1
+    assert n_wtv == 160 and esn.N_val == round(0.2 * 160)
+    assert U_wtv.shape[1] == n_wtv - 1 and U_test.shape[1] == data.shape[0] - n_wtv - 1
+
+    esn = EchoStateNetwork(segments[0].T, dt=1, N_units=10, upsample=1, N_wash=5, t_test=0.0,
+                           hyperparameters_to_optimize=[])
+    esn.train(segments, plot_training=False)
+    assert (esn.split_summary['segments_train'], esn.split_summary['segments_test']) == (10, 0)
 
 
 def test_rr_terms_match_returned_states():
@@ -295,99 +156,43 @@ def test_rr_terms_match_returned_states():
 def test_spectral_radius_arpack_fallback():
     # N_units=150, seed=0 stagnates ARPACK (0/1 eigenvectors at 1501 iterations);
     # the dense fallback must still deliver a unit-spectral-radius reservoir
-    import numpy as np
-
-    from echostatenetwork import EchoStateNetwork
-
-    y = np.random.default_rng(0).standard_normal((200, 3))
-    esn = EchoStateNetwork(y, dt=0.1, N_units=150, N_wash=10, seed=0)
+    esn = EchoStateNetwork(np.zeros((3, 1)), dt=0.1, N_units=150, N_wash=10, seed=0)
     esn._generate_W_Win(seed=esn.seed)
-    W = esn.W.toarray() if hasattr(esn.W, "toarray") else np.asarray(esn.W)
-    rho = np.abs(np.linalg.eigvals(W)).max()
-    assert np.isclose(rho, 1.0, atol=1e-8)
+    assert np.isclose(np.abs(np.linalg.eigvals(esn.W.toarray())).max(), 1.0, atol=1e-8)
 
 
-def test_leak_rate_default_is_plain_tanh_step():
-    # leak_rate defaults to 1.0 (no leak): the update IS the plain tanh map
-    rng = np.random.default_rng(11)
+@pytest.mark.parametrize('leak_rate, scale_bias_in', [(1.0, True), (0.35, True), (1.0, False)])
+def test_step_is_the_reservoir_equation(leak_rate, scale_bias_in):
+    # r' = (1 - a) r + a tanh(sigma_in Win_u u + s b_in Win_b + rho W r), with s = sigma_in, or s = 1 when
+    # scale_bias_in=False; leak_rate defaults to 1 (the plain tanh map), and scale_bias_in survives to_arrays
+    rng = np.random.default_rng(12)
     data = rng.normal(size=(60, 3))
-    esn = EchoStateNetwork(data.T, dt=1, N_units=12, upsample=1, t_train=30,
-                           t_val=10, t_test=10, N_wash=5,
-                           hyperparameters_to_optimize=[])
-    esn.train(data, plot_training=False)
-    assert esn.leak_rate == 1.0
-    u, r = data[:1].T, rng.normal(size=(esn.N_units, 1))
-    u_aug = np.concatenate((esn.normalize_input(u), esn.bias_in * np.ones((1, 1))))
-    expected = np.tanh(esn.sigma_in * esn.Win.dot(u_aug) + esn.rho * esn.W.dot(r))
-    np.testing.assert_allclose(esn.step(u, r)[1], expected)
-
-
-def test_unscaled_bias_enters_without_sigma_in():
-    # scale_bias_in=False: tanh(sigma_in W_in,1 u + b_in W_in,b + rho W r), and the option survives to_arrays
-    rng = np.random.default_rng(13)
-    data = rng.normal(size=(60, 3))
+    leak = {} if leak_rate == 1.0 else dict(leak_rate=leak_rate)
     esn = EchoStateNetwork(data.T, dt=1, N_units=12, upsample=1, t_train=30, t_val=10, t_test=10, N_wash=5,
-                           sigma_in=0.01, bias_in=np.array([0.7]), scale_bias_in=False,
-                           hyperparameters_to_optimize=[])
+                           sigma_in=0.01, bias_in=np.array([0.7]), scale_bias_in=scale_bias_in,
+                           hyperparameters_to_optimize=[], **leak)
     esn.train(data, plot_training=False)
-    u, r = data[:1].T, rng.normal(size=(esn.N_units, 2))
-    u = np.repeat(u, 2, axis=1)
+    assert esn.leak_rate == leak_rate
+    u, r = np.repeat(data[:1].T, 2, axis=1), rng.normal(size=(esn.N_units, 2))
     Win = esn.Win.toarray()
-    expected = np.tanh(esn.sigma_in * Win[:, :-1] @ esn.normalize_input(u) + 0.7 * Win[:, -1:]
-                       + esn.rho * esn.W.dot(r))
+    s = esn.sigma_in if scale_bias_in else 1.0
+    x = np.tanh(esn.sigma_in * Win[:, :-1] @ esn.normalize_input(u) + s * 0.7 * Win[:, -1:] + esn.rho * esn.W.dot(r))
+    expected = (1 - leak_rate) * r + leak_rate * x
     np.testing.assert_allclose(esn.step(u, r)[1], expected)
     loaded = EchoStateNetwork.from_arrays(esn.to_arrays())
-    assert loaded.scale_bias_in is False
+    assert loaded.scale_bias_in is scale_bias_in
     np.testing.assert_allclose(loaded.step(u, r)[1], expected)
 
 
-def test_leaky_step_matches_leaky_integrator_formula():
-    rng = np.random.default_rng(12)
-    data = rng.normal(size=(60, 3))
-    alpha = 0.35
-    esn = EchoStateNetwork(data.T, dt=1, N_units=12, upsample=1, t_train=30,
-                           t_val=10, t_test=10, N_wash=5, leak_rate=alpha,
-                           hyperparameters_to_optimize=[])
+@pytest.mark.parametrize('r2_mode', [False, True])
+@pytest.mark.parametrize('leak_rate', [1.0, 0.6])
+def test_jacobian_matches_finite_differences(leak_rate, r2_mode):
+    data = np.random.default_rng(13).normal(size=(120, 3)).cumsum(axis=0) * 0.1
+    esn = EchoStateNetwork(data.T, dt=1, N_units=12, upsample=1, t_train=60, t_val=20, t_test=20, N_wash=5, seed=0,
+                           leak_rate=leak_rate, r2_mode=r2_mode, hyperparameters_to_optimize=[])
     esn.train(data, plot_training=False)
-    u, r = data[:1].T, rng.normal(size=(esn.N_units, 1))
-    u_aug = np.concatenate((esn.normalize_input(u), esn.bias_in * np.ones((1, 1))))
-    x_tanh = np.tanh(esn.sigma_in * esn.Win.dot(u_aug) + esn.rho * esn.W.dot(r))
-    np.testing.assert_allclose(esn.step(u, r)[1], (1 - alpha) * r + alpha * x_tanh)
-
-
-def test_jacobian_matches_finite_differences_with_and_without_leak():
-    rng = np.random.default_rng(13)
-    data = rng.normal(size=(80, 3))
-    for alpha in (1.0, 0.6):
-        esn = EchoStateNetwork(data.T, dt=1, N_units=12, upsample=1, t_train=40,
-                               t_val=15, t_test=10, N_wash=5, leak_rate=alpha,
-                               hyperparameters_to_optimize=[])
-        esn.train(data, plot_training=False)
-        u = data[5].reshape(-1, 1).copy()
-        r = 0.1 * rng.normal(size=(esn.N_units, 1))
-        J = esn.Jacobian(u, r)
-        eps = 1e-4   # smaller eps only adds FD roundoff (verified quadratic convergence)
-        J_fd = np.zeros_like(J)
-        for j in range(u.shape[0]):
-            up, um = u.copy(), u.copy()
-            up[j] += eps
-            um[j] -= eps
-            J_fd[:, j] = ((esn.step(up, r)[0] - esn.step(um, r)[0]) / (2 * eps))[:, 0]
-        np.testing.assert_allclose(J, J_fd, rtol=1e-5, atol=1e-8)
-
-
-def test_leak_rate_optimized_in_bayesian_search():
-    rng = np.random.default_rng(14)
-    data = rng.normal(size=(2, 80, 3))
-    esn = EchoStateNetwork(data[0].T, dt=1, N_units=15, upsample=1, t_train=40,
-                           t_val=10, t_test=10, N_wash=5, N_folds=2, N_grid=2,
-                           N_func_evals=4,
-                           hyperparameters_to_optimize=['leak_rate'])
-    esn.train(data, plot_training=False)
-    lo, hi = esn.leak_rate_range
-    assert lo <= esn.leak_rate <= hi
-    assert 'leak_rate' in esn.bo_results['hp_names']
-    assert 'leak_rate' in esn.training_summary() or esn.leak_rate == 1.0
+    r = 0.3 * np.random.default_rng(2).normal(size=(esn.N_units, 1))
+    assert_jacobian(esn, data[5].reshape(-1, 1).copy(), r, atol=1e-9 if r2_mode else 1e-8)
 
 
 def _train_single_series(strategy, seed=20, **esn_kwargs):
@@ -406,150 +211,60 @@ def _train_single_series(strategy, seed=20, **esn_kwargs):
     return esn
 
 
-def test_ssv_single_shot_validation_trains():
-    esn = _train_single_series(EchoStateNetwork._SSV)
-    assert esn.trained
-    assert esn.Wout.shape == (esn.N_units + 1, 3)
-    assert isinstance(esn.bo_results, dict)
-    assert len(esn.bo_results['func_vals']) == 3
-
-
-def test_wfv_walk_forward_validation_trains():
-    esn = _train_single_series(EchoStateNetwork._WFV)
-    assert esn.trained
-    assert esn.Wout.shape == (esn.N_units + 1, 3)
-    assert isinstance(esn.bo_results, dict)
-    assert len(esn.bo_results['func_vals']) == 3
-
-
-def test_kfv_k_fold_validation_trains():
-    esn = _train_single_series(EchoStateNetwork._KFV)
-    assert esn.trained
-    assert esn.Wout.shape == (esn.N_units + 1, 3)
-    assert isinstance(esn.bo_results, dict)
-    assert len(esn.bo_results['func_vals']) == 3
-
-
-def test_wfv_kfv_retrain_per_fold_giving_distinct_objectives():
-    # _WFV/_KFV retrain Wout per fold on different training windows, so on the
-    # same data/reservoir/seed their objective landscapes must differ from
-    # _SSV's (single fold, single training prefix) and from each other. Every
-    # run is deterministic (fixed data seed, reservoir seed, and gp_minimize
-    # random_state), so identical traces would mean the fold machinery collapsed
-    # into a single shared objective.
-    traces = {}
-    for name, strategy in [('SSV', EchoStateNetwork._SSV),
-                           ('WFV', EchoStateNetwork._WFV),
-                           ('KFV', EchoStateNetwork._KFV)]:
-        traces[name] = _train_single_series(strategy).bo_results['func_vals']
-    assert not np.allclose(traces['SSV'], traces['WFV'])
-    assert not np.allclose(traces['SSV'], traces['KFV'])
-    assert not np.allclose(traces['WFV'], traces['KFV'])
-
-
-def test_wfv_rejects_ragged_segments():
-    # The single-series strategies are defined for one contiguous series; a
-    # ragged (list-of-segments) corpus must raise and point to the segment-aware
-    # strategy instead.
-    rng = np.random.default_rng(23)
-    segments = [rng.normal(size=(nt, 2)) for nt in (60, 90, 45)]
-    esn = EchoStateNetwork(segments[0].T, dt=1, N_units=10, upsample=1,
-                            t_train=30, t_val=10, N_wash=5,
-                            N_grid=2, N_func_evals=2,
-                            hyperparameters_to_optimize=['rho'])
+def test_single_series_strategies_retrain_per_fold():
+    # SSV, WFV and KFV train and keep the search trace. WFV and KFV retrain Wout per fold on different windows, so on
+    # the same data, reservoir and seed the three objectives differ: identical traces would mean that the folds
+    # collapsed into one. A ragged corpus is refused, with a pointer to the segment strategies.
+    traces = []
+    for strategy in (EchoStateNetwork._SSV, EchoStateNetwork._WFV, EchoStateNetwork._KFV):
+        esn = _train_single_series(strategy)
+        assert esn.trained and esn.Wout.shape == (esn.N_units + 1, 3)
+        traces.append(esn.bo_results['func_vals'])
+        assert len(traces[-1]) == 3
+    for a, b in ((0, 1), (0, 2), (1, 2)):
+        assert not np.allclose(traces[a], traces[b])
+    segments = _segments((60, 90, 45), 2, seed=23)
+    esn = EchoStateNetwork(segments[0].T, dt=1, N_units=10, upsample=1, t_train=30, t_val=10, N_wash=5,
+                           N_grid=2, N_func_evals=2, hyperparameters_to_optimize=['rho'])
     with pytest.raises(ValueError, match='segment strategies'):
-        esn.train(segments, plot_training=False,
-                  validation_strategy=EchoStateNetwork._WFV)
+        esn.train(segments, plot_training=False, validation_strategy=EchoStateNetwork._WFV)
 
 
-def test_val_fold_step_overlapping_intervals_multiply_folds():
-    # Chaotic fold variants of Racca & Magri (2021): a val_fold_step smaller
-    # than N_val advances consecutive validation intervals by less than their
-    # length, so they overlap and more folds fit in the same data. Request an
-    # unreachable N_folds so both runs warn of the reduction, and read the
-    # achieved fold count from the warning.
-    def achieved_folds(strategy, step):
-        with pytest.warns(UserWarning, match=r'using \d+ folds') as record:
-            _train_single_series(strategy, N_folds=100, N_func_evals=2,
-                                 val_fold_step=step)
-        note = next(str(w.message) for w in record if 'using' in str(w.message))
-        return int(re.search(r'using (\d+) folds', note).group(1))
-
+def test_realized_fold_count():
+    # A val_fold_step smaller than N_val overlaps the validation intervals (the chaotic fold variants of Racca &
+    # Magri 2021), so more folds fit in the same data. An unreachable N_folds warns of the count used, and the summary
+    # reports the realized count, not the request (also for the default strategy).
     for strategy in (EchoStateNetwork._WFV, EchoStateNetwork._KFV):
-        k_regular = achieved_folds(strategy, None)
-        k_chaotic = achieved_folds(strategy, 10)  # < N_val = 30 -> overlap
-        assert k_chaotic > k_regular
+        counts = []
+        for step in (None, 10):                                          # 10 < N_val = 30: overlap
+            with pytest.warns(UserWarning, match=r'using \d+ folds') as record:
+                esn = _train_single_series(strategy, N_folds=100, N_func_evals=2, val_fold_step=step)
+            note = next(str(w.message) for w in record if 'using' in str(w.message))
+            counts.append(int(re.search(r'using (\d+) folds', note).group(1)))
+            assert esn.n_folds_realized == counts[-1]
+            assert f'{counts[-1]} validation folds' in esn.training_summary()
+        assert counts[1] > counts[0]
+    data = np.random.default_rng(21).normal(size=(660, 3))
+    esn = EchoStateNetwork(data.T, dt=1, N_units=12, upsample=1, t_train=450, t_val=50, t_test=100, N_wash=5,
+                           N_folds=6, N_grid=2, N_func_evals=2, hyperparameters_to_optimize=['rho'])
+    esn.train(data, plot_training=False)
+    assert esn.n_folds_realized == 6 and '6 validation folds' in esn.training_summary()
 
 
 def test_val_fold_step_none_matches_explicit_n_val_bit_identically():
-    # The default val_fold_step=None must reproduce the regular non-overlapping
-    # fold geometry bit-identically: with the fold advance spelled out
-    # explicitly as N_val (t_val=30, dt_ESN=1), the BHO trace is identical.
-    # Retrain the SAME instance (regenerating W is not bit-reproducible --
-    # the spectral-radius rescaling goes through ARPACK's random start
-    # vector) and disable the input noise (drawn from the advancing
-    # instance rng); everything left is deterministic.
-    rng = np.random.default_rng(20)
-    data = rng.normal(size=(200, 3)).cumsum(axis=0) * 0.1
+    # The default val_fold_step=None is the regular fold geometry: with the advance spelled out as N_val, the trace of
+    # the search is identical. The SAME instance is trained again (W goes through ARPACK's start vector) without input
+    # noise (drawn from the advancing instance rng), so everything else is deterministic.
+    data = np.random.default_rng(20).normal(size=(200, 3)).cumsum(axis=0) * 0.1
     for strategy in (EchoStateNetwork._WFV, EchoStateNetwork._KFV):
-        esn = EchoStateNetwork(data.T, dt=1, N_units=15, upsample=1,
-                               t_train=120, t_val=30, t_test=40, N_wash=5,
-                               N_folds=3, N_grid=2, N_func_evals=3,
-                               hyperparameters_to_optimize=['rho'], seed=0)
-        traces = {}
+        esn = EchoStateNetwork(data.T, dt=1, N_units=15, upsample=1, t_train=120, t_val=30, t_test=40, N_wash=5,
+                               N_folds=3, N_grid=2, N_func_evals=3, hyperparameters_to_optimize=['rho'], seed=0)
+        traces = []
         for step in (None, 30):
             esn.val_fold_step = step
-            esn.train(data, plot_training=False, add_noise=False,
-                      validation_strategy=strategy, force=True)
-            traces[step] = esn.bo_results['func_vals'].copy()
-        assert np.array_equal(traces[None], traces[30])
-
-
-def test_training_summary_reports_realized_fold_count():
-    # An N_folds override is otherwise invisible (strategies may cap or multiply
-    # it -- see val_fold_step); the realized count must surface in the summary.
-    rng = np.random.default_rng(21)
-    data = rng.normal(size=(660, 3))
-    esn = EchoStateNetwork(data.T, dt=1, N_units=12, upsample=1, t_train=450,
-                           t_val=50, t_test=100, N_wash=5, N_folds=6,
-                           N_grid=2, N_func_evals=2,
-                           hyperparameters_to_optimize=['rho'])
-    esn.train(data, plot_training=False)
-    assert esn.n_folds_realized == 6
-    assert '6 validation folds' in esn.training_summary()
-
-    esn_kfv = EchoStateNetwork(data.T, dt=1, N_units=12, upsample=1, t_train=450,
-                               t_val=50, t_test=100, N_wash=5, N_folds=100,
-                               N_grid=2, N_func_evals=2,
-                               hyperparameters_to_optimize=['rho'])
-    with pytest.warns(UserWarning, match='KFV: only'):
-        esn_kfv.train(data, plot_training=False, validation_strategy=EchoStateNetwork._KFV)
-    # capped to what fits: the summary shows the REALIZED count, not the request
-    assert esn_kfv.n_folds_realized < 100
-    assert f'{esn_kfv.n_folds_realized} validation folds' in esn_kfv.training_summary()
-
-
-def test_compute_nRMSE_deprecated_alias():
-    data = np.random.default_rng(0).normal(size=(30, 3))
-    esn = EchoStateNetwork(data, dt=1, N_units=5, hyperparameters_to_optimize=[])
-    a, b = data[:10], data[10:20]
-    with pytest.warns(DeprecationWarning, match='compute_nMAE'):
-        assert esn.compute_nRMSE(a, b, norm=2.0) == esn.compute_nMAE(a, b, norm=2.0)
-
-
-def test_train_n_seeds_selects_best_realization():
-    rng = np.random.default_rng(3)
-    data = rng.normal(size=(2, 80, 3))
-    esn = EchoStateNetwork(data[0].T, dt=1, N_units=15, upsample=1,
-                            t_train=40, t_val=10, t_test=10, N_wash=5, N_folds=2,
-                            hyperparameters_to_optimize=[])
-    esn.train(data, plot_training=False, n_seeds=3)
-
-    assert esn.trained
-    scores = np.array(list(esn.seed_scores.values()))
-    assert scores.shape == (3,) and np.isfinite(scores).all()
-    # the network kept in place is the best-scoring seed's realization
-    assert esn.seed == list(esn.seed_scores)[int(np.argmin(scores))]
+            esn.train(data, plot_training=False, add_noise=False, validation_strategy=strategy, force=True)
+            traces.append(esn.bo_results['func_vals'].copy())
+        assert np.array_equal(*traces)
 
 
 def test_validation_metric_is_shared_across_strategies():
@@ -569,63 +284,39 @@ def test_validation_metric_is_shared_across_strategies():
                             validation_metric=counting_metric)
     esn.train(data, plot_training=False)
     U_wtv, Y_wtv = esn._split_and_format_data(data)[:2]
-    from echostatenetwork import validation
     out = validation.RVC_Noise([], esn.copy(), U_wtv, Y_wtv, np.zeros(1), [],
                                print_convergence=False)
     assert calls and np.isfinite(out)
 
 
-def test_ragged_t_test_zero_trains_on_every_segment():
-    rng = np.random.default_rng(12)
-    segments = [rng.normal(size=(40, 3)) for _ in range(6)]
-    esn = EchoStateNetwork(segments[0].T, dt=1, N_units=10, upsample=1, N_wash=5,
-                            t_test=0.0, hyperparameters_to_optimize=[])
-    esn.train(segments, plot_training=False)
-    assert esn.split_summary['segments_train'] == 6
-    assert esn.split_summary['segments_test'] == 0
-
-
-def test_readout_input_reads_the_input_directly():
-    # readout_input=True: Wout^T [r; u_norm; bias], the "input skip" readout
-    rng = np.random.default_rng(21)
-    data = rng.normal(size=(80, 3))
-    kw = dict(dt=1, N_units=12, upsample=1, t_train=40, t_val=15, t_test=10, N_wash=5,
-              hyperparameters_to_optimize=[])
-    esn = EchoStateNetwork(data.T, readout_input=True, **kw)
+@pytest.mark.parametrize('readout_input, in_reservoir', [(True, True), ('params', True), ('params', False)])
+def test_readout_input_reads_the_input_directly(readout_input, in_reservoir):
+    # readout_input=True: Wout^T [r; u_norm; bias], the "input skip" readout; 'params': Wout^T [r; p_norm; bias], and
+    # param_in_reservoir=False zeroes Win's parameter columns, so p reaches the output only through the readout. The
+    # Jacobian carries the direct term, reservoir_to_physical needs u, and to_arrays keeps both options.
+    rng = np.random.default_rng(22)
+    data = rng.normal(size=(2, 80, 3))
+    params = dict(input_parameters=np.array([[0.0, 1.0]])) if readout_input == 'params' else {}
+    esn = EchoStateNetwork(data[0].T, dt=1, N_units=12, upsample=1, t_train=40, t_val=10, t_test=10, N_wash=5,
+                           hyperparameters_to_optimize=[], readout_input=readout_input, param_in_reservoir=in_reservoir,
+                           **params)
     esn.train(data, plot_training=False)
-    assert esn.Wout.shape == (esn.N_units + esn.N_dim_in + 1, 3)
-    u = data[5].reshape(-1, 1).copy()
+    rows = slice(3, 4) if params else slice(0, 3)
+    assert esn.Wout.shape == (esn.N_units + 1 + rows.stop - rows.start, 3)
+    if params:
+        assert (abs(esn.Win[:, 3]).sum() > 0) == in_reservoir
+    u = np.vstack([data[0, 5].reshape(-1, 1), [[0.5]]])[:esn.N_dim_in]
     r = 0.1 * rng.normal(size=(esn.N_units, 1))
     u_out, r_out = esn.step(u, r)
-    manual = esn.Wout.T @ np.vstack([r_out, esn.normalize_input(u), esn.bias_out * np.ones((1, 1))])
+    manual = esn.Wout.T @ np.vstack([r_out, esn.normalize_input(u)[rows], esn.bias_out * np.ones((1, 1))])
     np.testing.assert_allclose(u_out, manual)
     np.testing.assert_allclose(esn.reservoir_to_physical(r_out, u=u), u_out)
-    with pytest.raises(ValueError, match="readout_input"):
+    with pytest.raises(ValueError, match='readout_input'):
         esn.reservoir_to_physical(r_out)
-    # the Jacobian carries the direct term
-    J = esn.Jacobian(u, r)
-    eps, J_fd = 1e-4, np.zeros((3, 3))
-    for j in range(3):
-        up, um = u.copy(), u.copy()
-        up[j] += eps
-        um[j] -= eps
-        J_fd[:, j] = ((esn.step(up, r)[0] - esn.step(um, r)[0]) / (2 * eps))[:, 0]
-    np.testing.assert_allclose(J, J_fd, rtol=1e-5, atol=1e-8)
-    # save/load keeps the flag and the closed loop is bit-identical
+    assert_jacobian(esn, u, r, eps=1e-4, rtol=1e-5)
     back = EchoStateNetwork.from_arrays(esn.to_arrays())
-    assert back.readout_input
+    assert back.readout_input == readout_input and back.param_in_reservoir == in_reservoir
     assert np.array_equal(back.step(u, r)[0], u_out)
-    # the default readout is unchanged
-    plain = EchoStateNetwork(data.T, **kw)
-    plain.train(data, plot_training=False)
-    assert plain.Wout.shape == (plain.N_units + 1, 3) and not plain.readout_input
-
-
-def test_readout_input_through_the_validation_strategies():
-    for strategy in (None, EchoStateNetwork._SSV, EchoStateNetwork._WFV):
-        esn = _train_single_series(strategy, readout_input=True)
-        assert esn.trained and np.isfinite(esn.Wout).all()
-        assert esn.Wout.shape == (esn.N_units + esn.N_dim_in + 1, 3)
 
 
 @pytest.mark.parametrize("mode", ["data", False])   # True: one value of the parameter, no range to search
@@ -641,37 +332,6 @@ def test_parametric_network_trains_on_one_series(mode, one_segment):
     assert esn.trained and esn.norm.shape == esn.shift.shape == (4,)
     if mode == 'data':
         assert esn.shift[-1] == 8.0
-
-
-@pytest.mark.parametrize("in_reservoir", [True, False])
-def test_readout_params_reads_only_the_parameter(in_reservoir):
-    # readout_input='params': Wout^T [r; p_norm; bias]; param_in_reservoir=False zeroes
-    # Win's parameter columns, so p reaches the output only through the readout
-    rng = np.random.default_rng(22)
-    data = rng.normal(size=(2, 80, 3))
-    esn = EchoStateNetwork(data[0].T, dt=1, N_units=12, upsample=1, t_train=40, t_val=10,
-                            t_test=10, N_wash=5, hyperparameters_to_optimize=[],
-                            input_parameters=np.array([[0.0, 1.0]]), readout_input='params',
-                            param_in_reservoir=in_reservoir)
-    esn.train(data, plot_training=False)
-    assert esn.Wout.shape == (esn.N_units + 2, 3)
-    assert (abs(esn.Win[:, 3]).sum() > 0) == in_reservoir
-    u = np.vstack([data[0, 5].reshape(-1, 1), [[0.5]]])
-    r = 0.1 * rng.normal(size=(esn.N_units, 1))
-    u_out, r_out = esn.step(u, r)
-    manual = esn.Wout.T @ np.vstack([r_out, esn.normalize_input(u)[3:], esn.bias_out * np.ones((1, 1))])
-    np.testing.assert_allclose(u_out, manual)
-    J = esn.Jacobian(u, r)
-    eps, J_fd = 1e-4, np.zeros((3, 4))
-    for j in range(4):
-        up, um = u.copy(), u.copy()
-        up[j] += eps
-        um[j] -= eps
-        J_fd[:, j] = ((esn.step(up, r)[0] - esn.step(um, r)[0]) / (2 * eps))[:, 0]
-    np.testing.assert_allclose(J, J_fd, rtol=1e-5, atol=1e-8)
-    back = EchoStateNetwork.from_arrays(esn.to_arrays())
-    assert back.readout_input == 'params'
-    assert np.array_equal(back.step(u, r)[0], u_out)
 
 
 _SEEDED_TRAIN_SCRIPT = """
@@ -722,7 +382,6 @@ def test_dense_bias_column_and_unregularized_bias_row():
 def test_bho_midpoint_grid_noise_and_stability_gate():
     # grid_midpoints: no initial point on the boundary; bho_noise reaches the GP; the stability gate
     # penalizes a candidate whose long closed loop blows up, and not one that stays bounded
-    from echostatenetwork import validation
     rng = np.random.default_rng(0)
     t = np.arange(600) * 0.05
     data = np.stack([np.sin(t), np.cos(t), np.sin(2 * t)], axis=1)[None] + 0.01 * rng.normal(size=(1, 600, 3))
@@ -741,8 +400,8 @@ def test_bho_midpoint_grid_noise_and_stability_gate():
 
 def test_stability_gate_from_several_starts():
     """The washouts of the gate spread over every segment, in turn; one start is the start of the first segment
-    (the former gate); several starts flag the unstable readout and keep the parameters of each record."""
-    from echostatenetwork import validation
+    (the former gate); several starts flag the unstable readout and keep the parameters of each record. Fewer starts
+    than segments spread over the list of segments, not the first ones only."""
     rng = np.random.default_rng(1)
     t = np.arange(300) * 0.05
     data = np.stack([np.stack([np.sin(t + a), np.cos(t + a)], axis=1) for a in (0.0, 1.0)]) + 0.01 * rng.normal(size=(2, 300, 2))
@@ -763,11 +422,14 @@ def test_stability_gate_from_several_starts():
     assert flags[1] == 1.0
     np.testing.assert_array_equal(esn.input_parameters, before)
 
+    class Case:
+        N_wash, stability_starts = 5, 3
+    assert [l for l, _ in validation._stability_starts(Case, [np.zeros((50, 2))] * 7)] == [0, 2, 4]
+
 
 def test_stability_gate_compares_each_loop_with_its_own_record():
     """Two records of different amplitude: the loops of a readout that reproduces each record pass the gate. A band
     around the pooled records would reject the loops of the small one."""
-    from echostatenetwork import validation
     t = np.arange(400) * 0.05
     data = np.stack([a * np.stack([np.sin(t), np.cos(t)], axis=1) for a in (1.0, 4.0)])
     esn = EchoStateNetwork(data[0].T, dt=1, N_units=60, upsample=1, t_train=300, t_val=50, t_test=50, N_wash=20,
@@ -780,23 +442,10 @@ def test_stability_gate_compares_each_loop_with_its_own_record():
     assert validation.unstable(esn, U, Y, esn.Wout[None])[0] == 0.0
 
 
-def test_stability_starts_cover_every_segment_evenly():
-    """Fewer starts than segments: the starts are spread over the list of segments, not the first ones only."""
-    from echostatenetwork import validation
-
-    class Case:
-        N_wash, stability_starts = 5, 3
-    U = [np.zeros((50, 2))] * 7
-    assert [l for l, _ in validation._stability_starts(Case, U)] == [0, 2, 4]
-    Case.stability_starts = 7
-    assert [l for l, _ in validation._stability_starts(Case, U)] == list(range(7))
-
-
 def test_stability_penalty_rejects_a_failing_candidate(monkeypatch):
     """The default penalty is a hard rejection: a Tikhonov candidate that fails the gate loses to a candidate that
     passes it, whatever its short-fold score. At the former default of 1.0 (one decade of log_nMAE), a failing
     candidate still won with a short-fold score better by more than one decade (L96-40s: -2.27 + 1 < -1.2)."""
-    from echostatenetwork import validation
     data = np.random.default_rng(0).normal(size=(300, 3)).cumsum(axis=0) * 0.1
     esn = EchoStateNetwork(data.T, dt=1, upsample=1, N_units=20, t_train=200, t_val=40, t_test=0, N_wash=10,
                            hyperparameters_to_optimize=[], tikh_range=[1e-12, 1e-6], stability_steps=1)
@@ -828,7 +477,6 @@ def test_stability_gate_checks_the_tail_of_the_loop(monkeypatch):
     """A loop that follows the record for three quarters of its length and then collapses to the mean keeps the
     standard deviation of the whole loop inside the band (sqrt(0.75) of the record's); the band on the last half of
     the loop (stability_tail) rejects it, and stability_tail=0 restores the test on the whole loop only."""
-    from echostatenetwork import validation
     t = np.arange(400) * 0.05
     data = np.stack([np.sin(t), np.cos(t)], axis=1)[None]
     esn = EchoStateNetwork(data[0].T, dt=1, N_units=20, upsample=1, t_train=300, t_val=50, t_test=50, N_wash=10,
@@ -866,6 +514,47 @@ def test_parameter_columns_normalized_like_the_state():
     assert esn.hyperparameters_to_optimize == ['rho']
 
 
+# ---------------------------------------------------------------------- a singular ridge regression
+SINGULAR = 'ridge matrix is singular'
+
+
+def _saturated_esn(**kwargs):
+    """A reservoir saturated by a large input scaling and input bias: its states are +-1, so the columns of the ridge
+    left-hand side are collinear and, without regularisation, it is singular."""
+    data = np.random.default_rng(0).normal(size=(300, 3)).cumsum(axis=0) * 10
+    options = dict(dt=1, N_units=50, upsample=1, t_train=200, t_val=40, t_test=40, N_wash=5, rho=0.5, sigma_in=10.,
+                   bias_in=np.array([10.]), tikh=0., tikh_range=[0.], seed=0)
+    return EchoStateNetwork(data.T, **{**options, **kwargs}), data
+
+
+def test_ridge_solve_falls_back_on_least_squares_only_when_singular():
+    # a non-singular solve is np.linalg.solve, unchanged; a singular one (two collinear columns) warns and returns the
+    # least-squares solution, so that one bad point of a search scores badly instead of stopping it
+    esn, _ = _saturated_esn()
+    rng = np.random.default_rng(1)
+    M = rng.normal(size=(6, 6))
+    LHS, RHS = M @ M.T, rng.normal(size=(6, 2))
+    np.testing.assert_array_equal(esn._ridge_solve(LHS, RHS, 1e-3), np.linalg.solve(esn._regularized(LHS, 1e-3), RHS))
+    X = rng.normal(size=(40, 3))
+    X = np.hstack((X, X[:, :1]))
+    LHS, RHS = X.T @ X, X.T @ np.ones((40, 2))
+    with pytest.raises(np.linalg.LinAlgError):
+        np.linalg.solve(LHS, RHS)
+    with pytest.warns(UserWarning, match=SINGULAR):
+        Wout = esn._ridge_solve(LHS, RHS, 0.)
+    np.testing.assert_allclose(Wout, np.linalg.lstsq(LHS, RHS, rcond=None)[0])
+
+
+@pytest.mark.parametrize('strategy', [None, validation.RVC_Noise, validation.SSV])
+def test_training_on_a_saturated_reservoir_completes(strategy):
+    # without a search (None), and with a search over tikh: the singular ridge warns once per call of train
+    esn, data = _saturated_esn(hyperparameters_to_optimize=[] if strategy is None else ['tikh'])
+    with pytest.warns(UserWarning, match=SINGULAR) as record:
+        esn.train(data, plot_training=False, validation_strategy=strategy)
+    assert np.isfinite(esn.Wout).all()
+    assert len([w for w in record if SINGULAR in str(w.message)]) == 1
+
+
 # ---------------------------------------------------------------------- 'tikh' alone in the search (issue #1)
 def _issue1_network(**kwargs):
     """The network and record of issue #1: 'tikh' is the only hyperparameter to optimize."""
@@ -889,7 +578,6 @@ def test_tikh_alone_is_one_evaluation_of_the_strategy(strategy, monkeypatch):
     # evaluation at the fixed rho, sigma_in and leak_rate: no Bayesian optimization, and no scikit-optimize
     # (echostatenetwork 0.2.3 gave the empty space to gp_minimize, which raised "need at least one array to
     # concatenate").
-    from echostatenetwork import validation
     monkeypatch.setitem(sys.modules, 'skopt', None)            # any import of scikit-optimize fails
     strategy = getattr(validation, strategy)
     esn, data = _issue1_network()
@@ -916,20 +604,16 @@ def test_tikh_alone_needs_no_search_budget():
     assert esn.tikh in esn.tikh_range and np.isfinite(esn.Wout).all()
 
 
-def test_tikh_alone_scores_each_seed_by_its_evaluation():
-    # n_seeds > 1 scores a seed with bo_results['fun'], here the score of its one evaluation
+def test_seed_scores_with_tikh_alone_and_without_a_search():
+    # n_seeds > 1 keeps the best seed, scored with bo_results['fun'], here the score of the one evaluation of tikh
+    # alone. Without a search, a seed is scored at its own fixed tikh, the one of the network that is kept, and not at
+    # the best value of tikh_range, which the network does not use.
     esn, data = _issue1_network()
     esn.train(data, plot_training=False, n_seeds=2)
     scores = esn.seed_scores
     assert esn.bo_results['hp_names'] == [] and len(esn.bo_results['func_vals']) == 1
-    assert esn.seed == min(scores, key=scores.get)
-    assert scores[esn.seed] == esn.bo_results['fun']
+    assert esn.seed == min(scores, key=scores.get) and scores[esn.seed] == esn.bo_results['fun']
 
-
-def test_seed_score_without_a_search_is_the_score_of_the_fixed_tikh():
-    # Without a search, a seed is scored at its own fixed tikh, the one of the network that is kept, and not at
-    # the best value of tikh_range, which the network does not use.
-    from echostatenetwork import validation
     esn, data = _issue1_network(hyperparameters_to_optimize=[], tikh=1e-16)
     esn.train(data, plot_training=False, add_noise=False, n_seeds=2)
     assert esn.tikh == 1e-16 and esn.bo_results is None
@@ -970,3 +654,27 @@ def test_tikh_alone_with_parametric_inputs():
     esn.train(data, plot_training=False)
     assert esn.bo_results['hp_names'] == [] and len(esn.bo_results['func_vals']) == 1
     assert esn.tikh in esn.tikh_range
+
+
+@pytest.mark.parametrize("layout", [{}, dict(patch_size=2, halo=1)])
+def test_batched_ridge_sums_equal_one_pass(layout):
+    """_compute_RR_terms accumulates the ridge sums `batch` steps at a time: a batch of 7 gives the sums and states
+    of one batch, keep_states=False returns no states, and train() gives the same readout whatever the batch."""
+    rng = np.random.default_rng(5)
+    data = np.cumsum(rng.normal(size=(2, 60, 4)), axis=1) * 0.1
+    kw = dict(dt=1, N_units=12, upsample=1, N_wash=5, t_train=40, t_val=10, t_test=0, noise=0.0,
+              hyperparameters_to_optimize=[], seed=0, verbose=False, **layout)
+    esn = EchoStateNetwork(data[0].T, **kw)
+    esn.train(data, plot_training=False)
+    U = [d[:-1] for d in data]
+    Y = [d[1:] for d in data]
+    LHS, RHS, U_RR, R_RR = esn._compute_RR_terms(U, Y, batch=10 ** 9)
+    LHS7, RHS7, U_RR7, R_RR7 = esn._compute_RR_terms(U, Y, batch=7)
+    assert np.allclose(LHS7, LHS, rtol=1e-12, atol=1e-12) and np.allclose(RHS7, RHS, rtol=1e-12, atol=1e-12)
+    assert all(np.array_equal(a, b) for a, b in zip(R_RR7, R_RR)) and all(
+        np.array_equal(a, b) for a, b in zip(U_RR7, U_RR))
+    lhs, rhs, u_none, r_none = esn._compute_RR_terms(U, Y, keep_states=False, batch=7)
+    assert np.array_equal(lhs, LHS7) and u_none == r_none == [None, None]
+    small = EchoStateNetwork(data[0].T, readout_batch=3, **kw)
+    small.train(data, plot_training=False)
+    assert np.allclose(small.Wout, esn.Wout, rtol=1e-9, atol=1e-11)
