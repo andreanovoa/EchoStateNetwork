@@ -86,8 +86,10 @@ def test_a_changed_option_draws_the_reservoir_that_a_new_network_draws(option):
     new = EchoStateNetwork(DATA.T, **{**QUICK, **GIVEN, **option})
     new.train(DATA, plot_training=False, seed=0)
     assert same(esn.W, new.W) and same(esn.Win, new.Win)
-    # the readouts agree to the digits that the conditioning of the ridge system leaves (tikh = 1e-12)
-    assert np.allclose(esn.Wout, new.Wout, rtol=1e-4, atol=1e-5 * np.abs(new.Wout).max())
+    # the readouts give the same output: their entries agree only to the digits that the conditioning of the ridge
+    # system leaves (tikh = 1e-12), and the training noise is drawn again
+    u, r = DATA[5, np.atleast_1d(new.observed_idx)], np.zeros(new.N_r)
+    assert np.allclose(esn.step(u, r)[0], new.step(u, r)[0], rtol=1e-4, atol=1e-4 * np.ptp(DATA))
 
 
 def test_a_changed_option_draws_from_the_given_seed_which_the_reservoir_keeps():

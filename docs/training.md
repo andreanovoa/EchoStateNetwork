@@ -28,7 +28,8 @@ The hyperparameters that matter are the effective spectral radius `rho`, the
 input scaling `sigma_in`, and the Tikhonov regularization `tikh`; by default,
 validation selects all three (below).
 
-The input bias is outside the input scaling: $b_\mathrm{in}$ alone sets the
+The input bias is fixed at $b_\mathrm{in} = 1$ by default (`bias_in`) and is
+outside the input scaling: $b_\mathrm{in}$ alone sets the
 offset of each unit, whatever $\sigma_\mathrm{in}$ (`scale_bias_in=True`
 multiplies the bias column by $\sigma_\mathrm{in}$, as the versions before 0.7
 did). The intercept is not a row of `Wout`, and the Tikhonov factor does not

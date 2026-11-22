@@ -26,7 +26,7 @@ def test_the_readout_and_the_ridge_regression_square_every_second_unit_as_adjoin
     LHS, RHS, _, R_RR = esn._compute_RR_terms(U, Y)
     R = R_RR[0].copy()
     R[:, 1::2] **= 2
-    rows = np.hstack([R, np.ones((R.shape[0], 1))])
+    rows = np.hstack([R - esn._rest_shift(), np.ones((R.shape[0], 1))])     # the sums are about the rest state
     np.testing.assert_allclose(LHS, rows.T @ rows, rtol=1e-12)
     np.testing.assert_allclose(RHS, rows.T @ Y[0, esn.N_wash:], rtol=1e-12, atol=1e-12)
 

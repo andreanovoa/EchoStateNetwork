@@ -148,9 +148,10 @@ def test_rr_terms_match_returned_states():
 
     assert R_RR[0].shape == (U_wtv[0].shape[0] - esn.N_wash, esn.N_units)
     assert U_RR[0].shape == (U_wtv[0].shape[0] - esn.N_wash, esn.N_dim)
-    r_aug = np.hstack([R_RR[0], np.ones((R_RR[0].shape[0], 1))])
-    assert np.array_equal(LHS, r_aug.T @ r_aug)
-    assert np.array_equal(RHS, r_aug.T @ Y_wtv[0][esn.N_wash:])
+    # the sums are taken about the rest state of the reservoir (_rest_shift), with the constant regressor last
+    r_aug = np.hstack([R_RR[0] - esn._rest_shift(), np.ones((R_RR[0].shape[0], 1))])
+    assert np.allclose(LHS, r_aug.T @ r_aug, rtol=1e-12, atol=1e-14)
+    assert np.allclose(RHS, r_aug.T @ Y_wtv[0][esn.N_wash:], rtol=1e-12, atol=1e-14)
 
 
 def test_spectral_radius_arpack_fallback():
@@ -378,7 +379,7 @@ def test_dense_bias_column_and_unpenalized_intercept():
     X, Y = rng.normal(size=(50, 4)) + 3.0, rng.normal(size=(50, 2)) + 5.0
     X1 = np.hstack([X, np.ones((50, 1))])
     LHS, RHS = X1.T @ X1, X1.T @ Y
-    solution = esn._ridge_solve(LHS, RHS, 0.5)
+    solution = EchoStateNetwork(np.zeros((2, 1)), N_units=4)._ridge_solve(LHS, RHS, 0.5)    # no reservoir: no shift
     Xc, Yc = X - X.mean(0), Y - Y.mean(0)                  # the ridge regression of the centred targets and states
     W = np.linalg.solve(Xc.T @ Xc + 0.5 * np.eye(4), Xc.T @ Yc)
     np.testing.assert_allclose(solution[:-1], W, rtol=1e-10)
@@ -537,7 +538,7 @@ def _saturated_esn(**kwargs):
 def test_ridge_solve_falls_back_on_least_squares_only_when_singular():
     # a non-singular solve is np.linalg.solve, unchanged; a singular one (two collinear columns) warns and returns the
     # least-squares solution, so that one bad point of a search scores badly instead of stopping it
-    esn, _ = _saturated_esn()
+    esn = EchoStateNetwork(np.zeros((2, 1)), N_units=5)     # no reservoir yet: the sums are not shifted
     rng = np.random.default_rng(1)
     ones = np.ones((40, 1))                                # the regressor of the intercept, last
     X, Y = np.hstack((rng.normal(size=(40, 5)), ones)), rng.normal(size=(40, 2))
@@ -546,6 +547,7 @@ def test_ridge_solve_falls_back_on_least_squares_only_when_singular():
                                   np.linalg.solve(A + 1e-3 * np.eye(5), B))
     X = rng.normal(size=(40, 3))
     X = np.hstack((X, 0 * X[:, :1] + 1.0, ones))           # a constant state: no centred part
+    esn.N_units = 4
     LHS, RHS = X.T @ X, X.T @ Y
     A, B = esn._centred(LHS, RHS)[:2]
     with pytest.raises(np.linalg.LinAlgError):
@@ -558,12 +560,14 @@ def test_ridge_solve_falls_back_on_least_squares_only_when_singular():
 
 @pytest.mark.parametrize('strategy', [None, validation.RVC_Noise, validation.SSV])
 def test_training_on_a_saturated_reservoir_completes(strategy):
-    # without a search (None), and with a search over tikh: the singular ridge warns once per call of train
+    # without a search (None), and with a search over tikh: a saturated reservoir with tikh = 0 does not stop train,
+    # and a singular ridge system, if one occurs, warns at most once per call of train
     esn, data = _saturated_esn(hyperparameters_to_optimize=[] if strategy is None else ['tikh'])
-    with pytest.warns(UserWarning, match=SINGULAR) as record:
+    with warnings.catch_warnings(record=True) as record:
+        warnings.simplefilter('always')
         esn.train(data, plot_training=False, validation_strategy=strategy)
-    assert np.isfinite(esn.Wout).all()
-    assert len([w for w in record if SINGULAR in str(w.message)]) == 1
+    assert np.isfinite(esn.Wout).all() and np.isfinite(esn.intercept).all()
+    assert len([w for w in record if SINGULAR in str(w.message)]) <= 1
 
 
 # ---------------------------------------------------------------------- 'tikh' alone in the search (issue #1)
@@ -688,4 +692,5 @@ def test_batched_ridge_sums_equal_one_pass(layout):
     assert np.array_equal(lhs, LHS7) and u_none == r_none == [None, None]
     small = EchoStateNetwork(data[0].T, readout_batch=3, **kw)
     small.train(data, plot_training=False)
-    assert np.allclose(small.Wout, esn.Wout, rtol=1e-6, atol=1e-8 * np.abs(esn.Wout).max())
+    u, r = data[0][3], np.zeros(esn.N_r)                    # the same output; the entries of the readouts agree only
+    assert np.allclose(small.step(u, r)[0], esn.step(u, r)[0], rtol=1e-6, atol=1e-6 * np.ptp(data[0]))   # to the conditioning

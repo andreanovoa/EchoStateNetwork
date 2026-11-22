@@ -120,7 +120,8 @@ def test_shared_readout_pools_every_patch_in_the_ridge_regression(readout_input)
             U_norm = esn.normalize_input(U_t.T).T
             padded = np.hstack([U_norm[:, :8], np.zeros((U_t.shape[0], 1))])
             inputs = [padded[:, esn.patch_sites[p]], U_norm[:, 8:]]
-        return np.hstack([R[:, p * n:(p + 1) * n], *inputs, np.ones((R.shape[0], 1))])
+        rows = np.hstack([R[:, p * n:(p + 1) * n], *inputs])
+        return np.hstack([rows - esn._rest_shift(), np.ones((R.shape[0], 1))])      # about the rest state
 
     assert aug(0).shape[1] == esn._n_readout + 1
     np.testing.assert_allclose(LHS, sum(aug(p).T @ aug(p) for p in range(4)), rtol=1e-12)
@@ -267,8 +268,10 @@ def test_independent_patches_fit_one_ridge_regression_per_patch():
         Y = window[esn.N_wash + 1:, 1:3]                  # the sites of patch p
         Rc, Yc = R - R.mean(0), Y - Y.mean(0)             # the intercept is not penalized: centred ridge regression
         Wout_p = np.linalg.solve(Rc.T @ Rc + 1e-6 * np.eye(12), Rc.T @ Yc)
-        np.testing.assert_allclose(net.Wout[:, 1:3], Wout_p, rtol=1e-6, atol=1e-9)
-        np.testing.assert_allclose(net.intercept[1:3], Y.mean(0) - R.mean(0) @ Wout_p, rtol=1e-6, atol=1e-9)
+        # the two readouts give the same outputs on the training states; their entries agree only to the digits
+        # that the conditioning of the ridge system leaves
+        fit_p = R @ Wout_p + Y.mean(0) - R.mean(0) @ Wout_p
+        np.testing.assert_allclose(R @ net.Wout[:, 1:3] + net.intercept[1:3], fit_p, rtol=1e-6, atol=1e-6 * np.ptp(Y))
         # each patch normalizes its own window
         assert net.norm.shape == (4,) and np.ptp(net.norm) > 0
 

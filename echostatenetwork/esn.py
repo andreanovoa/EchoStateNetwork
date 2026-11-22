@@ -308,7 +308,7 @@ class EchoStateNetwork:
         computing approach. Physical Review Letters, 120, 024102.
     """
 
-    bias_in = np.array([0.1])
+    bias_in = np.array([1.0])     # fixed by default; outside the input scaling (scale_bias_in)
     bias_in_range = (0.0, 2.0)   # searched when 'bias_in' is in hyperparameters_to_optimize
     # scale_bias_in: False (the default) leaves the bias column out of the input scaling, so bias_in alone sets the
     # offset b_in W_in,b of each neuron; True multiplies it by sigma_in, like the state (sigma_in W_in [u; b_in])
@@ -1370,7 +1370,29 @@ class EchoStateNetwork:
             X = X.reshape(X.shape[0], self.N_patches, -1).transpose(2, 1, 0).reshape(R.shape[0], -1)
             parts.append(X[:, self._readout_rows])
         parts.append(np.ones((R.shape[0], 1)))                 # the regressor of the intercept
-        return np.hstack(parts)
+        features = np.hstack(parts)
+        features[:, :-1] -= self._rest_shift()
+        return features
+
+    def _rest_shift(self):
+        """The rows that the readout reads when the reservoir rests on a zero normalized input, shape
+        ``(_n_readout,)`` (zero on the input rows of `readout_input`). The ridge regression accumulates its sums
+        about this state (`_readout_features` subtracts it, `_ridge_solve` adds it back to the intercept): the
+        input bias gives every unit a constant offset, much larger than the fluctuations when `sigma_in` is
+        small, and sums of the raw states would lose those digits when the regression centres them. Any fixed
+        shift gives the same readout in exact arithmetic. Zero before the reservoir is generated."""
+        shift = np.zeros(self._n_readout)
+        if not hasattr(self, '_W') or not hasattr(self, '_Win'):
+            return shift
+        Win = self._Win
+        w_b = np.asarray(Win[:, [-1]].todense() if hasattr(Win, 'todense') else Win[:, [-1]], dtype=float)
+        sigma_in, rho, alpha = (float(np.mean(x)) for x in (self.sigma_in, self.rho, self.leak_rate))
+        pre = float(np.ravel(self.bias_in)[0]) * (sigma_in if self.scale_bias_in else 1.0) * w_b
+        r = np.zeros_like(pre)
+        for _ in range(100):
+            r = (1 - alpha) * r + alpha * np.tanh(pre + rho * (self._W @ r))
+        shift[:self.N_units] = self._readout_states(r)[:, 0]
+        return shift
 
     def reservoir_to_physical(self, r, u=None):
         """Convert the reservoir state to the physical state via the output matrix.
@@ -2713,8 +2735,9 @@ class EchoStateNetwork:
         """The readout of the ridge regression with Tikhonov parameter `tikh`, ``[Wout; intercept]`` (which the
         setter of `Wout` splits).
 
-        The last row and column of `LHS` and the last row of `RHS` belong to the constant regressor of the intercept,
-        which the Tikhonov factor leaves out. Eliminating the intercept gives the ridge regression of the centred
+        `LHS` and `RHS` are the sums over the rows of `_readout_features`, which are taken about the rest state
+        of the reservoir (`_rest_shift`). The last row and column of `LHS` and the last row of `RHS` belong to the
+        constant regressor of the intercept, which the Tikhonov factor leaves out. Eliminating the intercept gives the ridge regression of the centred
         targets on the centred states, ``(R'^T R' + tikh I) Wout = R'^T Y'``, and
         ``intercept = mean(y) - Wout^T mean(r)`` (`_centred`). The centred system is the one solved, because the
         states carry a constant offset (the response to the input bias) that is collinear with the intercept.
@@ -2734,7 +2757,7 @@ class EchoStateNetwork:
                   'vanishing tikh); the least-squares solution replaces the exact one.')
             logger.info('ridge regression: singular at tikh=%s, rho=%s, sigma_in=%s', tikh, self.rho, self.sigma_in)
             W = np.linalg.lstsq(A, B, rcond=None)[0]
-        return np.vstack([W, mean_y - mean_r @ W])
+        return np.vstack([W, mean_y - (mean_r + self._rest_shift()) @ W])
 
     @staticmethod
     def _centred(LHS, RHS):

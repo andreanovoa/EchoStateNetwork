@@ -166,7 +166,7 @@
         <label>or fix at <input id="v-alpha" type="number" step="any" value="1"></label></div>
       <div class="hp" id="hp-bin"><span class="sym">b<sub>in</sub> (input bias)</span>
         <label><input type="checkbox" id="s-bin"> search in <input id="lo-bin" type="number" step="any" value="0"> &ndash; <input id="hi-bin" type="number" step="any" value="2"></label>
-        <label>or fix at <input id="v-bin" type="number" step="any" value="0.1"></label></div>
+        <label>or fix at <input id="v-bin" type="number" step="any" value="1"></label></div>
       <div class="row" id="r-sbi"><span>b<sub>in</sub> inside the input scaling (<code>scale_bias_in</code>)</span> <input id="sbi" type="checkbox"></div>
       <div class="note">The readout has an intercept, <b>w</b><sub>0</sub>, in place of an output bias. The ridge
         regression does not penalize it, so it follows from the means of the targets and of the states: it is not
@@ -247,7 +247,7 @@ const num = (id, fallback) => { const v = parseFloat($(id).value); return Number
 const NET = ["#CC6677", "#332288", "#DDAA33", "#117733", "#882255", "#44AA99", "#999933", "#AA4499"];
 const DEFAULTS = { N_units: 100, N_wash: 50, upsample: 5, noise: 1e-10, connect: 3, rho: 0.9, rho_range: [0.8, 1.05],
   sigma_in: 1e-3, sigma_in_range: [-5, -1], tikh: 1e-12, tikh_range: [1e-8, 1e-10, 1e-12, 1e-16], leak_rate: 1,
-  leak_rate_range: [0.1, 1], bias_in: 0.1, bias_in_range: [0, 2], N_func_evals: 20, N_grid: 4, N_folds: 4 };
+  leak_rate_range: [0.1, 1], bias_in: 1, bias_in_range: [0, 2], N_func_evals: 20, N_grid: 4, N_folds: 4 };
 
 /* ---------- settings ---------- */
 function settings() {
@@ -272,7 +272,7 @@ function settings() {
     sigma_in: num("v-sigma", 1e-3), sigma_in_range: [num("lo-sigma", -5), num("hi-sigma", -1)],
     tikh: num("v-tikh", 1e-12), tikh_range: tikhGrid.length ? tikhGrid : [1e-12],
     leak_rate: num("v-alpha", 1), leak_rate_range: [num("lo-alpha", 0.1), num("hi-alpha", 1)],
-    bias_in: num("v-bin", 0.1), bias_in_range: [num("lo-bin", 0), num("hi-bin", 2)], sbi: $("sbi").checked,
+    bias_in: num("v-bin", 1), bias_in_range: [num("lo-bin", 0), num("hi-bin", 2)], sbi: $("sbi").checked,
     nfe: Math.max(1, Math.round(num("nfe", 20))), ngrid: Math.max(1, Math.round(num("ngrid", 4))),
     strat: radio("strat"), folds: Math.max(1, Math.round(num("folds", 4))), metric: radio("metric"),
     fstep: $("fstep").value.trim() === "" ? null : Math.max(1, Math.round(num("fstep", 1))),

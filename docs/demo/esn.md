@@ -85,7 +85,7 @@ every parameter column (`optimize_parameter_normalization`, on by default with
 no hyperparameter is ticked. A search without $\beta$ keeps the fixed `tikh` at every
 evaluation.
 
-The input bias, $b_\mathrm{in}$, is a fixed value (`bias_in`) or joins the search
+The input bias, $b_\mathrm{in}$, is a fixed value (`bias_in`, 1 by default) or joins the search
 (`bias_in_range`). By default it is outside the input scaling, so $b_\mathrm{in}$ alone
 sets the offset of each unit; `scale_bias_in=True` multiplies it by
 $\sigma_\mathrm{in}$. The readout has an intercept in place of an output bias. The ridge
