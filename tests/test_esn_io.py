@@ -73,3 +73,24 @@ def test_arrays_saved_before_the_intercept_left_the_readout_load_unchanged():
         for a, b in zip(back.step(u, r), esn.step(u, r)):
             np.testing.assert_allclose(a, b, rtol=1e-13)
     assert EchoStateNetwork(data.T).scale_bias_in is False            # the default: the bias outside sigma_in
+
+
+def test_a_network_pickled_before_the_intercept_left_the_readout_unpickles_unchanged():
+    data = np.random.default_rng(3).normal(size=(200, 3)).cumsum(axis=0) * 0.1
+    esn = EchoStateNetwork(data.T, dt=1, N_units=20, upsample=1, t_train=120, t_val=30, t_test=0, N_wash=5,
+                           hyperparameters_to_optimize=[], scale_bias_in=True, sigma_in=0.3, seed=0)
+    esn.train(data, plot_training=False)
+    u, r = data[7].reshape(-1, 1), np.random.default_rng(4).normal(size=(esn.N_units, 1))
+    old = EchoStateNetwork.__new__(EchoStateNetwork)       # the attributes that a version before 0.7 pickled
+    state = {k: v for k, v in esn.__getstate__().items() if k not in ('_intercept', '_intercept_apart', 'scale_bias_in')}
+    state.update(_Wout=np.vstack([esn.Wout, esn.intercept / 2.0]), bias_out=np.array([2.0]))
+    old.__setstate__(state)
+    assert old.scale_bias_in is True and old.Wout.shape == (20, 3)
+    for a, b in zip(old.step(u, r), esn.step(u, r)):
+        np.testing.assert_allclose(a, b, rtol=1e-13)
+    new = EchoStateNetwork(data.T, dt=1, N_units=20, upsample=1, t_train=120, t_val=30, t_test=0, N_wash=5,
+                           hyperparameters_to_optimize=[], seed=0)
+    new.train(data, plot_training=False)
+    back = new.copy()                                       # copy goes through the pickling methods
+    assert back.scale_bias_in is False
+    np.testing.assert_array_equal(back.step(u, r)[0], new.step(u, r)[0])

@@ -402,6 +402,7 @@ def legacy(esn, cls=EchoStateNetwork):
     state = dict(vars(esn))
     state['dt_ESN'] = state.pop('_dt_data') * esn.upsample
     del state['_inferred_split'], state['_reservoir_key']
+    state['scale_bias_in'] = esn.scale_bias_in      # explicit: a pickle without it has the bias inside sigma_in
     old = cls.__new__(cls)
     old.__setstate__(state)
     return old

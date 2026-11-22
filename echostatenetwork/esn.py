@@ -760,6 +760,10 @@ class EchoStateNetwork:
         state = self.__dict__.copy()
         if '_dt_data' in state:
             state['dt_ESN'] = self.dt_ESN
+        # the conventions of this version, stored so that `__setstate__` tells them from those of a network
+        # pickled before 0.7 (the bias row in `Wout`, the input bias inside the input scaling)
+        state['scale_bias_in'] = bool(self.scale_bias_in)
+        state['_intercept_apart'] = True
         return state
 
     def __setstate__(self, state):
@@ -770,6 +774,15 @@ class EchoStateNetwork:
         legacy = self.__dict__.pop('dt_ESN', None)
         if legacy is not None and '_dt_data' not in self.__dict__:
             self.dt_ESN = legacy
+        if not self.__dict__.pop('_intercept_apart', False):
+            # pickled before 0.7: the last row of Wout multiplies the output bias, and the input bias is inside
+            # the input scaling unless the network says otherwise
+            self.__dict__.setdefault('scale_bias_in', True)
+            bias_out = float(np.ravel(self.__dict__.pop('bias_out', 1.0))[0])
+            self.__dict__.pop('regularize_bias_out', None)
+            Wout = self.__dict__.get('_Wout')
+            if Wout is not None and '_intercept' not in self.__dict__:
+                self._Wout, self._intercept = Wout[:-1], np.array(Wout[-1], dtype=float) * bias_out
 
     @property
     def N_train(self):
