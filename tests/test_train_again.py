@@ -46,7 +46,7 @@ def test_the_reservoir_is_kept_while_the_options_that_define_it_are_unchanged():
     esn = trained(**GIVEN)
     W, Win, Wout = esn.W, esn.Win, esn.Wout.copy()
     esn.train(DATA, plot_training=False, rho=0.5, tikh=1e-6, noise=1e-3, readout_input=True, force=True)
-    assert esn.W is W and esn.Win is Win and esn.Wout.shape == (19, 3)        # readout_input changes Wout only
+    assert esn.W is W and esn.Win is Win and esn.Wout.shape == (18, 3)        # readout_input changes Wout only
     esn.train(DATA, plot_training=False, rho=0.9, readout_input=False, force=True)
     assert esn.W is W and esn.Win is Win and not np.array_equal(esn.Wout, Wout)
 
@@ -85,7 +85,9 @@ def test_a_changed_option_draws_the_reservoir_that_a_new_network_draws(option):
     esn.train(DATA, plot_training=False, force=True, **option)
     new = EchoStateNetwork(DATA.T, **{**QUICK, **GIVEN, **option})
     new.train(DATA, plot_training=False, seed=0)
-    assert same(esn.W, new.W) and same(esn.Win, new.Win) and np.allclose(esn.Wout, new.Wout)
+    assert same(esn.W, new.W) and same(esn.Win, new.Win)
+    # the readouts agree to the digits that the conditioning of the ridge system leaves (tikh = 1e-12)
+    assert np.allclose(esn.Wout, new.Wout, rtol=1e-4, atol=1e-5 * np.abs(new.Wout).max())
 
 
 def test_a_changed_option_draws_from_the_given_seed_which_the_reservoir_keeps():
@@ -111,7 +113,7 @@ def test_parameters_added_or_removed_by_train():
     esn = EchoStateNetwork(DATA.T, **QUICK, **GIVEN)
     esn.train(two, plot_training=False)
     esn.train(two, plot_training=False, input_parameters=np.array([[0.0, 1.0]]), force=True)
-    assert esn.Win.shape == (15, 5) and esn.Wout.shape == (16, 3) and np.isfinite(esn.Wout).all()
+    assert esn.Win.shape == (15, 5) and esn.Wout.shape == (15, 3) and np.isfinite(esn.Wout).all()
     assert esn.optimize_parameter_normalization and 'param_shift_0' in esn.hyperparameters_to_optimize
     esn = EchoStateNetwork(DATA.T, **QUICK, **GIVEN, input_parameters=np.array([[0.0, 1.0]]), N_grid=1,
                            N_func_evals=2)

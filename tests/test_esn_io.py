@@ -52,3 +52,24 @@ def test_untrained_esn_round_trip():
     d = esn.to_arrays()
     assert not any(k in d for k in ('Wout', 'W_data', 'Win_data', 'Win'))
     assert not EchoStateNetwork.from_arrays(d).trained
+
+
+def test_arrays_saved_before_the_intercept_left_the_readout_load_unchanged():
+    # before 0.7, the last row of Wout multiplied the output bias, bias_out, and the input bias was inside the input
+    # scaling without an entry scale_bias_in: such a store gives the same network, with the intercept beside Wout
+    data = np.random.default_rng(3).normal(size=(200, 3)).cumsum(axis=0) * 0.1
+    esn = EchoStateNetwork(data.T, dt=1, N_units=20, upsample=1, t_train=120, t_val=30, t_test=0, N_wash=5,
+                           hyperparameters_to_optimize=[], scale_bias_in=True, sigma_in=0.3, seed=0)
+    esn.train(data, plot_training=False)
+    arrays = esn.to_arrays()
+    assert arrays['Wout'].shape == (20, 3) and arrays['intercept'].shape == (3,) and 'bias_out' not in arrays
+    old = {k: v for k, v in arrays.items() if k not in ('intercept', 'scale_bias_in')}
+    old.update(Wout=np.vstack([esn.Wout, esn.intercept / 2.0]), bias_out=np.array([2.0]))
+    u, r = data[7].reshape(-1, 1), np.random.default_rng(4).normal(size=(esn.N_units, 1))
+    for stored in (arrays, old):
+        back = EchoStateNetwork.from_arrays(stored)
+        assert back.scale_bias_in is True and back.Wout.shape == (20, 3)
+        np.testing.assert_allclose(back.intercept, esn.intercept, rtol=1e-13)
+        for a, b in zip(back.step(u, r), esn.step(u, r)):
+            np.testing.assert_allclose(a, b, rtol=1e-13)
+    assert EchoStateNetwork(data.T).scale_bias_in is False            # the default: the bias outside sigma_in

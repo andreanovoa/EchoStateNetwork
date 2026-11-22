@@ -19,15 +19,14 @@ def test_the_readout_and_the_ridge_regression_square_every_second_unit_as_adjoin
     r = np.random.default_rng(1).normal(size=(esn.N_units, 1))
     x2 = r[:, 0].copy()                                   # before_readout_r2 of MagriLab/Adjoint-ESN (adjoint_esn/esn.py)
     x2[1::2] = x2[1::2] ** 2
-    features = np.hstack((x2, esn.bias_out))
-    np.testing.assert_allclose(esn.reservoir_to_physical(r)[:, 0], features @ esn.Wout, rtol=1e-13)
-    assert esn.Wout.shape == (esn.N_units + 1, esn.N_dim)          # the readout keeps its size
+    np.testing.assert_allclose(esn.reservoir_to_physical(r)[:, 0], x2 @ esn.Wout + esn.intercept, rtol=1e-13)
+    assert esn.Wout.shape == (esn.N_units, esn.N_dim)              # the readout keeps its size
     assert not np.allclose(_trained(r2_mode=False)[0].Wout, esn.Wout)
     U, Y = data[None, :-1], data[None, 1:]
     LHS, RHS, _, R_RR = esn._compute_RR_terms(U, Y)
     R = R_RR[0].copy()
     R[:, 1::2] **= 2
-    rows = np.hstack([R, np.ones((R.shape[0], 1)) * esn.bias_out])
+    rows = np.hstack([R, np.ones((R.shape[0], 1))])
     np.testing.assert_allclose(LHS, rows.T @ rows, rtol=1e-12)
     np.testing.assert_allclose(RHS, rows.T @ Y[0, esn.N_wash:], rtol=1e-12, atol=1e-12)
 

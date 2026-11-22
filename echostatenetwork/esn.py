@@ -70,7 +70,7 @@ def _train_seed_captured(case, seed, train_data, add_noise, validation_strategy,
     """Body of `_train_one_seed`, with the logs already captured into `log`."""
     with redirect_stdout(log), _collected_warnings() as caught:        # the parent issues them
         try:
-            for attr in ('_W', '_Win', '_Wout'):
+            for attr in ('_W', '_Win', '_Wout', '_intercept'):
                 if hasattr(case, attr):
                     delattr(case, attr)
             case.seed = seed
@@ -310,11 +310,9 @@ class EchoStateNetwork:
 
     bias_in = np.array([0.1])
     bias_in_range = (0.0, 2.0)   # searched when 'bias_in' is in hyperparameters_to_optimize
-    # scale_bias_in: True multiplies the bias column by sigma_in, like the state (sigma_in W_in [u; b_in]);
-    # False leaves it out of the input scaling, so bias_in alone sets the offset b_in W_in,b of each neuron
-    scale_bias_in = True
-    bias_out = np.array([1.0])
-    regularize_bias_out = True   # False: the Tikhonov factor leaves the bias row of the readout out
+    # scale_bias_in: False (the default) leaves the bias column out of the input scaling, so bias_in alone sets the
+    # offset b_in W_in,b of each neuron; True multiplies it by sigma_in, like the state (sigma_in W_in [u; b_in])
+    scale_bias_in = False
 
     # Slim copy of the last skopt result; None before training or when no search ran (hyperparameters_to_optimize
     # empty, and no search over the normalization of the parameters, see train()). With 'tikh' alone, the one
@@ -514,9 +512,10 @@ class EchoStateNetwork:
 
     @property
     def _n_readout(self) -> int:
-        """int: rows of `Wout` -- reservoir units, the input rows `readout_input` reads, and the bias."""
+        """int: rows of `Wout` -- reservoir units and the input rows `readout_input` reads (the intercept of the
+        readout is not a row of `Wout`, see `intercept`)."""
         rows = self._readout_rows
-        return self.N_units + 1 + rows.stop - rows.start
+        return self.N_units + rows.stop - rows.start
 
     @property
     def _readout_rows(self) -> slice:
@@ -650,18 +649,24 @@ class EchoStateNetwork:
     @property
     def Wout(self) -> np.ndarray:
         """The trained (ridge-regression) read-out matrix, shape
-        ``(N_units + 1, N_dim)``, or ``(N_units + N_dim_in + 1, N_dim)`` with
-        `readout_input` (rows [r; u; bias]) -- the last row multiplies the output bias
-        `bias_out`; with ``readout_input='params'``, ``(N_units + N_param + 1, N_dim)``
-        (rows [r; p; bias]). Used in `reservoir_to_physical`. With the parallel layout
+        ``(N_units, N_dim)``, or ``(N_units + N_dim_in, N_dim)`` with
+        `readout_input` (rows [r; u]); with ``readout_input='params'``,
+        ``(N_units + N_param, N_dim)`` (rows [r; p]). Used in `reservoir_to_physical`,
+        which adds the `intercept`: the constant of the readout is not a row of `Wout`
+        and the Tikhonov factor does not act on it. With the parallel layout
         (`patch_size`), the readout that the patches share, shape
-        ``(N_units + 1, patch_size)``: it maps the reservoir of a patch to the sites
+        ``(N_units, patch_size)``: it maps the reservoir of a patch to the sites
         of that patch. With `readout_input`, it also reads the rows of the input of
         the patch: the window and the parameters with True (``N_units + patch_size
-        + 2 * halo + N_param + 1`` rows), the parameters with 'params'
-        (``N_units + N_param + 1`` rows), in the order [r_p; input; bias]. With
+        + 2 * halo + N_param`` rows), the parameters with 'params'
+        (``N_units + N_param`` rows), in the order [r_p; input]. With
         independent patches (``shared=False``), every patch has its own readout, in
         ``patches[p].Wout``.
+
+        The setter also takes a matrix with one more row, [Wout; intercept] (the
+        solution of the ridge regression with a constant regressor of one, and the
+        layout of the readouts of versions before 0.7): the last row becomes the
+        `intercept`.
         """
         if self._independent:
             raise self._per_patch_error('Wout')
@@ -674,11 +679,33 @@ class EchoStateNetwork:
         """
         if self._independent:
             raise self._per_patch_error('Wout')
+        if value.shape == (self._n_readout + 1, self._n_out):      # [Wout; intercept]
+            value, self._intercept = value[:-1], np.array(value[-1], dtype=float)
         # Ensure the matrix has the correct dimensions
         assert value.shape == (self._n_readout, self._n_out), \
             f'Wout must be a matrix of shape ({self._n_readout}, {self._n_out}), but got {value.shape}'
         # Set the output matrix
         self._Wout = value
+
+    @property
+    def intercept(self) -> np.ndarray:
+        r"""The constant of the readout, shape ``(N_dim,)`` (``(patch_size,)`` for the shared readout of the
+        parallel layout): the output is $\mathbf{W}_\mathrm{out}^T \mathbf{r} + \mathbf{w}_0$. The ridge regression
+        leaves it out of the Tikhonov penalty, so it equals $\bar{\mathbf{y}} - \mathbf{W}_\mathrm{out}^T
+        \bar{\mathbf{r}}$, with the means over the training steps, and the readout is the ridge regression of the
+        centred targets on the centred states (Hastie, Tibshirani & Friedman 2009, Sect. 3.4.1). Zero before
+        training."""
+        if self._independent:
+            raise self._per_patch_error('intercept')
+        return self.__dict__.get('_intercept', np.zeros(self._n_out))
+
+    @intercept.setter
+    def intercept(self, value):
+        if self._independent:
+            raise self._per_patch_error('intercept')
+        value = np.asarray(value, dtype=float).reshape(-1)
+        assert value.shape == (self._n_out,), f'intercept must have shape ({self._n_out},), but got {value.shape}'
+        self._intercept = value
 
     @property
     def val_k(self):
@@ -1068,7 +1095,7 @@ class EchoStateNetwork:
         if stale:
             logger.debug('train: new networks of the patches, because %s changed.', ', '.join(stale))
             self.patches = None
-        for attr in ('_W', '_Win', '_Wout', '_reservoir_key'):     # the matrices of a shared layout trained before
+        for attr in ('_W', '_Win', '_Wout', '_intercept', '_reservoir_key'):     # the matrices of a shared layout trained before
             self.__dict__.pop(attr, None)
         current = self._patch_options()
         if self.patches is None:
@@ -1319,7 +1346,7 @@ class EchoStateNetwork:
         return np.vstack([self._to_columns(windows), params])
 
     def _readout_features(self, R, U):
-        """Rows of the ridge regression, ``[r~; u~ (the rows that `readout_input` reads); bias_out]``, from the
+        """Rows of the ridge regression, ``[r~; u~ (the rows that `readout_input` reads); 1]``, from the
         reservoir states `R` ``(Nt, N_r)`` and the raw inputs `U` ``(Nt, N_dim_in)`` that produced them. With the
         parallel layout, every step gives one row per patch, row ``t * N_patches + p``, whose input rows are those
         of the reservoir of patch ``p`` (`_reservoir_inputs`), so that the patches share the readout."""
@@ -1329,7 +1356,7 @@ class EchoStateNetwork:
             X = self._reservoir_inputs(self.normalize_input(np.asarray(U).T))   # (_n_in, N_patches * Nt)
             X = X.reshape(X.shape[0], self.N_patches, -1).transpose(2, 1, 0).reshape(R.shape[0], -1)
             parts.append(X[:, self._readout_rows])
-        parts.append(np.ones((R.shape[0], 1)) * self.bias_out)
+        parts.append(np.ones((R.shape[0], 1)))                 # the regressor of the intercept
         return np.hstack(parts)
 
     def reservoir_to_physical(self, r, u=None):
@@ -1369,11 +1396,11 @@ class EchoStateNetwork:
         return self._readout(r, u_norm)
 
     def _readout(self, r, u_norm):
-        """Wout^T [r~; u_norm; bias_out] (u_norm only when `readout_input`; r~ = `_readout_states(r)`)."""
-        bias_out = self.bias_out * np.ones((1, r.shape[-1]))
+        """Wout^T [r~; u_norm] + intercept (u_norm only when `readout_input`; r~ = `_readout_states(r)`)."""
         r = self._readout_states(r)
-        parts = (r, u_norm[self._readout_rows], bias_out) if self.readout_input else (r, bias_out)
-        return np.dot(self.Wout.T, np.concatenate(parts))
+        if self.readout_input:
+            r = np.concatenate((r, u_norm[self._readout_rows]))
+        return np.dot(self.Wout.T, r) + self.intercept[:, np.newaxis]
 
     def _readout_states(self, r, axis=0):
         """The reservoir states that the readout reads: `r` itself, or with `r2_mode` a copy of `r` in which every
@@ -1665,7 +1692,7 @@ class EchoStateNetwork:
         # readout_input adds the direct term Wout_u^T diag(1/norm) on the rows it reads
         rows = self._readout_rows
         J_u = np.zeros((self.N_dim, self.N_dim_in))
-        J_u[:, rows] = self.Wout[self.N_units:self._n_readout - 1].T / self.norm[np.newaxis, rows]
+        J_u[:, rows] = self.Wout[self.N_units:self._n_readout].T / self.norm[np.newaxis, rows]
         N_ens = tt.shape[-1]
         if N_ens == 1:
             if issparse(dr_di):
@@ -1732,7 +1759,7 @@ class EchoStateNetwork:
             n_param = self._n_in - n_window
             cols = np.hstack([sites, np.broadcast_to(self.N_dim + np.arange(n_param), (self.N_patches, n_param))])
             cols = cols[:, self._readout_rows]                                          # (P, n_read)
-            W_u = self.Wout[self.N_units:self._n_readout - 1]                           # (n_read, G)
+            W_u = self.Wout[self.N_units:self._n_readout]                           # (n_read, G)
             direct = np.where(cols[:, np.newaxis, :] >= 0,
                               W_u.T[np.newaxis] / self.norm[cols][:, np.newaxis, :], 0.)   # (P, G, n_read)
             np.add.at(J, (rows, np.maximum(cols, 0)[:, np.newaxis, :]), direct[..., np.newaxis])
@@ -2015,7 +2042,7 @@ class EchoStateNetwork:
         if not hasattr(self, '_W') or not hasattr(self, '_Win'):
             self._generate_W_Win(seed=seed)
 
-        self.Wout = np.zeros((self._n_readout, self._n_out))  # Initialize Wout with zeros
+        self.Wout = np.zeros((self._n_readout + 1, self._n_out))  # Initialize Wout and the intercept with zeros
 
         # Validation/test runs temporarily overwrite self.input_parameters
         original_input_parameters = self.input_parameters
@@ -2332,7 +2359,7 @@ class EchoStateNetwork:
         for ``np.savez`` (no pickled objects). The inverse is `from_arrays`.
 
         Captures exactly what `step`/`reservoir_to_physical`/`outputs_to_inputs`
-        read -- configuration scalars, `bias_in`/`bias_out` (pinned as data, so a
+        read -- configuration scalars, `bias_in` (pinned as data, so a
         future class-default change cannot alter a stored model), `norm`/`shift`
         (which carry any BHO-tuned parameter normalization), and the matrices
         (`W`/`Win` as exact CSR triplets, so a rebuilt reservoir is bit-identical).
@@ -2359,7 +2386,7 @@ class EchoStateNetwork:
                    r2_mode=bool(self.r2_mode),
                    param_in_reservoir=bool(self.param_in_reservoir), connect=int(self.connect),
                    optimize_parameter_normalization=str(self.optimize_parameter_normalization),
-                   bias_in=np.asarray(self.bias_in), bias_out=np.asarray(self.bias_out),
+                   bias_in=np.asarray(self.bias_in),
                    scale_bias_in=bool(self.scale_bias_in),
                    observed_idx=np.asarray(self.observed_idx),
                    norm=np.asarray(self.norm), shift=np.asarray(self.shift))
@@ -2375,6 +2402,7 @@ class EchoStateNetwork:
                                        if isinstance(ip, list) else np.asarray(ip))
         if hasattr(self, '_Wout'):
             out['Wout'] = np.asarray(self._Wout)
+            out['intercept'] = np.asarray(self.intercept)
         if hasattr(self, '_W'):
             out.update(W_data=self._W.data, W_indices=self._W.indices,
                        W_indptr=self._W.indptr)
@@ -2426,15 +2454,14 @@ class EchoStateNetwork:
                   **({'param_in_reservoir': bool(np.asarray(arrays['param_in_reservoir']))}
                      if 'param_in_reservoir' in arrays else {}),
                   **({'connect': int(np.asarray(arrays['connect']))} if 'connect' in arrays else {}),
-                  **({'scale_bias_in': bool(np.asarray(arrays['scale_bias_in']))}
-                     if 'scale_bias_in' in arrays else {}),
+                  # stores written before the option existed hold networks whose bias is inside the input scaling
+                  scale_bias_in=bool(np.asarray(arrays['scale_bias_in'])) if 'scale_bias_in' in arrays else True,
                   **({'optimize_parameter_normalization': {'True': True, 'False': False}.get(
                       str(np.asarray(arrays['optimize_parameter_normalization'])),
                       str(np.asarray(arrays['optimize_parameter_normalization'])))}
                      if 'optimize_parameter_normalization' in arrays else {}))
         esn.seed = int(np.asarray(arrays['seed']))
         esn.bias_in = np.asarray(arrays['bias_in'])
-        esn.bias_out = np.asarray(arrays['bias_out'])
         if 'Win' in arrays:
             esn.Win = np.asarray(arrays['Win'])
         elif 'Win_data' in arrays:
@@ -2449,6 +2476,11 @@ class EchoStateNetwork:
                                shape=(n_units, n_units))
         if 'Wout' in arrays:
             esn.Wout = np.asarray(arrays['Wout'])
+            if 'intercept' in arrays:
+                esn.intercept = np.asarray(arrays['intercept'])
+            else:   # stores written before 0.7: the last row of Wout multiplies the output bias
+                esn.intercept = esn.intercept * float(np.ravel(arrays['bias_out'])[0]) if 'bias_out' in arrays \
+                    else esn.intercept
         esn.norm = np.asarray(arrays['norm'])
         esn.shift = np.asarray(arrays['shift'])
         if esn._independent and 'patch0_N_dim' in arrays:
@@ -2457,8 +2489,8 @@ class EchoStateNetwork:
                 prefix = f'patch{p}_'
                 loaded = EchoStateNetwork.from_arrays(
                     {k[len(prefix):]: arrays[k] for k in arrays.keys() if k.startswith(prefix)})
-                for name in ('_Win', '_W', '_Wout', '_norm', '_shift', 'rho', 'sigma_in',
-                             'tikh', 'leak_rate', 'bias_in', 'bias_out', 'seed'):
+                for name in ('_Win', '_W', '_Wout', '_intercept', '_norm', '_shift', 'rho', 'sigma_in',
+                             'tikh', 'leak_rate', 'bias_in', 'scale_bias_in', 'seed'):
                     if hasattr(loaded, name):
                         setattr(esn.patches[p], name, getattr(loaded, name))
         return esn
@@ -2583,13 +2615,13 @@ class EchoStateNetwork:
                   ``(Nt, N_r)`` (the patches stacked with the parallel layout).
 
         With the parallel layout, every time step contributes one regression sample
-        per patch, ``[r_p; bias_out] -> y[sites of p]``, so LHS and RHS sum over the
+        per patch, ``[r_p; 1] -> y[sites of p]``, so LHS and RHS sum over the
         time steps and the patches of the shared readout. The sums are accumulated `batch` steps at a time, so that a
         long record costs one batch of states, not the record's (with keep_states=False).
         """
 
-        LHS = np.zeros((self._n_readout, self._n_readout))
-        RHS = np.zeros((self._n_readout, self._n_out))
+        LHS = np.zeros((self._n_readout + 1, self._n_readout + 1))      # the last row and column: the intercept
+        RHS = np.zeros((self._n_readout + 1, self._n_out))
         R_RR = [None] * len(U_wtv)
         U_RR = [None] * len(U_wtv)
         batch = int(batch or self.readout_batch)
@@ -2665,8 +2697,14 @@ class EchoStateNetwork:
         return self._ridge_solve(LHS, RHS, self.tikh)
 
     def _ridge_solve(self, LHS, RHS, tikh):
-        """The readout of the ridge regression with Tikhonov parameter `tikh`: the solution of
-        ``_regularized(LHS, tikh) @ Wout = RHS``.
+        """The readout of the ridge regression with Tikhonov parameter `tikh`, ``[Wout; intercept]`` (which the
+        setter of `Wout` splits).
+
+        The last row and column of `LHS` and the last row of `RHS` belong to the constant regressor of the intercept,
+        which the Tikhonov factor leaves out. Eliminating the intercept gives the ridge regression of the centred
+        targets on the centred states, ``(R'^T R' + tikh I) Wout = R'^T Y'``, and
+        ``intercept = mean(y) - Wout^T mean(r)`` (`_centred`). The centred system is the one solved, because the
+        states carry a constant offset (the response to the input bias) that is collinear with the intercept.
 
         A saturated reservoir with a small `tikh` (e.g. a large input scaling in the hyperparameter search) makes the
         regularised left-hand side singular. Then the minimum-norm least-squares solution replaces the exact one, so
@@ -2674,23 +2712,33 @@ class EchoStateNetwork:
         call of `train`, at the line that calls the package) and the logger 'echostatenetwork' records the point.
         A non-singular left-hand side gives the result of `np.linalg.solve`, unchanged.
         """
-        A = self._regularized(LHS, tikh)
+        A, B, mean_r, mean_y = self._centred(LHS, RHS)
+        A.ravel()[::A.shape[1] + 1] += tikh
         try:
-            return np.linalg.solve(A, RHS)
+            W = np.linalg.solve(A, B)
         except np.linalg.LinAlgError:
             _warn(f'{type(self).__name__}: the regularised ridge matrix is singular (a saturated reservoir with a '
                   'vanishing tikh); the least-squares solution replaces the exact one.')
             logger.info('ridge regression: singular at tikh=%s, rho=%s, sigma_in=%s', tikh, self.rho, self.sigma_in)
-            return np.linalg.lstsq(A, RHS, rcond=None)[0]
+            W = np.linalg.lstsq(A, B, rcond=None)[0]
+        return np.vstack([W, mean_y - mean_r @ W])
 
-    def _regularized(self, LHS, tikh):
-        """A copy of the ridge left-hand side with `tikh` on the diagonal; the bias
-        row of the readout (the last one) is left out when `regularize_bias_out` is False."""
-        LHS = LHS.copy()
-        LHS.ravel()[::LHS.shape[1] + 1] += tikh
-        if not self.regularize_bias_out:
-            LHS[-1, -1] -= tikh
-        return LHS
+    @staticmethod
+    def _centred(LHS, RHS):
+        """The ridge terms of the centred states and targets, ``R'^T R'`` and ``R'^T Y'``, and the means of the
+        states and of the targets over the rows, from the sums `LHS` and `RHS` of `_compute_RR_terms`, whose last
+        regressor is the constant one."""
+        n_rows = LHS[-1, -1]
+        if n_rows <= 0:                                           # no rows: nothing to centre
+            return LHS[:-1, :-1].copy(), RHS[:-1].copy(), np.zeros(LHS.shape[0] - 1), np.zeros(RHS.shape[1])
+        mean_r, mean_y = LHS[:-1, -1] / n_rows, RHS[-1] / n_rows
+        A = LHS[:-1, :-1] - n_rows * np.outer(mean_r, mean_r)
+        B = RHS[:-1] - n_rows * np.outer(mean_r, mean_y)
+        # a constant state (e.g. a saturated unit) has no centred part: the round-off of the subtraction is set to
+        # zero, so that it takes no weight (with tikh > 0) or makes the system exactly singular (with tikh = 0)
+        constant = np.diag(A) <= 64 * np.finfo(float).eps * np.diag(LHS)[:-1]
+        A[constant, :], A[:, constant], B[constant] = 0., 0., 0.
+        return A, B, mean_r, mean_y
 
 
     def _UY_from_raw_data(self, data, add_noise=True, seed=None):
