@@ -970,3 +970,27 @@ def test_tikh_alone_with_parametric_inputs():
     esn.train(data, plot_training=False)
     assert esn.bo_results['hp_names'] == [] and len(esn.bo_results['func_vals']) == 1
     assert esn.tikh in esn.tikh_range
+
+
+@pytest.mark.parametrize("layout", [{}, dict(patch_size=2, halo=1)])
+def test_batched_ridge_sums_equal_one_pass(layout):
+    """_compute_RR_terms accumulates the ridge sums `batch` steps at a time: a batch of 7 gives the sums and states
+    of one batch, keep_states=False returns no states, and train() gives the same readout whatever the batch."""
+    rng = np.random.default_rng(5)
+    data = np.cumsum(rng.normal(size=(2, 60, 4)), axis=1) * 0.1
+    kw = dict(dt=1, N_units=12, upsample=1, N_wash=5, t_train=40, t_val=10, t_test=0, noise=0.0,
+              hyperparameters_to_optimize=[], seed=0, verbose=False, **layout)
+    esn = EchoStateNetwork(data[0].T, **kw)
+    esn.train(data, plot_training=False)
+    U = [d[:-1] for d in data]
+    Y = [d[1:] for d in data]
+    LHS, RHS, U_RR, R_RR = esn._compute_RR_terms(U, Y, batch=10 ** 9)
+    LHS7, RHS7, U_RR7, R_RR7 = esn._compute_RR_terms(U, Y, batch=7)
+    assert np.allclose(LHS7, LHS, rtol=1e-12, atol=1e-12) and np.allclose(RHS7, RHS, rtol=1e-12, atol=1e-12)
+    assert all(np.array_equal(a, b) for a, b in zip(R_RR7, R_RR)) and all(
+        np.array_equal(a, b) for a, b in zip(U_RR7, U_RR))
+    lhs, rhs, u_none, r_none = esn._compute_RR_terms(U, Y, keep_states=False, batch=7)
+    assert np.array_equal(lhs, LHS7) and u_none == r_none == [None, None]
+    small = EchoStateNetwork(data[0].T, readout_batch=3, **kw)
+    small.train(data, plot_training=False)
+    assert np.allclose(small.Wout, esn.Wout, rtol=1e-9, atol=1e-11)
