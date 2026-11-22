@@ -192,7 +192,9 @@ def test_jacobian_matches_finite_differences(leak_rate, r2_mode):
                            leak_rate=leak_rate, r2_mode=r2_mode, hyperparameters_to_optimize=[])
     esn.train(data, plot_training=False)
     r = 0.3 * np.random.default_rng(2).normal(size=(esn.N_units, 1))
-    assert_jacobian(esn, data[5].reshape(-1, 1).copy(), r, atol=1e-9 if r2_mode else 1e-8)
+    # the entries of the readout of this small network reach 1e5 with r2_mode, so the round-off of the differences is
+    # of order 1e5 * 1e-16 / eps: a step of 1e-3 keeps it below the tolerances (the truncation error is about 1e-9)
+    assert_jacobian(esn, data[5].reshape(-1, 1).copy(), r, eps=1e-3, atol=1e-9 if r2_mode else 1e-8)
 
 
 def _train_single_series(strategy, seed=20, **esn_kwargs):
