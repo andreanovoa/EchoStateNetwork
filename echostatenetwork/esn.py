@@ -496,11 +496,7 @@ class EchoStateNetwork:
                 ignored.setdefault(kind, []).append(key)
         _warn_ignored(type(self).__name__, ignored, 'EchoStateNetwork', EchoStateNetwork)
 
-        # Default to rescaling parametric inputs unless the user explicitly disables it.
-        # Dense parameter columns can otherwise dominate the reservoir dynamics.
-        if self.input_parameters is not None and 'optimize_parameter_normalization' not in vars(self):
-            self.optimize_parameter_normalization = True
-
+        self._default_parameter_normalization()
         self._check_layout()
 
         # Time step of the data; the network steps at dt_ESN = dt * upsample, which follows upsample
@@ -2132,8 +2128,15 @@ class EchoStateNetwork:
                 if not _same(old, val):
                     logger.debug('train: %s = %s -> %s', key, old, val)
             setattr(self, key, val)
+        self._default_parameter_normalization()
         if _LAYOUT_OPTIONS.intersection(options):
             self._check_layout()
+
+    def _default_parameter_normalization(self):
+        """Search the normalization of parametric inputs unless it was set: dense parameter columns can otherwise
+        dominate the reservoir dynamics. Called by the constructor and by `train`, which may add the parameters."""
+        if self.input_parameters is not None and 'optimize_parameter_normalization' not in vars(self):
+            self.optimize_parameter_normalization = True
 
     def _saved_state(self) -> list:
         """The state of this network and of the networks of its patches, for `_restore_state`: their attributes
