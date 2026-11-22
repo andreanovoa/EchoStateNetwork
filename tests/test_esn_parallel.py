@@ -20,7 +20,7 @@ def test_one_patch_without_halo_reproduces_the_standard_step(leak_rate, parametr
     std = EchoStateNetwork(data[0].T, **kw)
     std.train(data if parametric else data[0], plot_training=False)
     par = EchoStateNetwork(data[0].T, patch_size=6, halo=0, **kw)
-    par.Win, par.W, par.Wout, par.intercept = std.Win, std.W, std.Wout, std.intercept
+    par.Win, par.W, par.Wout, par.intercept, par.bias_in = std.Win, std.W, std.Wout, std.intercept, std.bias_in
     par.norm, par.shift = std.norm, std.shift
     assert par.N_patches == 1 and par.N_r == std.N_r == 15
     if parametric:

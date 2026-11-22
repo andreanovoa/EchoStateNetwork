@@ -308,7 +308,10 @@ class EchoStateNetwork:
         computing approach. Physical Review Letters, 120, 024102.
     """
 
-    bias_in = np.array([1.0])     # fixed by default; outside the input scaling (scale_bias_in)
+    # bias_in: when it is not given, train() sets it to the mean absolute value of the normalized training input
+    # (the rule of the code of Racca & Magri 2021), so that the bias has the scale of the input; before training,
+    # and for a network that sets it, the value below or the given one. Outside the input scaling (scale_bias_in).
+    bias_in = np.array([1.0])
     bias_in_range = (0.0, 2.0)   # searched when 'bias_in' is in hyperparameters_to_optimize
     # scale_bias_in: False (the default) leaves the bias column out of the input scaling, so bias_in alone sets the
     # offset b_in W_in,b of each neuron; True multiplies it by sigma_in, like the state (sigma_in W_in [u; b_in])
@@ -1037,9 +1040,12 @@ class EchoStateNetwork:
     def _patch_options(self) -> dict:
         """The options of this network that the network of every independent patch takes: the public class
         attributes of `EchoStateNetwork` that are values (not methods or properties), except `_PATCH_EXCLUDED`."""
-        return {k: getattr(self, k) for k, v in vars(EchoStateNetwork).items()
-                if not k.startswith('_') and k not in _PATCH_EXCLUDED and not callable(v)
-                and not isinstance(v, (property, cached_property, staticmethod, classmethod))}
+        options = {k: getattr(self, k) for k, v in vars(EchoStateNetwork).items()
+                   if not k.startswith('_') and k not in _PATCH_EXCLUDED and not callable(v)
+                   and not isinstance(v, (property, cached_property, staticmethod, classmethod))}
+        if 'bias_in' not in self.__dict__ or self.__dict__.get('_bias_in_data', False):
+            del options['bias_in']          # not given: every patch sets it from its own window (_bias_in_from_data)
+        return options
 
     def _patch_record(self, data, p):
         """Record of the window of patch `p`: the columns `patch_sites[p]` of `data`
@@ -1373,6 +1379,19 @@ class EchoStateNetwork:
         features = np.hstack(parts)
         features[:, :-1] -= self._rest_shift()
         return features
+
+    def _bias_in_from_data(self, U_wtv):
+        """Set `bias_in` to the mean absolute value of the normalized training input (observed states, every
+        segment pooled), unless the network was given a `bias_in`, loaded one, or searches it. A network trained
+        again takes the value of the new data."""
+        given = 'bias_in' in self.__dict__ and not self.__dict__.get('_bias_in_data', False)
+        if given or 'bias_in' in self.hyperparameters_to_optimize:
+            return
+        n_obs = len(self.observed_idx)
+        segments = U_wtv if isinstance(U_wtv, list) else list(np.asarray(U_wtv))
+        pooled = np.concatenate([np.reshape(u, (-1, np.shape(u)[-1]))[:, :n_obs] for u in segments])
+        value = np.mean(np.abs((pooled - self.shift[:n_obs]) / self.norm[:n_obs]))
+        self.bias_in, self._bias_in_data = np.array([float(value)]), True
 
     def _rest_shift(self):
         """The rows that the readout reads when the reservoir rests on a zero normalized input, shape
@@ -2057,6 +2076,7 @@ class EchoStateNetwork:
             U_wtv, Y_wtv, U_test, Y_test = self._split_and_format_data(train_data, add_noise=add_noise)
         finally:
             self._record_split(before)
+        self._bias_in_from_data(U_wtv)
 
         # W and Win: kept while the options that define them are unchanged, whatever the seed, drawn again otherwise
         stale, drop = self._stale_reservoir()

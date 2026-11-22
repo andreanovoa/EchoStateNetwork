@@ -694,3 +694,26 @@ def test_batched_ridge_sums_equal_one_pass(layout):
     small.train(data, plot_training=False)
     u, r = data[0][3], np.zeros(esn.N_r)                    # the same output; the entries of the readouts agree only
     assert np.allclose(small.step(u, r)[0], esn.step(u, r)[0], rtol=1e-6, atol=1e-6 * np.ptp(data[0]))   # to the conditioning
+
+
+def test_the_input_bias_follows_the_scale_of_the_normalized_input_unless_given():
+    # not given: train sets bias_in to the mean absolute value of the normalized training input (the rule of the
+    # code of Racca & Magri 2021), again at every training; a given, loaded or searched bias_in is kept
+    data = np.random.default_rng(0).normal(size=(400, 3)).cumsum(axis=0) * 0.1
+    kw = dict(dt=1, N_units=20, upsample=1, t_train=250, t_val=50, t_test=0, N_wash=5, hyperparameters_to_optimize=[])
+    esn = EchoStateNetwork(data.T, **kw)
+    esn.train(data, plot_training=False)
+    U = data[:esn.N_train + esn.N_val - 1]
+    np.testing.assert_allclose(esn.bias_in, np.mean(np.abs((U - esn.shift) / esn.norm)), rtol=1e-12)
+    first = esn.bias_in.copy()
+    esn.train(data[::-1].copy(), plot_training=False, force=True)
+    assert not np.allclose(esn.bias_in, first)
+    given = EchoStateNetwork(data.T, bias_in=np.array([0.3]), **kw)
+    given.train(data, plot_training=False)
+    assert given.bias_in[0] == 0.3
+    loaded = EchoStateNetwork.from_arrays(esn.to_arrays())
+    loaded.train(data, plot_training=False, force=True)
+    np.testing.assert_array_equal(loaded.bias_in, esn.bias_in)
+    local = EchoStateNetwork(data.T, patch_size=1, shared=False, **kw)
+    local.train(data, plot_training=False)
+    assert len({float(net.bias_in[0]) for net in local.patches}) == 3      # every patch from its own window

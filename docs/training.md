@@ -28,7 +28,10 @@ The hyperparameters that matter are the effective spectral radius `rho`, the
 input scaling `sigma_in`, and the Tikhonov regularization `tikh`; by default,
 validation selects all three (below).
 
-The input bias is fixed at $b_\mathrm{in} = 1$ by default (`bias_in`) and is
+When `bias_in` is not given, `train` sets the input bias to the mean absolute
+value of the normalized training input, $b_\mathrm{in} =
+\overline{|\tilde{\mathbf{u}}|}$ (the rule of the code of Racca & Magri 2021), so that the
+bias has the scale of the input. The input bias is
 outside the input scaling: $b_\mathrm{in}$ alone sets the
 offset of each unit, whatever $\sigma_\mathrm{in}$ (`scale_bias_in=True`
 multiplies the bias column by $\sigma_\mathrm{in}$, as the versions before 0.7

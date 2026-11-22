@@ -166,7 +166,7 @@
         <label>or fix at <input id="v-alpha" type="number" step="any" value="1"></label></div>
       <div class="hp" id="hp-bin"><span class="sym">b<sub>in</sub> (input bias)</span>
         <label><input type="checkbox" id="s-bin"> search in <input id="lo-bin" type="number" step="any" value="0"> &ndash; <input id="hi-bin" type="number" step="any" value="2"></label>
-        <label>or fix at <input id="v-bin" type="number" step="any" value="1"></label></div>
+        <label>or fix at <input id="v-bin" type="text" value="" placeholder="from data"></label></div>
       <div class="row" id="r-sbi"><span>b<sub>in</sub> inside the input scaling (<code>scale_bias_in</code>)</span> <input id="sbi" type="checkbox"></div>
       <div class="note">The readout has an intercept, <b>w</b><sub>0</sub>, in place of an output bias. The ridge
         regression does not penalize it, so it follows from the means of the targets and of the states: it is not
@@ -247,7 +247,7 @@ const num = (id, fallback) => { const v = parseFloat($(id).value); return Number
 const NET = ["#CC6677", "#332288", "#DDAA33", "#117733", "#882255", "#44AA99", "#999933", "#AA4499"];
 const DEFAULTS = { N_units: 100, N_wash: 50, upsample: 5, noise: 1e-10, connect: 3, rho: 0.9, rho_range: [0.8, 1.05],
   sigma_in: 1e-3, sigma_in_range: [-5, -1], tikh: 1e-12, tikh_range: [1e-8, 1e-10, 1e-12, 1e-16], leak_rate: 1,
-  leak_rate_range: [0.1, 1], bias_in: 1, bias_in_range: [0, 2], N_func_evals: 20, N_grid: 4, N_folds: 4 };
+  leak_rate_range: [0.1, 1], bias_in_range: [0, 2], N_func_evals: 20, N_grid: 4, N_folds: 4 };
 
 /* ---------- settings ---------- */
 function settings() {
@@ -272,7 +272,7 @@ function settings() {
     sigma_in: num("v-sigma", 1e-3), sigma_in_range: [num("lo-sigma", -5), num("hi-sigma", -1)],
     tikh: num("v-tikh", 1e-12), tikh_range: tikhGrid.length ? tikhGrid : [1e-12],
     leak_rate: num("v-alpha", 1), leak_rate_range: [num("lo-alpha", 0.1), num("hi-alpha", 1)],
-    bias_in: num("v-bin", 1), bias_in_range: [num("lo-bin", 0), num("hi-bin", 2)], sbi: $("sbi").checked,
+    bias_in: $("v-bin").value.trim() === "" ? null : num("v-bin", 1), bias_in_range: [num("lo-bin", 0), num("hi-bin", 2)], sbi: $("sbi").checked,
     nfe: Math.max(1, Math.round(num("nfe", 20))), ngrid: Math.max(1, Math.round(num("ngrid", 4))),
     strat: radio("strat"), folds: Math.max(1, Math.round(num("folds", 4))), metric: radio("metric"),
     fstep: $("fstep").value.trim() === "" ? null : Math.max(1, Math.round(num("fstep", 1))),
@@ -646,7 +646,10 @@ function equations(s) {
   const pt = ind ? String.raw`\tilde{\bm p}^{(p)}` : String.raw`\tilde{\bm p}`;
   const uin = par ? uwin + (s.npar && s.pir ? String.raw`;\, ${pt}` : "")
     : (s.npar && !s.pir ? String.raw`\tilde{\bm u}_n[\mathcal O]` : String.raw`\tilde{\bm u}_n`);
-  const bi = s.search.bias_in ? (ind ? "b_\\mathrm{in}^{(p)}" : "b_\\mathrm{in}") : fmt(s.bias_in);
+  // b_in: searched, set from the data (no value given: the mean |u~| of the training record), or the given value
+  const biData = String.raw`\overline{|\tilde{\bm u}|}`;
+  const biVal = s.bias_in === null ? biData : fmt(s.bias_in);
+  const bi = s.search.bias_in || s.bias_in === null ? (ind ? "b_\\mathrm{in}^{(p)}" : "b_\\mathrm{in}") : fmt(s.bias_in);
   const arg = s.sbi ? String.raw`${sg}\,\mathbf W_\mathrm{in}${q}\left[${uin};\, ${bi}\right] + ${rh}\,\mathbf W${q}\,\bm r${pp}_n`
     : String.raw`${sg}\,\mathbf W_\mathrm{in}${q}\left[${uin}\right] + ${bi}\,\bm w_b${q} + ${rh}\,\mathbf W${q}\,\bm r${pp}_n`;
   const plain = !s.search.leak_rate && s.leak_rate >= 0.999;
@@ -659,7 +662,7 @@ function equations(s) {
     + `${s.win !== "dense" && s.npar && s.pir ? `, dense on the ${s.npar} parameter column${s.npar > 1 ? "s" : ""}` : ""}); <b>W</b>${ind ? "<sup>(p)</sup>" : ""} is ${s.Nu} × ${s.Nu} with about ${s.connect} connections per unit, scaled to unit spectral radius; `
     + (s.sbi ? "the input bias is the last input of <b>W</b><sub>in</sub>, inside the input scaling; "
       : "<b>w</b><sub>b</sub> is the bias column of <b>W</b><sub>in</sub>, outside the input scaling; ")
-    + (s.search.bias_in ? `b<sub>in</sub> is searched in [${s.bias_in_range[0]}, ${s.bias_in_range[1]}]` : `b<sub>in</sub> = ${s.bias_in}`) + (plain ? "; α = 1 is the plain update." : ".")
+    + (s.search.bias_in ? `b<sub>in</sub> is searched in [${s.bias_in_range[0]}, ${s.bias_in_range[1]}]` : s.bias_in === null ? "b<sub>in</sub> is the mean absolute value of the normalized input over the training record" : `b<sub>in</sub> = ${s.bias_in}`) + (plain ? "; α = 1 is the plain update." : ".")
     + (s.npar && !s.pir ? ` ${s.npar > 1 ? `The ${s.npar} parameter columns` : "The parameter column"} of <b>W</b><sub>in</sub>${ind ? "<sup>(p)</sup>" : ""} ${s.npar > 1 ? "are" : "is"} zero, so the parameters do not enter the reservoir`
       + (s.read === "r" ? " and, with this readout, do not reach the forecast." : " and reach the forecast only through the readout.") : "")]);
   // readout
@@ -705,7 +708,7 @@ function equations(s) {
     + ` (<code>optimize_parameter_normalization</code>, on by default with <code>input_parameters</code>)`;
   const grid = s.tikh_range.map((v) => fmt(v)).join(",\\,");
   const fixed = String.raw`\rho = ${fmt(s.rho)},\quad \sigma_\mathrm{in} = ${fmt(s.sigma_in)},\quad `
-    + String.raw`\alpha = ${fmt(s.leak_rate)},\quad b_\mathrm{in} = ${fmt(s.bias_in)}`;
+    + String.raw`\alpha = ${fmt(s.leak_rate)},\quad b_\mathrm{in} = ${biVal}`;
   if (s.dims.length) {
     const sym = { rho: "\\rho", sigma_in: "\\log_{10}\\sigma_\\mathrm{in}", leak_rate: "\\alpha", bias_in: "b_\\mathrm{in}" };
     const theta = s.dims.map((k) => sym[k]).join(",\\ ");
@@ -746,7 +749,7 @@ function equations(s) {
       + ` optimization, so N_func_evals and N_grid do not apply`
       + (ind ? ". Every patch selects its own β, on the record of its own window." : ".")]);
   } else {
-    blocks.push(["Hyperparameter selection", String.raw`\rho = ${fmt(s.rho)},\quad \sigma_\mathrm{in} = ${fmt(s.sigma_in)},\quad \beta = ${fmt(s.tikh)},\quad \alpha = ${fmt(s.leak_rate)},\quad b_\mathrm{in} = ${fmt(s.bias_in)}`,
+    blocks.push(["Hyperparameter selection", String.raw`\rho = ${fmt(s.rho)},\quad \sigma_\mathrm{in} = ${fmt(s.sigma_in)},\quad \beta = ${fmt(s.tikh)},\quad \alpha = ${fmt(s.leak_rate)},\quad b_\mathrm{in} = ${biVal}`,
       s.nseeds > 1 ? "no search: the hyperparameters are fixed; the validation objective scores each realization"
         + " once, at the fixed β." : "no search: the hyperparameters are fixed and no validation runs."]);
   }
@@ -890,7 +893,7 @@ function code(s) {
     if (s.search[k]) kw.push([`${k}_range`, s[k + "_range"]]); else kw.push([k, s[k]]);
   }
   if (s.search.bias_in) kw.push(["bias_in_range", s.bias_in_range]);
-  else if (s.bias_in !== DEFAULTS.bias_in) kw.push(["bias_in", `RAW:np.array([${s.bias_in}])`]);
+  else if (s.bias_in !== null) kw.push(["bias_in", `RAW:np.array([${s.bias_in}])`]);     // not given: from the data
   if (s.sbi) kw.push(["scale_bias_in", true]);
   if (s.bayes) {                          // the budget of the Bayesian optimization (none with tikh alone)
     opt("N_func_evals", s.nfe, DEFAULTS.N_func_evals);
