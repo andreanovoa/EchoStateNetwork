@@ -74,6 +74,39 @@ See the
 [validation strategies tutorial](tutorials/04_validation_strategies.ipynb)
 for a live comparison on Lorenz 63.
 
+## Benchmark against the reference code
+
+[`scripts/benchmark_robust_validation.py`](https://github.com/andreanovoa/EchoStateNetwork/blob/master/scripts/benchmark_robust_validation.py)
+runs the package against the code of Racca & Magri (2021),
+[MagriLab/Robust-Validation-ESN](https://github.com/MagriLab/Robust-Validation-ESN),
+on the short Lorenz 63 dataset of the reference: a washout of one Lyapunov time
+(LT), 8 LT of training and 3 LT of validation. The benchmark compares (i) the
+readout and the closed-loop forecast of the two codes for the same matrices and
+hyperparameters; (ii) the fold placement and the objective of every strategy;
+(iii) the hyperparameter search and the test prediction horizon over an
+ensemble of reservoir seeds; and (iv) the runtime.
+
+![Test prediction horizon of the reference code and of the package for every validation strategy](img/benchmark_robust_validation.png)
+
+*Lorenz 63, short dataset (12 LT): 50 reservoir seeds (markers) with 100 test
+intervals each; the bars show the mean and one standard deviation over the
+seeds. Top: test prediction horizon after the hyperparameter search of each
+code. The package runs on the network of the reference with the conventions
+mapped (input bias, normalization, no input noise), on the same network with
+the linear `sigma_in` axis and the log10 MSE of the reference, and with its own
+conventions and matrices. Bottom: difference between the package and the
+reference on the same network. WFC and KFC are the chaotic variants of WFV and
+KFV (`val_fold_step` of 1 LT).*
+
+With the conventions mapped, the two codes give the same readout and the same
+closed-loop forecast, and the mean prediction horizons after the search agree
+within the spread over the seeds for every strategy. The fold placement differs
+in one convention: the reference scores the open-loop output of the washed-out
+state as its first validation step, whereas the package scores closed-loop
+steps only. Consequently, the chaotic K-fold validation of the package fits one
+fold fewer, and the folds of `RVC_Noise` are one row closer. Both codes select
+the same point of the initial grid.
+
 ## Reference
 
 Racca & Magri (2021). Robust optimization and validation of echo state
