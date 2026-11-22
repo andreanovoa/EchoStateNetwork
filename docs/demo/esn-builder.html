@@ -124,9 +124,9 @@
       <div class="row" id="r-par"><span>Parameters, N<sub>param</sub></span> <b id="nparV"></b><input id="npar" type="range" min="0" max="3" step="1" value="0"></div>
       <div class="row" id="r-pir"><label for="pir">Parameters enter the reservoir</label><input id="pir" type="checkbox" checked></div>
       <div class="row" id="r-read"><span>Readout reads</span> <div class="seg" role="radiogroup" aria-label="Readout reads">
-          <input type="radio" name="read" id="read-r" value="r" checked><label for="read-r">[r; 1]</label>
-          <input type="radio" name="read" id="read-u" value="u"><label for="read-u">[r; u; 1]</label>
-          <input type="radio" name="read" id="read-p" value="p"><label for="read-p">[r; p; 1]</label>
+          <input type="radio" name="read" id="read-r" value="r" checked><label for="read-r">r</label>
+          <input type="radio" name="read" id="read-u" value="u"><label for="read-u">[r; u]</label>
+          <input type="radio" name="read" id="read-p" value="p"><label for="read-p">[r; p]</label>
         </div>
       </div>
       <div class="row"><span>Input noise, &eta; (training only)</span> <input id="noise" type="text" value="1e-10"></div>
@@ -636,7 +636,7 @@ function equations(s) {
   const pt = ind ? String.raw`\tilde{\bm p}^{(p)}` : String.raw`\tilde{\bm p}`;
   const uin = par ? uwin + (s.npar && s.pir ? String.raw`;\, ${pt}` : "")
     : (s.npar && !s.pir ? String.raw`\tilde{\bm u}_n[\mathcal O]` : String.raw`\tilde{\bm u}_n`);
-  const arg = String.raw`${sg}\,\mathbf W_\mathrm{in}${q}[${uin};\, b_\mathrm{in}] + ${rh}\,\mathbf W${q}\,\bm r${pp}_n`;
+  const arg = String.raw`${sg}\,\mathbf W_\mathrm{in}${q}\left[${uin}\right] + b_\mathrm{in}\,\bm w_b${q} + ${rh}\,\mathbf W${q}\,\bm r${pp}_n`;
   const plain = !s.search.leak_rate && s.leak_rate >= 0.999;
   const upd = plain ? String.raw`\bm r${pp}_{n+1} = \tanh\!\left(${arg}\right)`
     : String.raw`\bm r${pp}_{n+1} = \left(1-${a}\right)\bm r${pp}_n + ${a}\,\tanh\!\left(${arg}\right)`;
@@ -645,23 +645,23 @@ function equations(s) {
     (par ? `in which 𝓘<sup>(p)</sup> = {pG − H, …, pG + G + H − 1} is the window of patch p (G = ${s.G}, H = ${s.H}), ${win}; ` : "")
     + `<b>r</b>${par ? "<sup>(p)</sup>" : ""} has ${s.Nu} units; <b>W</b><sub>in</sub>${ind ? "<sup>(p)</sup>" : ""} is ${s.Nu} × ${s.nin + 1} (${{ sparse: "sparse: one state or bias column per unit, so about one unit in " + (s.nwin + 1) + " sees b<sub>in</sub>", sparse_dense_bias: "sparse with a dense bias column: one state column per unit, and b<sub>in</sub> in every unit", dense: "dense" }[s.win]}`
     + `${s.win !== "dense" && s.npar && s.pir ? `, dense on the ${s.npar} parameter column${s.npar > 1 ? "s" : ""}` : ""}); <b>W</b>${ind ? "<sup>(p)</sup>" : ""} is ${s.Nu} × ${s.Nu} with about ${s.connect} connections per unit, scaled to unit spectral radius; `
-    + `b<sub>in</sub> = 0.1` + (plain ? "; α = 1 is the plain update." : ".")
+    + `<b>w</b><sub>b</sub> is the bias column of <b>W</b><sub>in</sub>, outside the input scaling; b<sub>in</sub> = 0.1` + (plain ? "; α = 1 is the plain update." : ".")
     + (s.npar && !s.pir ? ` ${s.npar > 1 ? `The ${s.npar} parameter columns` : "The parameter column"} of <b>W</b><sub>in</sub>${ind ? "<sup>(p)</sup>" : ""} ${s.npar > 1 ? "are" : "is"} zero, so the parameters do not enter the reservoir`
       + (s.read === "r" ? " and, with this readout, do not reach the forecast." : " and reach the forecast only through the readout.") : "")]);
   // readout
   const extra = !par ? (s.read === "u" ? String.raw`;\, \tilde{\bm u}_n` : s.read === "p" ? String.raw`;\, \tilde{\bm p}` : "")
     : (s.read === "u" ? String.raw`;\, ${uwin}` + (s.npar ? String.raw`;\, ${pt}` : "") : s.read === "p" ? String.raw`;\, ${pt}` : "");
   const outv = par ? String.raw`\hat{\bm u}_{n+1}[\mathcal P^{(p)}]` : String.raw`\hat{\bm u}_{n+1}`;
-  const rows = s.Nu + 1 + s.readRows, cols = ind ? s.G + 2 * s.H : par ? s.G : s.N;
-  blocks.push(["Readout", String.raw`${outv} = \mathbf W_\mathrm{out}^{${ind ? "(p)" : ""}\top}\,\bar{\bm r}${pp}_{n+1},\qquad \bar{\bm r}${pp}_{n+1} = \left[\bm r${pp}_{n+1}${extra};\, b_\mathrm{out}\right]`,
+  const rows = s.Nu + s.readRows, cols = ind ? s.G + 2 * s.H : par ? s.G : s.N;
+  blocks.push(["Readout", String.raw`${outv} = \mathbf W_\mathrm{out}^{${ind ? "(p)" : ""}\top}\,\bar{\bm r}${pp}_{n+1} + \bm w_0${q}` + (extra ? String.raw`,\qquad \bar{\bm r}${pp}_{n+1} = \left[\bm r${pp}_{n+1}${extra}\right]` : String.raw`,\qquad \bar{\bm r}${pp}_{n+1} = \bm r${pp}_{n+1}`),
     (par ? `in which 𝓟<sup>(p)</sup> = {pG, …, pG + G − 1} are the sites of patch p; ` : "")
     + `<b>W</b><sub>out</sub>${ind ? "<sup>(p)</sup>" : ""} is ${rows} × ${cols}`
-    + (s.readRows ? ` (${s.Nu} units, ${s.readRows} input row${s.readRows > 1 ? "s" : ""} and the bias)` : "")
+    + (s.readRows ? ` (${s.Nu} units, ${s.readRows} input row${s.readRows > 1 ? "s" : ""})` : "")
     + (ind ? `: the network of patch p forecasts its whole window, and the parallel network keeps the ${s.G} columns of the sites of the patch`
       : par ? `, one matrix that the ${P} patches share` : "")
     + (par && s.read === "u" ? `; the readout of patch p reads the inputs of its own reservoir, i.e. its window${s.npar ? " and the parameters" : ""}` : "")
     + (par && s.read === "p" ? "; the readout of every patch reads the same parameters" : "")
-    + "; b<sub>out</sub> = 1."]);
+    + "; <b>w</b><sub>0</sub> is the intercept, which is not a row of <b>W</b><sub>out</sub>."]);
   // washout
   blocks.push(["Washout (open loop)", String.raw`\bm r${pp}_0 = \bm 0,\qquad \bm r${pp}_{n+1} = \bm F\!\left(\bm r${pp}_n,\ \tilde{\bm u}_n\right),\qquad n = 0,\dots,N_\mathrm{wash}-1 = ${s.Nwash - 1}`,
     `in which <b>F</b> is the reservoir update above, driven by the data. The washout synchronizes the reservoir with the data before the regression rows, before every closed-loop validation run and before every forecast (${s.Nwash} steps, ${+(s.Nwash * s.dtE).toPrecision(4)} time units).`]);
@@ -670,8 +670,8 @@ function equations(s) {
   const last = s.Nt - 1, nrows = Math.max(0, s.Nt - s.Nwash);
   const target = par ? (ind ? String.raw`\bm u_{n+1}[\mathcal I^{(p)}]` : String.raw`\bm u_{n+1}[\mathcal P^{(p)}]`) : String.raw`\bm u_{n+1}`;
   const sums = par && !ind ? String.raw`\sum_{p=0}^{${P - 1}}\sum_{n=N_\mathrm{wash}}^{${last}}` : String.raw`\sum_{n=N_\mathrm{wash}}^{${last}}`;
-  blocks.push(["Training: ridge regression", String.raw`\mathbf W_\mathrm{out}${q} = \Big(${sums}\bar{\bm r}${pp}_{n+1}\bar{\bm r}^{${par ? "(p)" : ""}\top}_{n+1} + ${beta}\,\mathbf I\Big)^{-1}${sums}\bar{\bm r}${pp}_{n+1}\,${target}^{\top}`,
-    `on the training and validation record after the washout: ${par && !ind ? `${P} × ${nrows} = ${(P * nrows).toLocaleString()}` : nrows.toLocaleString()} rows`
+  blocks.push(["Training: ridge regression", String.raw`\mathbf W_\mathrm{out}${q} = \Big(${sums}\bm r'_{n+1}\bm r'^{\top}_{n+1} + ${beta}\,\mathbf I\Big)^{-1}${sums}\bm r'_{n+1}\,\bm u'^{\top}_{n+1},\qquad \bm w_0${q} = \overline{\bm u} - \mathbf W_\mathrm{out}^{${ind ? "(p)" : ""}\top}\,\overline{\bm r}`,
+    `in which <b>r</b>′ = <b>r̄</b> − mean and <b>u</b>′ = target − mean are the readout rows and the targets minus their means over the rows, so the Tikhonov factor does not act on the intercept; on the training and validation record after the washout: ${par && !ind ? `${P} × ${nrows} = ${(P * nrows).toLocaleString()}` : nrows.toLocaleString()} rows`
     + (par && !ind ? ", one per patch and step, which share one readout" : "")
     + (ind ? `, one regression per patch; each keeps the columns of the sites of its patch` : "")
     + (s.search.tikh ? `. β is selected from {${s.tikh_range.map((v) => v.toExponential(0)).join(", ")}} at every evaluation of the search.` : `.`)]);
@@ -924,7 +924,7 @@ function render() {
   $("code").textContent = code(s);
   $("codeSub").innerHTML = s.npar ? "Run it locally on your records <code>data</code>, of shape (L, N<sub>t</sub>, N<sub>dim</sub>), one per column of <code>params</code>."
     : "Run it locally on your record <code>data</code>, of shape (N<sub>t</sub>, N<sub>dim</sub>).";
-  const rows = s.Nu + 1 + s.readRows, cols = s.par ? (s.ind ? s.G + 2 * s.H : s.G) : s.N;
+  const rows = s.Nu + s.readRows, cols = s.par ? (s.ind ? s.G + 2 * s.H : s.G) : s.N;
   $("t-steps").textContent = `${s.Nwash} / ${s.Ntr} / ${s.Nval}`;
   $("t-stepsU").textContent = `ESN step ${+s.dtE.toPrecision(4)} time units`;
   $("t-nr").textContent = (s.P * s.Nu).toLocaleString();
