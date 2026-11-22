@@ -36,9 +36,11 @@ Four comparisons, in order:
    3 x 3 grid + 3 points and 20 test intervals (about a minute on 4 workers).
 4. Runtime of one training, one validation evaluation and one full search, both codes.
 
-Outputs (written next to this script): ``benchmark_robust_validation.npz`` (all numbers,
-the stdout report included) and ``benchmark_robust_validation.{pdf,png}`` (step 3:
-prediction horizon per strategy, both codes, seeds as points).
+Outputs: ``benchmark_robust_validation.npz`` next to this script (all numbers, the stdout
+report included) and ``docs/img/benchmark_robust_validation.png``, the figure of the
+documentation page on validation (step 3: prediction horizon per strategy, both codes, seeds
+as points). With ``--quick``, the outputs take the suffix ``_quick`` and the figure stays
+next to this script.
 
 Run:  git clone --depth 1 https://github.com/MagriLab/Robust-Validation-ESN <dir>
       python scripts/benchmark_robust_validation.py --reference <dir> [--quick] [--workers N]
@@ -104,7 +106,10 @@ FULL = dict(seeds=list(range(1, 51)), n_test=100, n_grid=N_GRID, n_func_evals=N_
 QUICK = dict(seeds=list(range(1, 6)), n_test=20, n_grid=3, n_func_evals=12)
 
 OUT_DIR = Path(__file__).resolve().parent
+FIG_DIR = OUT_DIR.parent / 'docs' / 'img'          # the figure of docs/validation.md
 STEM = 'benchmark_robust_validation'
+TIMES = {'font.family': 'serif', 'font.serif': ['Times New Roman', 'Times', 'STIXGeneral'],
+         'mathtext.fontset': 'stix'}
 
 # ______________________________________________________________ the reference code
 
@@ -698,9 +703,12 @@ LABELS = {'ref': 'reference (Racca & Magri 2021)', 'pkg': 'package, reference ne
           'native': 'package, own conventions'}
 
 
-def make_figure(results, cfg, paths):
+def make_figure(results, path):
+    """Test prediction horizon per strategy and arm (top) and its difference from the reference on the same network
+    (bottom). The figure has no title: the caption in docs/validation.md names the dataset and the ensemble."""
     import matplotlib.pyplot as plt
 
+    plt.rcParams.update(TIMES)
     fig, axs = plt.subplots(2, 1, figsize=(9.0, 6.6), layout='constrained', sharex=True,
                             gridspec_kw=dict(height_ratios=(2.2, 1)))
     rng = np.random.default_rng(0)
@@ -725,8 +733,6 @@ def make_figure(results, cfg, paths):
             axs[1].errorbar(xc, d.mean(), yerr=d.std(), fmt='_', ms=14, mew=2, color='k', lw=1.2, zorder=3)
     axs[0].set_ylabel('test prediction horizon [LT]')
     axs[0].legend(loc='lower center', bbox_to_anchor=(0.5, 1.0), ncols=2, frameon=False, fontsize=8)
-    fig.suptitle(f'Lorenz 63, short dataset (12 LT): {len(cfg["seeds"])} reservoir seeds, '
-                     f'{cfg["n_test"]} test intervals each (bar: mean $\\pm$ std)', fontsize=10)
     axs[1].axhline(0, color='0.6', lw=0.8)
     axs[1].set_ylabel('PH package $-$ reference\n(same network) [LT]')
     axs[1].set_xticks(range(len(E2E_STRATEGIES)), E2E_STRATEGIES)
@@ -734,8 +740,7 @@ def make_figure(results, cfg, paths):
     for ax in axs:
         ax.grid(axis='y', color='0.9', lw=0.6)
         ax.spines[['top', 'right']].set_visible(False)
-    for path in paths:
-        fig.savefig(path, dpi=200)
+    fig.savefig(path, dpi=200)
     plt.close(fig)
 
 
@@ -772,14 +777,14 @@ def main():
     cfg = QUICK if args.quick else FULL
     stem = STEM + ('_quick' if args.quick else '')
     npz_path = OUT_DIR / f'{stem}.npz'
-    fig_paths = [OUT_DIR / f'{stem}.pdf', OUT_DIR / f'{stem}.png']
+    fig_path = (OUT_DIR if args.quick else FIG_DIR) / f'{stem}.png'
 
     if args.report_only:
         z = np.load(npz_path, allow_pickle=False)
         results = json.loads(str(z['step3_results_json']))
         print(str(z['report']))
-        make_figure(results, cfg, fig_paths)
-        print(f'Saved {fig_paths[0]} and {fig_paths[1]}')
+        make_figure(results, fig_path)
+        print(f'Saved {fig_path}')
         return
 
     if args.reference is None:
@@ -826,8 +831,8 @@ def main():
     npz['step4_rows'] = np.asarray(list(s4))
     npz['step4_seconds'] = np.asarray(list(s4.values()))
     np.savez(npz_path, **npz)
-    make_figure(results, cfg, fig_paths)
-    print(f'\nSaved {npz_path}\nSaved {fig_paths[0]} and {fig_paths[1]}')
+    make_figure(results, fig_path)
+    print(f'\nSaved {npz_path}\nSaved {fig_path}')
     print(f'Total runtime: {time.perf_counter() - t_start:.1f} s')
 
 
