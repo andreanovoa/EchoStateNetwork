@@ -714,12 +714,20 @@ def test_batched_ridge_sums_equal_one_pass(layout):
     assert np.allclose(small.step(u, r)[0], esn.step(u, r)[0], rtol=1e-6, atol=1e-6 * np.ptp(data[0]))   # to the conditioning
 
 
-def test_the_input_bias_follows_the_scale_of_the_normalized_input_unless_given():
-    # not given: train sets bias_in to the mean absolute value of the normalized training input (the rule of the
-    # code of Racca & Magri 2021), again at every training; a given, loaded or searched bias_in is kept
+def test_the_input_bias_is_fixed_unless_the_data_rule_is_asked_for():
+    # default: bias_in = 0.1, whatever the data and the normalization. With bias_in_from_data, train sets it to the
+    # mean absolute value of the normalized training input (the rule of the code of Racca & Magri 2021), again at
+    # every training and over a given value; a searched bias_in is left to the search, and a store keeps its value
     data = np.random.default_rng(0).normal(size=(400, 3)).cumsum(axis=0) * 0.1
     kw = dict(dt=1, N_units=20, upsample=1, t_train=250, t_val=50, t_test=0, N_wash=5, hyperparameters_to_optimize=[])
-    esn = EchoStateNetwork(data.T, **kw)
+    for norm_method in ('range', 'std', None):
+        fixed = EchoStateNetwork(data.T, norm_method=norm_method, **kw)
+        fixed.train(data, plot_training=False)
+        assert fixed.bias_in_from_data is False and fixed.bias_in[0] == 0.1
+    given = EchoStateNetwork(data.T, bias_in=np.array([0.3]), **kw)
+    given.train(data, plot_training=False)
+    assert given.bias_in[0] == 0.3
+    esn = EchoStateNetwork(data.T, bias_in_from_data=True, bias_in=np.array([0.3]), **kw)
     esn.train(data, plot_training=False)
     U = data[:esn.N_train + esn.N_val - 1]
     # the training inputs carry the input noise (1e-10 by default)
@@ -727,13 +735,13 @@ def test_the_input_bias_follows_the_scale_of_the_normalized_input_unless_given()
     first = esn.bias_in.copy()
     esn.train(data[::-1].copy(), plot_training=False, force=True)
     assert not np.allclose(esn.bias_in, first)
-    given = EchoStateNetwork(data.T, bias_in=np.array([0.3]), **kw)
-    given.train(data, plot_training=False)
-    assert given.bias_in[0] == 0.3
-    loaded = EchoStateNetwork.from_arrays(esn.to_arrays())
+    std = EchoStateNetwork(data.T, bias_in_from_data=True, norm_method='std', **kw)
+    std.train(data[::-1].copy(), plot_training=False)
+    assert std.bias_in[0] > 2 * esn.bias_in[0]                             # the value follows the normalization
+    loaded = EchoStateNetwork.from_arrays(esn.to_arrays())                 # the store pins the value, not the rule
     loaded.train(data, plot_training=False, force=True)
     np.testing.assert_array_equal(loaded.bias_in, esn.bias_in)
-    local = EchoStateNetwork(data.T, patch_size=1, shared=False, **kw)
+    local = EchoStateNetwork(data.T, patch_size=1, shared=False, bias_in_from_data=True, **kw)
     local.train(data, plot_training=False)
     assert len({float(net.bias_in[0]) for net in local.patches}) == 3      # every patch from its own window
 
