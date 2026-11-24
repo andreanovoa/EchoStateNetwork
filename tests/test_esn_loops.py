@@ -43,7 +43,7 @@ def _manual_open_loop(esn, U, r):
 def test_open_loop_and_forecast_are_manual_step_loops(make):
     esn, data = make()
     Y, R = esn.open_loop(data[:12])
-    Y0, R0 = _manual_open_loop(esn, data[:12], np.zeros((esn.N_r, 1)))
+    Y0, R0 = _manual_open_loop(esn, data[:12], esn.rest_state())   # the default start
     np.testing.assert_array_equal(Y, Y0[..., 0])
     np.testing.assert_array_equal(R, R0[..., 0])
     assert Y.shape == (12, esn.N_dim) and R.shape == (12, esn.N_r)

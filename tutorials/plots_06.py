@@ -101,9 +101,9 @@ def describe(esn, strategy='RVC_Noise'):
     read = {False: '', True: r';\, \tilde{\mathbf{u}}_n' + (p_t if n_param else ''), 'params': p_t}[esn.readout_input]
     out = r'\hat{\mathbf{u}}_{n+1}[\mathcal{P}^{(p)}]' if par else r'\hat{\mathbf{u}}_{n+1}'
     lines = [rf'$\mathbf{{r}}{p}n+1}} = (1-{a})\,\mathbf{{r}}{p}n}} + {a}\,\tanh({s}\,\mathbf{{W}}_\mathrm{{in}}{q}'
-             rf'[{u_in};\, b_\mathrm{{in}}] + {rho}\,\mathbf{{W}}{q}\,\mathbf{{r}}{p}n}})$',
+             rf'[{u_in}] + b_\mathrm{{in}}\mathbf{{w}}_b + {rho}\,\mathbf{{W}}{q}\,\mathbf{{r}}{p}n}})$',
              rf'${out} = \mathbf{{W}}_\mathrm{{out}}^{{{q[1:] if q else ""}\top}}'
-             rf'[\mathbf{{r}}{p}n+1}}{read};\, b_\mathrm{{out}}]$']
+             rf'[\mathbf{{r}}{p}n+1}}{read}] + \mathbf{{w}}_0$']
     times = f'  (x {esn.N_patches} networks)' if ind else ''
     lines.append(rf'$\mathbf{{W}}_\mathrm{{in}}$ {esn.N_units}$\times${esn._n_in + 1},  '
                  rf'$\mathbf{{W}}$ {esn.N_units}$\times${esn.N_units},  '

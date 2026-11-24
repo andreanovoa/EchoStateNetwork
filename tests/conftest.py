@@ -47,7 +47,7 @@ def random_parallel(N_dim=12, N_units=10, seed=0, n_param=0, readout_input=False
                            readout_input=readout_input, **kw)
     esn._generate_W_Win(seed=seed)
     for net in esn.patches if esn._independent else [esn]:
-        net.Wout = rng.normal(size=(net._n_readout, net._n_out))
+        net.Wout = rng.normal(size=(net._n_readout + 1, net._n_out))      # [Wout; intercept]
         if n_param or readout_input:
             net.norm, net.shift = rng.uniform(0.5, 2.0, net.N_dim_in), rng.normal(size=net.N_dim_in)
     return esn

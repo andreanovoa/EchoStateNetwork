@@ -37,9 +37,9 @@ every patch and reads out the sites of the patch,
 
 $$
 \mathbf{r}_{p,n+1} = (1-\alpha)\,\mathbf{r}_{p,n} + \alpha \tanh\!\big(
-\sigma_\mathrm{in} \mathbf{W}_\mathrm{in} [\tilde{\mathbf{u}}_n[\mathcal{I}_p];\, b_\mathrm{in}]
-+ \rho\, \mathbf{W} \mathbf{r}_{p,n} \big), \qquad
-\mathbf{u}_{n+1}[\mathcal{P}_p] = \mathbf{W}_\mathrm{out}^\top [\mathbf{r}_{p,n+1};\, b_\mathrm{out}],
+\sigma_\mathrm{in} \mathbf{W}_\mathrm{in} \tilde{\mathbf{u}}_n[\mathcal{I}_p]
++ b_\mathrm{in} \mathbf{w}_b + \rho\, \mathbf{W} \mathbf{r}_{p,n} \big), \qquad
+\mathbf{u}_{n+1}[\mathcal{P}_p] = \mathbf{W}_\mathrm{out}^\top \mathbf{r}_{p,n+1} + \mathbf{w}_0,
 $$
 
 where $\mathbf{r}_{p,n}$ is the state of the reservoir of patch $p$ at step
@@ -177,13 +177,13 @@ single reservoir,
 
 $$
 \mathbf{u}_{n+1}[\mathcal{P}_p] = \mathbf{W}_\mathrm{out}^\top
-[\mathbf{r}_{p,n+1};\, \tilde{\mathbf{p}};\, b_\mathrm{out}],
+[\mathbf{r}_{p,n+1};\, \tilde{\mathbf{p}}] + \mathbf{w}_0,
 $$
 
 with `readout_input='params'`, where $\tilde{\mathbf{p}}$ is the normalized
 parameter vector; with `readout_input=True`, the readout reads
 $[\mathbf{r}_{p,n+1};\, \tilde{\mathbf{u}}_n[\mathcal{I}_p];\,
-\tilde{\mathbf{p}};\, b_\mathrm{out}]$. The ridge regression reads the same
+\tilde{\mathbf{p}}]$. The ridge regression reads the same
 rows in the sample of every patch, and `Jacobian` adds the direct term of the
 readout, $\mathbf{W}_{\mathrm{out},u}^\top\,\mathrm{diag}(1/\texttt{norm})$,
 on the columns that the readout reads. One patch that covers the whole domain
@@ -285,7 +285,7 @@ local.patches[0].rho, local.patches[0].Win     # hyperparameters and matrices of
 | `N_r` | rows of the reservoir state, $P N_\mathrm{units}$ |
 | `patch_sites` | `(N_patches, G + 2H)` sites of each window, $-1$ outside a non-periodic domain |
 | `state_positions` | `(N_dim + N_r,)` position of every row of $[\mathbf{u}; \mathbf{r}]$ |
-| `Win`, `W`, `Wout` | shared matrices, `(N_units, G + 2H + N_param + 1)`, `(N_units, N_units)`, `(N_units + 1, G)`; with `input_parameters`, every patch reads the `N_param` parameters after its window; with `readout_input`, `Wout` has `N_param` more rows (`'params'`), or `G + 2H + N_param` more rows (`True`) |
+| `Win`, `W`, `Wout` | shared matrices, `(N_units, G + 2H + N_param + 1)`, `(N_units, N_units)`, `(N_units, G)` (and the `intercept`, `(G,)`); with `input_parameters`, every patch reads the `N_param` parameters after its window; with `readout_input`, `Wout` has `N_param` more rows (`'params'`), or `G + 2H + N_param` more rows (`True`) |
 | `param_in_reservoir`, `readout_input` | where the parameters enter: the reservoir (default), the readout, or both ([above](#parameters-and-the-readout)) |
 | `patches` | with `shared=False`: one `EchoStateNetwork` per patch, with its own matrices and hyperparameters |
 

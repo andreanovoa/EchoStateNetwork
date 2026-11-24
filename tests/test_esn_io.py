@@ -54,13 +54,57 @@ def test_untrained_esn_round_trip():
     assert not EchoStateNetwork.from_arrays(d).trained
 
 
+def test_arrays_saved_before_the_intercept_left_the_readout_load_unchanged():
+    # before 0.7, the last row of Wout multiplied the output bias, bias_out, and the input bias was inside the input
+    # scaling without an entry scale_bias_in: such a store gives the same network, with the intercept beside Wout
+    data = np.random.default_rng(3).normal(size=(200, 3)).cumsum(axis=0) * 0.1
+    esn = EchoStateNetwork(data.T, dt=1, N_units=20, upsample=1, t_train=120, t_val=30, t_test=0, N_wash=5,
+                           hyperparameters_to_optimize=[], scale_bias_in=True, sigma_in=0.3, seed=0)
+    esn.train(data, plot_training=False)
+    arrays = esn.to_arrays()
+    assert arrays['Wout'].shape == (20, 3) and arrays['intercept'].shape == (3,) and 'bias_out' not in arrays
+    old = {k: v for k, v in arrays.items() if k not in ('intercept', 'scale_bias_in')}
+    old.update(Wout=np.vstack([esn.Wout, esn.intercept / 2.0]), bias_out=np.array([2.0]))
+    u, r = data[7].reshape(-1, 1), np.random.default_rng(4).normal(size=(esn.N_units, 1))
+    for stored in (arrays, old):
+        back = EchoStateNetwork.from_arrays(stored)
+        assert back.scale_bias_in is True and back.Wout.shape == (20, 3)
+        np.testing.assert_allclose(back.intercept, esn.intercept, rtol=1e-13)
+        for a, b in zip(back.step(u, r), esn.step(u, r)):
+            np.testing.assert_allclose(a, b, rtol=1e-13)
+    assert EchoStateNetwork(data.T).scale_bias_in is False            # the default: the bias outside sigma_in
+
+
+def test_a_network_pickled_before_the_intercept_left_the_readout_unpickles_unchanged():
+    data = np.random.default_rng(3).normal(size=(200, 3)).cumsum(axis=0) * 0.1
+    esn = EchoStateNetwork(data.T, dt=1, N_units=20, upsample=1, t_train=120, t_val=30, t_test=0, N_wash=5,
+                           hyperparameters_to_optimize=[], scale_bias_in=True, sigma_in=0.3, seed=0)
+    esn.train(data, plot_training=False)
+    u, r = data[7].reshape(-1, 1), np.random.default_rng(4).normal(size=(esn.N_units, 1))
+    old = EchoStateNetwork.__new__(EchoStateNetwork)       # the attributes that a version before 0.7 pickled
+    state = {k: v for k, v in esn.__getstate__().items() if k not in ('_intercept', '_intercept_apart', 'scale_bias_in')}
+    state.update(_Wout=np.vstack([esn.Wout, esn.intercept / 2.0]), bias_out=np.array([2.0]))
+    old.__setstate__(state)
+    assert old.scale_bias_in is True and old.Wout.shape == (20, 3)
+    for a, b in zip(old.step(u, r), esn.step(u, r)):
+        np.testing.assert_allclose(a, b, rtol=1e-13)
+    new = EchoStateNetwork(data.T, dt=1, N_units=20, upsample=1, t_train=120, t_val=30, t_test=0, N_wash=5,
+                           hyperparameters_to_optimize=[], seed=0)
+    new.train(data, plot_training=False)
+    back = new.copy()                                       # copy goes through the pickling methods
+    assert back.scale_bias_in is False
+    np.testing.assert_array_equal(back.step(u, r)[0], new.step(u, r)[0])
+
+
 def test_centre_input_survives_npz(tmp_path):
     data = np.random.default_rng(7).normal(size=(200, 3)) + 3.0
     esn = EchoStateNetwork(data.T, dt=1, N_units=10, upsample=1, t_test=0, N_wash=5, hyperparameters_to_optimize=[],
-                           centre_input=False)
+                           centre_input=False, wash_from_rest=False, scale_bias_in=True)
     esn.train(data, plot_training=False)
     back = npz_round_trip(esn, tmp_path)
     assert back.centre_input is False
+    assert back.wash_from_rest is False
+    assert back.scale_bias_in is True
     np.testing.assert_array_equal(back.shift, 0.0)
 
 
@@ -73,6 +117,7 @@ def test_a_network_without_normalization_survives_npz(tmp_path):
     assert esn.to_arrays()['norm_method'] == 'None'
     back = npz_round_trip(esn, tmp_path)
     assert back.norm_method is None
+    assert back.wash_from_rest is True
     assert back.centre_input
     u, r = data[7].reshape(-1, 1), np.random.default_rng(6).normal(size=(esn.N_units, 1))
     np.testing.assert_array_equal(back.step(u, r)[0], esn.step(u, r)[0])

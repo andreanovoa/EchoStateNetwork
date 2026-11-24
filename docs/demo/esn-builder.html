@@ -124,9 +124,9 @@
       <div class="row" id="r-par"><span>Parameters, N<sub>param</sub></span> <b id="nparV"></b><input id="npar" type="range" min="0" max="3" step="1" value="0"></div>
       <div class="row" id="r-pir"><label for="pir">Parameters enter the reservoir</label><input id="pir" type="checkbox" checked></div>
       <div class="row" id="r-read"><span>Readout reads</span> <div class="seg" role="radiogroup" aria-label="Readout reads">
-          <input type="radio" name="read" id="read-r" value="r" checked><label for="read-r">[r; 1]</label>
-          <input type="radio" name="read" id="read-u" value="u"><label for="read-u">[r; u; 1]</label>
-          <input type="radio" name="read" id="read-p" value="p"><label for="read-p">[r; p; 1]</label>
+          <input type="radio" name="read" id="read-r" value="r" checked><label for="read-r">r</label>
+          <input type="radio" name="read" id="read-u" value="u"><label for="read-u">[r; u]</label>
+          <input type="radio" name="read" id="read-p" value="p"><label for="read-p">[r; p]</label>
         </div>
       </div>
       <div class="row"><span>Input noise, &eta; (training only)</span> <input id="noise" type="text" value="1e-10"></div>
@@ -149,7 +149,7 @@
     <div class="panel">
       <h3>Hyperparameters</h3>
       <div class="note">Tick to search in the range; untick to fix the value. Bayesian optimization searches
-        &rho;, &sigma;<sub>in</sub> and &alpha;; every evaluation selects &beta; from its grid, so &beta; alone
+        &rho;, &sigma;<sub>in</sub>, &alpha; and b<sub>in</sub>; every evaluation selects &beta; from its grid, so &beta; alone
         needs one evaluation. With parameters, Bayesian optimization also searches their normalization, whatever
         is ticked.</div>
       <div class="hp" id="hp-rho"><span class="sym">&rho;</span>
@@ -164,6 +164,13 @@
       <div class="hp" id="hp-alpha"><span class="sym">&alpha; (leak)</span>
         <label><input type="checkbox" id="s-alpha"> search in <input id="lo-alpha" type="number" step="any" value="0.1"> &ndash; <input id="hi-alpha" type="number" step="any" value="1"></label>
         <label>or fix at <input id="v-alpha" type="number" step="any" value="1"></label></div>
+      <div class="hp" id="hp-bin"><span class="sym">b<sub>in</sub> (input bias)</span>
+        <label><input type="checkbox" id="s-bin"> search in <input id="lo-bin" type="number" step="any" value="0"> &ndash; <input id="hi-bin" type="number" step="any" value="2"></label>
+        <label>or fix at <input id="v-bin" type="text" value="" placeholder="from data"></label></div>
+      <div class="row" id="r-sbi"><span>b<sub>in</sub> inside the input scaling (<code>scale_bias_in</code>)</span> <input id="sbi" type="checkbox"></div>
+      <div class="note">The readout has an intercept, <b>w</b><sub>0</sub>, in place of an output bias. The ridge
+        regression does not penalize it, so it follows from the means of the targets and of the states: it is not
+        a hyperparameter, and nothing is searched for it.</div>
       <div class="row" id="r-nfe"><span>Evaluations, <code>N_func_evals</code></span> <input id="nfe" type="number" step="1" min="1" value="20"></div>
       <div class="row" id="r-ngrid"><span>Initial grid per axis, <code>N_grid</code></span> <input id="ngrid" type="number" step="1" min="1" value="4"></div>
     </div>
@@ -240,7 +247,7 @@ const num = (id, fallback) => { const v = parseFloat($(id).value); return Number
 const NET = ["#CC6677", "#332288", "#DDAA33", "#117733", "#882255", "#44AA99", "#999933", "#AA4499"];
 const DEFAULTS = { N_units: 100, N_wash: 50, upsample: 5, noise: 1e-10, connect: 3, rho: 0.9, rho_range: [0.8, 1.05],
   sigma_in: 1e-3, sigma_in_range: [-5, -1], tikh: 1e-12, tikh_range: [1e-8, 1e-10, 1e-12, 1e-16], leak_rate: 1,
-  leak_rate_range: [0.1, 1], N_func_evals: 20, N_grid: 4, N_folds: 4 };
+  leak_rate_range: [0.1, 1], bias_in_range: [0, 2], N_func_evals: 20, N_grid: 4, N_folds: 4 };
 
 /* ---------- settings ---------- */
 function settings() {
@@ -259,16 +266,18 @@ function settings() {
     nseeds: Math.max(1, Math.round(num("nseeds", 1))), seed: Math.max(0, Math.round(num("seed", 0))),
     Nu: +$("Nu").value, connect: Math.max(1, Math.round(num("connect", 3))), win: radio("win"),
     dt, ups, dtE, ttrain: num("ttrain", 40), tval: num("tval", 4), Ntr, Nval, Nwash: +$("Nwash").value,
-    search: { rho: $("s-rho").checked, sigma_in: $("s-sigma").checked, tikh: $("s-tikh").checked, leak_rate: $("s-alpha").checked },
+    search: { rho: $("s-rho").checked, sigma_in: $("s-sigma").checked, tikh: $("s-tikh").checked, leak_rate: $("s-alpha").checked,
+      bias_in: $("s-bin").checked },
     rho: num("v-rho", 0.9), rho_range: [num("lo-rho", 0.8), num("hi-rho", 1.05)],
     sigma_in: num("v-sigma", 1e-3), sigma_in_range: [num("lo-sigma", -5), num("hi-sigma", -1)],
     tikh: num("v-tikh", 1e-12), tikh_range: tikhGrid.length ? tikhGrid : [1e-12],
     leak_rate: num("v-alpha", 1), leak_rate_range: [num("lo-alpha", 0.1), num("hi-alpha", 1)],
+    bias_in: $("v-bin").value.trim() === "" ? null : num("v-bin", 1), bias_in_range: [num("lo-bin", 0), num("hi-bin", 2)], sbi: $("sbi").checked,
     nfe: Math.max(1, Math.round(num("nfe", 20))), ngrid: Math.max(1, Math.round(num("ngrid", 4))),
     strat: radio("strat"), folds: Math.max(1, Math.round(num("folds", 4))), metric: radio("metric"),
     fstep: $("fstep").value.trim() === "" ? null : Math.max(1, Math.round(num("fstep", 1))),
   };
-  s.dims = ["rho", "sigma_in", "leak_rate"].filter((k) => s.search[k]);
+  s.dims = ["rho", "sigma_in", "leak_rate", "bias_in"].filter((k) => s.search[k]);
   // with parameters, train() also searches the shift and scale of every parameter column
   // (optimize_parameter_normalization, on by default with input_parameters), whatever is ticked
   s.pnorm = s.npar > 0;
@@ -318,13 +327,14 @@ function syncControls() {
     + "sites are observed. Every patch reads the same parameters after its window, and the readout of patch p reads "
     + "the inputs of its own reservoir.";
   for (const [k, ids] of [["rho", ["lo-rho", "hi-rho", "v-rho"]], ["sigma", ["lo-sigma", "hi-sigma", "v-sigma"]],
-    ["tikh", ["g-tikh", "v-tikh"]], ["alpha", ["lo-alpha", "hi-alpha", "v-alpha"]]]) {
+    ["tikh", ["g-tikh", "v-tikh"]], ["alpha", ["lo-alpha", "hi-alpha", "v-alpha"]],
+    ["bin", ["lo-bin", "hi-bin", "v-bin"]]]) {
     const on = $("s-" + k).checked;
     ids.forEach((id) => { $(id).disabled = id.startsWith("v-") ? on : !on; });
   }
-  // the budget of the Bayesian optimization applies when rho, sigma_in or the leak rate is searched, or, with
+  // the budget of the Bayesian optimization applies when rho, sigma_in, the leak rate or b_in is searched, or, with
   // parameters, to the normalization of the parameters (optimize_parameter_normalization), whatever is ticked
-  const bayes = ["s-rho", "s-sigma", "s-alpha"].some((id) => $(id).checked) || +$("npar").value > 0;
+  const bayes = ["s-rho", "s-sigma", "s-alpha", "s-bin"].some((id) => $(id).checked) || +$("npar").value > 0;
   for (const id of ["r-nfe", "r-ngrid"]) $(id).classList.toggle("off", !bayes);
   for (const id of ["nfe", "ngrid"]) $(id).disabled = !bayes;
 }
@@ -636,7 +646,12 @@ function equations(s) {
   const pt = ind ? String.raw`\tilde{\bm p}^{(p)}` : String.raw`\tilde{\bm p}`;
   const uin = par ? uwin + (s.npar && s.pir ? String.raw`;\, ${pt}` : "")
     : (s.npar && !s.pir ? String.raw`\tilde{\bm u}_n[\mathcal O]` : String.raw`\tilde{\bm u}_n`);
-  const arg = String.raw`${sg}\,\mathbf W_\mathrm{in}${q}[${uin};\, b_\mathrm{in}] + ${rh}\,\mathbf W${q}\,\bm r${pp}_n`;
+  // b_in: searched, set from the data (no value given: the mean |u~| of the training record), or the given value
+  const biData = String.raw`\overline{|\tilde{\bm u}|}`;
+  const biVal = s.bias_in === null ? biData : fmt(s.bias_in);
+  const bi = s.search.bias_in || s.bias_in === null ? (ind ? "b_\\mathrm{in}^{(p)}" : "b_\\mathrm{in}") : fmt(s.bias_in);
+  const arg = s.sbi ? String.raw`${sg}\,\mathbf W_\mathrm{in}${q}\left[${uin};\, ${bi}\right] + ${rh}\,\mathbf W${q}\,\bm r${pp}_n`
+    : String.raw`${sg}\,\mathbf W_\mathrm{in}${q}\left[${uin}\right] + ${bi}\,\bm w_b${q} + ${rh}\,\mathbf W${q}\,\bm r${pp}_n`;
   const plain = !s.search.leak_rate && s.leak_rate >= 0.999;
   const upd = plain ? String.raw`\bm r${pp}_{n+1} = \tanh\!\left(${arg}\right)`
     : String.raw`\bm r${pp}_{n+1} = \left(1-${a}\right)\bm r${pp}_n + ${a}\,\tanh\!\left(${arg}\right)`;
@@ -645,23 +660,25 @@ function equations(s) {
     (par ? `in which 𝓘<sup>(p)</sup> = {pG − H, …, pG + G + H − 1} is the window of patch p (G = ${s.G}, H = ${s.H}), ${win}; ` : "")
     + `<b>r</b>${par ? "<sup>(p)</sup>" : ""} has ${s.Nu} units; <b>W</b><sub>in</sub>${ind ? "<sup>(p)</sup>" : ""} is ${s.Nu} × ${s.nin + 1} (${{ sparse: "sparse: one state or bias column per unit, so about one unit in " + (s.nwin + 1) + " sees b<sub>in</sub>", sparse_dense_bias: "sparse with a dense bias column: one state column per unit, and b<sub>in</sub> in every unit", dense: "dense" }[s.win]}`
     + `${s.win !== "dense" && s.npar && s.pir ? `, dense on the ${s.npar} parameter column${s.npar > 1 ? "s" : ""}` : ""}); <b>W</b>${ind ? "<sup>(p)</sup>" : ""} is ${s.Nu} × ${s.Nu} with about ${s.connect} connections per unit, scaled to unit spectral radius; `
-    + `b<sub>in</sub> = 0.1` + (plain ? "; α = 1 is the plain update." : ".")
+    + (s.sbi ? "the input bias is the last input of <b>W</b><sub>in</sub>, inside the input scaling; "
+      : "<b>w</b><sub>b</sub> is the bias column of <b>W</b><sub>in</sub>, outside the input scaling; ")
+    + (s.search.bias_in ? `b<sub>in</sub> is searched in [${s.bias_in_range[0]}, ${s.bias_in_range[1]}]` : s.bias_in === null ? "b<sub>in</sub> is the mean absolute value of the normalized input over the training record" : `b<sub>in</sub> = ${s.bias_in}`) + (plain ? "; α = 1 is the plain update." : ".")
     + (s.npar && !s.pir ? ` ${s.npar > 1 ? `The ${s.npar} parameter columns` : "The parameter column"} of <b>W</b><sub>in</sub>${ind ? "<sup>(p)</sup>" : ""} ${s.npar > 1 ? "are" : "is"} zero, so the parameters do not enter the reservoir`
       + (s.read === "r" ? " and, with this readout, do not reach the forecast." : " and reach the forecast only through the readout.") : "")]);
   // readout
   const extra = !par ? (s.read === "u" ? String.raw`;\, \tilde{\bm u}_n` : s.read === "p" ? String.raw`;\, \tilde{\bm p}` : "")
     : (s.read === "u" ? String.raw`;\, ${uwin}` + (s.npar ? String.raw`;\, ${pt}` : "") : s.read === "p" ? String.raw`;\, ${pt}` : "");
   const outv = par ? String.raw`\hat{\bm u}_{n+1}[\mathcal P^{(p)}]` : String.raw`\hat{\bm u}_{n+1}`;
-  const rows = s.Nu + 1 + s.readRows, cols = ind ? s.G + 2 * s.H : par ? s.G : s.N;
-  blocks.push(["Readout", String.raw`${outv} = \mathbf W_\mathrm{out}^{${ind ? "(p)" : ""}\top}\,\bar{\bm r}${pp}_{n+1},\qquad \bar{\bm r}${pp}_{n+1} = \left[\bm r${pp}_{n+1}${extra};\, b_\mathrm{out}\right]`,
+  const rows = s.Nu + s.readRows, cols = ind ? s.G + 2 * s.H : par ? s.G : s.N;
+  blocks.push(["Readout", String.raw`${outv} = \mathbf W_\mathrm{out}^{${ind ? "(p)" : ""}\top}\,\bar{\bm r}${pp}_{n+1} + \bm w_0${q}` + (extra ? String.raw`,\qquad \bar{\bm r}${pp}_{n+1} = \left[\bm r${pp}_{n+1}${extra}\right]` : String.raw`,\qquad \bar{\bm r}${pp}_{n+1} = \bm r${pp}_{n+1}`),
     (par ? `in which 𝓟<sup>(p)</sup> = {pG, …, pG + G − 1} are the sites of patch p; ` : "")
     + `<b>W</b><sub>out</sub>${ind ? "<sup>(p)</sup>" : ""} is ${rows} × ${cols}`
-    + (s.readRows ? ` (${s.Nu} units, ${s.readRows} input row${s.readRows > 1 ? "s" : ""} and the bias)` : "")
+    + (s.readRows ? ` (${s.Nu} units, ${s.readRows} input row${s.readRows > 1 ? "s" : ""})` : "")
     + (ind ? `: the network of patch p forecasts its whole window, and the parallel network keeps the ${s.G} columns of the sites of the patch`
       : par ? `, one matrix that the ${P} patches share` : "")
     + (par && s.read === "u" ? `; the readout of patch p reads the inputs of its own reservoir, i.e. its window${s.npar ? " and the parameters" : ""}` : "")
     + (par && s.read === "p" ? "; the readout of every patch reads the same parameters" : "")
-    + "; b<sub>out</sub> = 1."]);
+    + "; <b>w</b><sub>0</sub> is the intercept, which is not a row of <b>W</b><sub>out</sub>."]);
   // washout
   blocks.push(["Washout (open loop)", String.raw`\bm r${pp}_0 = \bm 0,\qquad \bm r${pp}_{n+1} = \bm F\!\left(\bm r${pp}_n,\ \tilde{\bm u}_n\right),\qquad n = 0,\dots,N_\mathrm{wash}-1 = ${s.Nwash - 1}`,
     `in which <b>F</b> is the reservoir update above, driven by the data. The washout synchronizes the reservoir with the data before the regression rows, before every closed-loop validation run and before every forecast (${s.Nwash} steps, ${+(s.Nwash * s.dtE).toPrecision(4)} time units).`]);
@@ -670,8 +687,8 @@ function equations(s) {
   const last = s.Nt - 1, nrows = Math.max(0, s.Nt - s.Nwash);
   const target = par ? (ind ? String.raw`\bm u_{n+1}[\mathcal I^{(p)}]` : String.raw`\bm u_{n+1}[\mathcal P^{(p)}]`) : String.raw`\bm u_{n+1}`;
   const sums = par && !ind ? String.raw`\sum_{p=0}^{${P - 1}}\sum_{n=N_\mathrm{wash}}^{${last}}` : String.raw`\sum_{n=N_\mathrm{wash}}^{${last}}`;
-  blocks.push(["Training: ridge regression", String.raw`\mathbf W_\mathrm{out}${q} = \Big(${sums}\bar{\bm r}${pp}_{n+1}\bar{\bm r}^{${par ? "(p)" : ""}\top}_{n+1} + ${beta}\,\mathbf I\Big)^{-1}${sums}\bar{\bm r}${pp}_{n+1}\,${target}^{\top}`,
-    `on the training and validation record after the washout: ${par && !ind ? `${P} × ${nrows} = ${(P * nrows).toLocaleString()}` : nrows.toLocaleString()} rows`
+  blocks.push(["Training: ridge regression", String.raw`\mathbf W_\mathrm{out}${q} = \Big(${sums}\bm r'_{n+1}\bm r'^{\top}_{n+1} + ${beta}\,\mathbf I\Big)^{-1}${sums}\bm r'_{n+1}\,\bm u'^{\top}_{n+1},\qquad \bm w_0${q} = \overline{\bm u} - \mathbf W_\mathrm{out}^{${ind ? "(p)" : ""}\top}\,\overline{\bm r}`,
+    `in which <b>r</b>′ = <b>r̄</b> − mean and <b>u</b>′ = target − mean are the readout rows and the targets minus their means over the rows, so the Tikhonov factor does not act on the intercept; on the training and validation record after the washout: ${par && !ind ? `${P} × ${nrows} = ${(P * nrows).toLocaleString()}` : nrows.toLocaleString()} rows`
     + (par && !ind ? ", one per patch and step, which share one readout" : "")
     + (ind ? `, one regression per patch; each keeps the columns of the sites of its patch` : "")
     + (s.search.tikh ? `. β is selected from {${s.tikh_range.map((v) => v.toExponential(0)).join(", ")}} at every evaluation of the search.` : `.`)]);
@@ -691,9 +708,9 @@ function equations(s) {
     + ` (<code>optimize_parameter_normalization</code>, on by default with <code>input_parameters</code>)`;
   const grid = s.tikh_range.map((v) => fmt(v)).join(",\\,");
   const fixed = String.raw`\rho = ${fmt(s.rho)},\quad \sigma_\mathrm{in} = ${fmt(s.sigma_in)},\quad `
-    + String.raw`\alpha = ${fmt(s.leak_rate)}`;
+    + String.raw`\alpha = ${fmt(s.leak_rate)},\quad b_\mathrm{in} = ${biVal}`;
   if (s.dims.length) {
-    const sym = { rho: "\\rho", sigma_in: "\\log_{10}\\sigma_\\mathrm{in}", leak_rate: "\\alpha" };
+    const sym = { rho: "\\rho", sigma_in: "\\log_{10}\\sigma_\\mathrm{in}", leak_rate: "\\alpha", bias_in: "b_\\mathrm{in}" };
     const theta = s.dims.map((k) => sym[k]).join(",\\ ");
     const box = s.dims.map((k) => `[${fmt(s[k + "_range"][0])},\\,${fmt(s[k + "_range"][1])}]`).join("\\times");
     const J = s.search.tikh ? String.raw`J(\bm\theta) = \min_{\beta}\ ${inner}` : String.raw`J(\bm\theta) = ${inner}`;
@@ -732,7 +749,7 @@ function equations(s) {
       + ` optimization, so N_func_evals and N_grid do not apply`
       + (ind ? ". Every patch selects its own β, on the record of its own window." : ".")]);
   } else {
-    blocks.push(["Hyperparameter selection", String.raw`\rho = ${fmt(s.rho)},\quad \sigma_\mathrm{in} = ${fmt(s.sigma_in)},\quad \beta = ${fmt(s.tikh)},\quad \alpha = ${fmt(s.leak_rate)}`,
+    blocks.push(["Hyperparameter selection", String.raw`\rho = ${fmt(s.rho)},\quad \sigma_\mathrm{in} = ${fmt(s.sigma_in)},\quad \beta = ${fmt(s.tikh)},\quad \alpha = ${fmt(s.leak_rate)},\quad b_\mathrm{in} = ${biVal}`,
       s.nseeds > 1 ? "no search: the hyperparameters are fixed; the validation objective scores each realization"
         + " once, at the fixed β." : "no search: the hyperparameters are fixed and no validation runs."]);
   }
@@ -870,11 +887,14 @@ function code(s) {
   }
   if (s.read === "u") kw.push(["readout_input", true]);
   if (s.read === "p") kw.push(["readout_input", "params"]);
-  const hp = ["rho", "sigma_in", "tikh", "leak_rate"].filter((k) => s.search[k]);
+  const hp = ["rho", "sigma_in", "tikh", "leak_rate", "bias_in"].filter((k) => s.search[k]);
   kw.push(["hyperparameters_to_optimize", hp]);
   for (const k of ["rho", "sigma_in", "tikh", "leak_rate"]) {       // always explicit: searched range or fixed value
     if (s.search[k]) kw.push([`${k}_range`, s[k + "_range"]]); else kw.push([k, s[k]]);
   }
+  if (s.search.bias_in) kw.push(["bias_in_range", s.bias_in_range]);
+  else if (s.bias_in !== null) kw.push(["bias_in", `RAW:np.array([${s.bias_in}])`]);     // not given: from the data
+  if (s.sbi) kw.push(["scale_bias_in", true]);
   if (s.bayes) {                          // the budget of the Bayesian optimization (none with tikh alone)
     opt("N_func_evals", s.nfe, DEFAULTS.N_func_evals);
     opt("N_grid", s.ngrid, DEFAULTS.N_grid);
@@ -924,7 +944,7 @@ function render() {
   $("code").textContent = code(s);
   $("codeSub").innerHTML = s.npar ? "Run it locally on your records <code>data</code>, of shape (L, N<sub>t</sub>, N<sub>dim</sub>), one per column of <code>params</code>."
     : "Run it locally on your record <code>data</code>, of shape (N<sub>t</sub>, N<sub>dim</sub>).";
-  const rows = s.Nu + 1 + s.readRows, cols = s.par ? (s.ind ? s.G + 2 * s.H : s.G) : s.N;
+  const rows = s.Nu + s.readRows, cols = s.par ? (s.ind ? s.G + 2 * s.H : s.G) : s.N;
   $("t-steps").textContent = `${s.Nwash} / ${s.Ntr} / ${s.Nval}`;
   $("t-stepsU").textContent = `ESN step ${+s.dtE.toPrecision(4)} time units`;
   $("t-nr").textContent = (s.P * s.Nu).toLocaleString();

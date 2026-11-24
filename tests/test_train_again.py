@@ -46,7 +46,7 @@ def test_the_reservoir_is_kept_while_the_options_that_define_it_are_unchanged():
     esn = trained(**GIVEN)
     W, Win, Wout = esn.W, esn.Win, esn.Wout.copy()
     esn.train(DATA, plot_training=False, rho=0.5, tikh=1e-6, noise=1e-3, readout_input=True, force=True)
-    assert esn.W is W and esn.Win is Win and esn.Wout.shape == (19, 3)        # readout_input changes Wout only
+    assert esn.W is W and esn.Win is Win and esn.Wout.shape == (18, 3)        # readout_input changes Wout only
     esn.train(DATA, plot_training=False, rho=0.9, readout_input=False, force=True)
     assert esn.W is W and esn.Win is Win and not np.array_equal(esn.Wout, Wout)
 
@@ -85,7 +85,11 @@ def test_a_changed_option_draws_the_reservoir_that_a_new_network_draws(option):
     esn.train(DATA, plot_training=False, force=True, **option)
     new = EchoStateNetwork(DATA.T, **{**QUICK, **GIVEN, **option})
     new.train(DATA, plot_training=False, seed=0)
-    assert same(esn.W, new.W) and same(esn.Win, new.Win) and np.allclose(esn.Wout, new.Wout)
+    assert same(esn.W, new.W) and same(esn.Win, new.Win)
+    # the readouts give the same output: their entries agree only to the digits that the conditioning of the ridge
+    # system leaves (tikh = 1e-12), and the training noise is drawn again
+    u, r = DATA[5, np.atleast_1d(new.observed_idx)], np.zeros(new.N_r)
+    assert np.allclose(esn.step(u, r)[0], new.step(u, r)[0], rtol=1e-4, atol=1e-4 * np.ptp(DATA))
 
 
 def test_a_changed_option_draws_from_the_given_seed_which_the_reservoir_keeps():
@@ -111,7 +115,7 @@ def test_parameters_added_or_removed_by_train():
     esn = EchoStateNetwork(DATA.T, **QUICK, **GIVEN)
     esn.train(two, plot_training=False)
     esn.train(two, plot_training=False, input_parameters=np.array([[0.0, 1.0]]), force=True)
-    assert esn.Win.shape == (15, 5) and esn.Wout.shape == (16, 3) and np.isfinite(esn.Wout).all()
+    assert esn.Win.shape == (15, 5) and esn.Wout.shape == (15, 3) and np.isfinite(esn.Wout).all()
     assert esn.optimize_parameter_normalization and 'param_shift_0' in esn.hyperparameters_to_optimize
     esn = EchoStateNetwork(DATA.T, **QUICK, **GIVEN, input_parameters=np.array([[0.0, 1.0]]), N_grid=1,
                            N_func_evals=2)
@@ -400,6 +404,7 @@ def legacy(esn, cls=EchoStateNetwork):
     state = dict(vars(esn))
     state['dt_ESN'] = state.pop('_dt_data') * esn.upsample
     del state['_inferred_split'], state['_reservoir_key']
+    state['scale_bias_in'] = esn.scale_bias_in      # explicit: a pickle without it has the bias inside sigma_in
     old = cls.__new__(cls)
     old.__setstate__(state)
     return old

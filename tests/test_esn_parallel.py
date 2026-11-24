@@ -20,7 +20,7 @@ def test_one_patch_without_halo_reproduces_the_standard_step(leak_rate, parametr
     std = EchoStateNetwork(data[0].T, **kw)
     std.train(data if parametric else data[0], plot_training=False)
     par = EchoStateNetwork(data[0].T, patch_size=6, halo=0, **kw)
-    par.Win, par.W, par.Wout = std.Win, std.W, std.Wout
+    par.Win, par.W, par.Wout, par.intercept, par.bias_in = std.Win, std.W, std.Wout, std.intercept, std.bias_in
     par.norm, par.shift = std.norm, std.shift
     assert par.N_patches == 1 and par.N_r == std.N_r == 15
     if parametric:
@@ -120,9 +120,10 @@ def test_shared_readout_pools_every_patch_in_the_ridge_regression(readout_input)
             U_norm = esn.normalize_input(U_t.T).T
             padded = np.hstack([U_norm[:, :8], np.zeros((U_t.shape[0], 1))])
             inputs = [padded[:, esn.patch_sites[p]], U_norm[:, 8:]]
-        return np.hstack([R[:, p * n:(p + 1) * n], *inputs, np.ones((R.shape[0], 1)) * esn.bias_out])
+        rows = np.hstack([R[:, p * n:(p + 1) * n], *inputs])
+        return np.hstack([rows - esn._rest_shift(), np.ones((R.shape[0], 1))])      # about the rest state
 
-    assert aug(0).shape[1] == esn._n_readout
+    assert aug(0).shape[1] == esn._n_readout + 1
     np.testing.assert_allclose(LHS, sum(aug(p).T @ aug(p) for p in range(4)), rtol=1e-12)
     np.testing.assert_allclose(RHS, sum(aug(p).T @ Y_t[:, 2 * p:2 * p + 2] for p in range(4)),
                                rtol=1e-12, atol=1e-12)
@@ -145,8 +146,9 @@ def test_single_series_engine_pools_the_patches_like_the_ridge_regression(option
 
     validation.single_series_validation([], esn, U, Y, np.zeros(1), [], False, all_rows, 'all_rows')
     LHS, RHS = esn._compute_RR_terms(U, Y)[:2]
-    LHS[np.diag_indices_from(LHS)] += 1e-6
-    np.testing.assert_allclose(esn.Wout, np.linalg.solve(LHS, RHS), rtol=1e-6, atol=1e-9)
+    solution = esn._ridge_solve(LHS, RHS, 1e-6)
+    np.testing.assert_allclose(esn.Wout, solution[:-1], rtol=1e-6, atol=1e-9)
+    np.testing.assert_allclose(esn.intercept, solution[-1], rtol=1e-6, atol=1e-9)
 
 
 def test_lorenz96_parallel_esn_forecasts_in_closed_loop():
@@ -159,7 +161,7 @@ def test_lorenz96_parallel_esn_forecasts_in_closed_loop():
                            hyperparameters_to_optimize=[])
     esn.train(X[:n_train], plot_training=False)
     assert (esn.N_patches, esn.N_r) == (20, 2000)
-    assert esn.Win.shape == (100, 7) and esn.Wout.shape == (101, 2)
+    assert esn.Win.shape == (100, 7) and esn.Wout.shape == (100, 2)
     assert np.ptp(esn.norm) == 0 and np.ptp(esn.shift) == 0     # pooled over the sites
 
     positions = esn.state_positions
@@ -191,7 +193,7 @@ def test_validation_strategies_with_patches(strategy):
                            t_train=120, t_val=30, t_test=40, N_wash=5, N_folds=3, N_grid=2,
                            N_func_evals=2, hyperparameters_to_optimize=['rho'], seed=0)
     esn.train(data, plot_training=False, validation_strategy=strategy)
-    assert esn.trained and esn.Wout.shape == (13, 2) and np.isfinite(esn.Wout).all()
+    assert esn.trained and esn.Wout.shape == (12, 2) and np.isfinite(esn.Wout).all()
     assert len(esn.bo_results['func_vals']) == 2
 
 
@@ -223,8 +225,8 @@ def test_independent_patches_with_the_shared_matrices_reproduce_the_shared_netwo
     assert len(local.patches) == 4 and local.patches[0].N_dim == 3 + 2 * 2
     for net, sites in zip(local.patches, local.patch_sites):     # the matrices and hyperparameters of the shared
         net.Win, net.W = shared.Win, shared.W                       # network, and its normalization of the window
-        Wout = np.zeros((11, 7))
-        Wout[:, 2:5] = shared.Wout      # the columns of the patch sites within the window
+        Wout = np.zeros((11, 7))        # [Wout; intercept]
+        Wout[:, 2:5] = np.vstack([shared.Wout, shared.intercept])      # the columns of the patch sites within the window
         net.Wout = Wout
         # outside a non-periodic domain, any value: the position reads zero once normalized
         net.norm, net.shift = np.where(sites >= 0, norm[sites], 3.0), np.where(sites >= 0, shift[sites], 5.0)
@@ -258,14 +260,18 @@ def test_independent_patches_fit_one_ridge_regression_per_patch():
     for p, net in enumerate(esn.patches):
         # direct ridge solve on the samples of patch p alone: open loop on its window
         window = esn._patch_record(data, p)[:esn.N_train + esn.N_val]
-        r, R = np.zeros((12, 1)), []
+        r, R = net.rest_state(), []                       # the washout starts at rest
         for u_in in window[:-1]:
             _, r = net.step(u_in, r)
             R.append(r[:, 0])
-        R = np.hstack([np.array(R)[esn.N_wash:], np.ones((len(R) - esn.N_wash, 1)) * net.bias_out])
+        R = np.array(R)[esn.N_wash:]
         Y = window[esn.N_wash + 1:, 1:3]                  # the sites of patch p
-        Wout_p = np.linalg.solve(R.T @ R + 1e-6 * np.eye(13), R.T @ Y)
-        np.testing.assert_allclose(net.Wout[:, 1:3], Wout_p, rtol=1e-6, atol=1e-9)
+        Rc, Yc = R - R.mean(0), Y - Y.mean(0)             # the intercept is not penalized: centred ridge regression
+        Wout_p = np.linalg.solve(Rc.T @ Rc + 1e-6 * np.eye(12), Rc.T @ Yc)
+        # the two readouts give the same outputs on the training states; their entries agree only to the digits
+        # that the conditioning of the ridge system leaves
+        fit_p = R @ Wout_p + Y.mean(0) - R.mean(0) @ Wout_p
+        np.testing.assert_allclose(R @ net.Wout[:, 1:3] + net.intercept[1:3], fit_p, rtol=1e-6, atol=1e-6 * np.ptp(Y))
         # each patch normalizes its own window
         assert net.norm.shape == (4,) and np.ptp(net.norm) > 0
 
@@ -470,7 +476,7 @@ def test_lorenz96_readout_params_parallel_esn_trains_and_forecasts(shared, perio
     esn.train(data, plot_training=False)
     assert esn.trained
     for net in esn.patches if not shared else [esn]:
-        assert net.Wout.shape == (40 + 1 + 1, net._n_out)                # [r_p; F; 1]
+        assert net.Wout.shape == (40 + 1, net._n_out)                    # [r_p; F]
         assert not np.asarray(net.Win[:, net._n_in - 1].toarray() if hasattr(net.Win, 'toarray')
                               else net.Win[:, net._n_in - 1]).any()      # F not in the reservoir
         np.testing.assert_allclose(net.shift[-1], 7.0)                  # F normalized as for one reservoir
@@ -514,7 +520,7 @@ def test_readout_params_through_the_validation_strategies(strategy, shared):
     esn.train(data, plot_training=False, validation_strategy=strategy)
     assert esn.trained
     for net in esn.patches if not shared else [esn]:
-        assert net.Wout.shape == (22, net._n_out) and np.isfinite(net.Wout).all()
+        assert net.Wout.shape == (21, net._n_out) and np.isfinite(net.Wout).all()
         if strategy is None:
             assert {'param_shift_0', 'param_norm_0'} <= set(net.bo_results['hp_names'])
 
@@ -555,10 +561,10 @@ def test_train_again_with_another_readout_input(shared):
     esn.train(data, plot_training=False)
     nets = esn.patches if not shared else [esn]
     Win = [net.Win.copy() for net in nets]
-    assert all(net.Wout.shape[0] == 21 for net in nets)
+    assert all(net.Wout.shape[0] == 20 for net in nets)
     esn.train(data, plot_training=False, readout_input='params', force=True)
     nets = esn.patches if not shared else [esn]
-    assert all(net.readout_input == 'params' and net.Wout.shape[0] == 22 for net in nets)
+    assert all(net.readout_input == 'params' and net.Wout.shape[0] == 21 for net in nets)
     for before, net in zip(Win, nets):
         assert (abs(before - net.Win)).max() == 0
     esn.input_parameters = np.array([[7.0]])

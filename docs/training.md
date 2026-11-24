@@ -12,21 +12,46 @@ state:
 
 $$
 \mathbf{r}_{n+1} = (1-\alpha)\,\mathbf{r}_n + \alpha \tanh\!\big(
-\sigma_\mathrm{in} \mathbf{W}_\mathrm{in} [\tilde{\mathbf{u}}_n;\, b_\mathrm{in}]
-+ \rho\, \mathbf{W} \mathbf{r}_n \big), \qquad
-\mathbf{u}_{n+1} = \mathbf{W}_\mathrm{out}^\top [\mathbf{r}_{n+1};\, b_\mathrm{out}]
+\sigma_\mathrm{in} \mathbf{W}_\mathrm{in} \tilde{\mathbf{u}}_n
++ b_\mathrm{in} \mathbf{w}_b + \rho\, \mathbf{W} \mathbf{r}_n \big), \qquad
+\mathbf{u}_{n+1} = \mathbf{W}_\mathrm{out}^\top \mathbf{r}_{n+1} + \mathbf{w}_0
 $$
 
 where $\tilde{\mathbf{u}} = (\mathbf{u} - \texttt{shift}) / \texttt{norm}$ is
 the shift-and-scale normalized input (set from the training data range by
 default; `centre_input=False` keeps the scale and sets the shift to zero, so
-that the input is scaled by its range only),
-$b_\mathrm{in}, b_\mathrm{out}$ are symmetry-breaking biases, and
+that the input is scaled by its range only), $b_\mathrm{in}$ is the input bias, which enters through the bias
+column, $\mathbf{w}_b$, of `Win` and breaks the symmetry of the tanh,
+$\mathbf{w}_0$ is the intercept of the readout (`intercept`), and
 $\alpha$ = `leak_rate` (the default $\alpha = 1$ is the plain tanh update; see
 the [leaky-ESN tutorial](tutorials/03_leaky_esn.ipynb)).
 The hyperparameters that matter are the effective spectral radius `rho`, the
 input scaling `sigma_in`, and the Tikhonov regularization `tikh`; by default,
 validation selects all three (below).
+
+When `bias_in` is not given, `train` sets the input bias to the mean absolute
+value of the normalized training input, $b_\mathrm{in} =
+\overline{|\tilde{\mathbf{u}}|}$ (the rule of the code of Racca & Magri 2021), so that the
+bias has the scale of the input. The input bias is
+outside the input scaling: $b_\mathrm{in}$ alone sets the
+offset of each unit, whatever $\sigma_\mathrm{in}$ (`scale_bias_in=True`
+multiplies the bias column by $\sigma_\mathrm{in}$, as the versions before 0.7
+did). The intercept is not a row of `Wout`, and the Tikhonov factor does not
+act on it, which is standard in ridge regression (Hastie, Tibshirani &
+Friedman 2009): the readout is the ridge regression of the centred targets on
+the centred states,
+
+$$
+\mathbf{W}_\mathrm{out} = \big({\mathbf{R}'}^\top \mathbf{R}' + \beta \mathbf{I}\big)^{-1}
+{\mathbf{R}'}^\top \mathbf{Y}', \qquad
+\mathbf{w}_0 = \bar{\mathbf{y}} - \mathbf{W}_\mathrm{out}^\top \bar{\mathbf{r}},
+$$
+
+where $\mathbf{R}' = \mathbf{R} - \bar{\mathbf{r}}$ and
+$\mathbf{Y}' = \mathbf{Y} - \bar{\mathbf{y}}$ hold the states and the targets
+of the training steps after the washout, minus their means, and $\beta$ =
+`tikh`. A penalized intercept would pull the mean of the forecast towards
+zero, with a strength that changes with $\sigma_\mathrm{in}$.
 
 For a *parametric* ESN, `input_parameters` appends parameter columns to the
 input, densely connected through $\mathbf{W}_\mathrm{in}$ — one reservoir
@@ -36,13 +61,13 @@ With partial observability, `observed_idx` selects which components of the
 full state are fed back as inputs.
 
 The readout is linear in the reservoir state, and the tanh reservoir is odd:
-without the biases, the network forecasts $-\mathbf{u}$ from $-\mathbf{u}$ as
-well as $\mathbf{u}$ from $\mathbf{u}$. Besides the biases, `r2_mode=True`
+without the input bias, the network forecasts $-\mathbf{u}$ from $-\mathbf{u}$ as
+well as $\mathbf{u}$ from $\mathbf{u}$. Besides the input bias, `r2_mode=True`
 breaks this symmetry in the readout, which then reads every second unit
 squared,
 
 $$
-\mathbf{u}_{n+1} = \mathbf{W}_\mathrm{out}^\top [\tilde{\mathbf{r}}_{n+1};\, b_\mathrm{out}],
+\mathbf{u}_{n+1} = \mathbf{W}_\mathrm{out}^\top \tilde{\mathbf{r}}_{n+1} + \mathbf{w}_0,
 \qquad
 \tilde r_j = \begin{cases} r_j^2, & j \text{ odd},\\ r_j, & j \text{ even}, \end{cases}
 $$
@@ -258,15 +283,21 @@ $\hat{\phi}(t_{i+1})$ are one-step-ahead predictions; (b) closed loop: each
 prediction is fed back as the next input and the network runs autonomously.*
 
 - **Open loop**: `step()` is fed observed data; used for
-  training and for *washout* — driving the reservoir from
-  $\mathbf{r}_0 = \mathbf{0}$ through a short window of true history so it
-  synchronizes with the physical state before a forecast.
+  training and for *washout* — driving the reservoir through a short window
+  of true history so it synchronizes with the physical state before a
+  forecast. The washout starts from `rest_state()`, the state on which the
+  reservoir rests under a zero normalized input: the input bias sets an
+  offset of order one on every unit, and a washout from
+  $\mathbf{r}_0 = \mathbf{0}$ would spend its first steps reaching it, a
+  transient larger than the signal when $\sigma_\mathrm{in}$ is small and the
+  washout short. `wash_from_rest=False` starts from zero, as the versions
+  before 0.7 did.
 - **Closed loop**: each prediction is fed back as the next input
   (`outputs_to_inputs` selects the observed components and re-appends the
   parameter columns); the model runs autonomously.
 
 ```python
-Y_wash, R_wash = esn.open_loop(wash)   # open-loop washout on true history, from r = 0
+Y_wash, R_wash = esn.open_loop(wash)   # open-loop washout on true history, from rest_state()
 forecast, u, r = esn.forecast(Y_wash[-1], R_wash[-1], n_steps)   # closed loop
 ```
 

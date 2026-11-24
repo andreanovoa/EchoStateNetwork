@@ -32,7 +32,7 @@ def test_parametric_network_trains_on_ragged_segments(per_step):
     esn = EchoStateNetwork(segments[0].T, dt=1, N_units=20, upsample=1, t_train=30, t_val=10, N_wash=5,
                            hyperparameters_to_optimize=[], input_parameters=params)
     esn.train(segments, plot_training=False)
-    assert esn.N_dim_in == 5 and esn.Wout.shape == (esn.N_units + 1, 4)
+    assert esn.N_dim_in == 5 and esn.Wout.shape == (esn.N_units, 4)
     assert esn.optimize_parameter_normalization is True
     assert esn.param_norm_range[0] <= esn.norm[-1] <= esn.param_norm_range[1]
 
@@ -141,16 +141,17 @@ def test_rr_terms_match_returned_states():
                            t_train=300, t_val=50, seed=0,
                            hyperparameters_to_optimize=[])
     esn._generate_W_Win(seed=0)
-    esn.Wout = np.zeros((esn.N_units + 1, esn.N_dim))
+    esn.Wout = np.zeros((esn.N_units, esn.N_dim))
     esn.norm, esn.shift = np.ones(esn.N_dim), np.zeros(esn.N_dim)
     U_wtv, Y_wtv = esn._UY_from_raw_data(y[np.newaxis], add_noise=False)[:2]
     LHS, RHS, U_RR, R_RR = esn._compute_RR_terms(U_wtv, Y_wtv)
 
     assert R_RR[0].shape == (U_wtv[0].shape[0] - esn.N_wash, esn.N_units)
     assert U_RR[0].shape == (U_wtv[0].shape[0] - esn.N_wash, esn.N_dim)
-    r_aug = np.hstack([R_RR[0], np.ones((R_RR[0].shape[0], 1)) * esn.bias_out])
-    assert np.array_equal(LHS, r_aug.T @ r_aug)
-    assert np.array_equal(RHS, r_aug.T @ Y_wtv[0][esn.N_wash:])
+    # the sums are taken about the rest state of the reservoir (_rest_shift), with the constant regressor last
+    r_aug = np.hstack([R_RR[0] - esn._rest_shift(), np.ones((R_RR[0].shape[0], 1))])
+    assert np.allclose(LHS, r_aug.T @ r_aug, rtol=1e-12, atol=1e-14)
+    assert np.allclose(RHS, r_aug.T @ Y_wtv[0][esn.N_wash:], rtol=1e-12, atol=1e-14)
 
 
 def test_spectral_radius_arpack_fallback():
@@ -220,7 +221,7 @@ def test_single_series_strategies_retrain_per_fold():
     traces = []
     for strategy in (EchoStateNetwork._SSV, EchoStateNetwork._WFV, EchoStateNetwork._KFV):
         esn = _train_single_series(strategy)
-        assert esn.trained and esn.Wout.shape == (esn.N_units + 1, 3)
+        assert esn.trained and esn.Wout.shape == (esn.N_units, 3)
         traces.append(esn.bo_results['func_vals'])
         assert len(traces[-1]) == 3
     for a, b in ((0, 1), (0, 2), (1, 2)):
@@ -304,13 +305,13 @@ def test_readout_input_reads_the_input_directly(readout_input, in_reservoir):
                            **params)
     esn.train(data, plot_training=False)
     rows = slice(3, 4) if params else slice(0, 3)
-    assert esn.Wout.shape == (esn.N_units + 1 + rows.stop - rows.start, 3)
+    assert esn.Wout.shape == (esn.N_units + rows.stop - rows.start, 3)
     if params:
         assert (abs(esn.Win[:, 3]).sum() > 0) == in_reservoir
     u = np.vstack([data[0, 5].reshape(-1, 1), [[0.5]]])[:esn.N_dim_in]
     r = 0.1 * rng.normal(size=(esn.N_units, 1))
     u_out, r_out = esn.step(u, r)
-    manual = esn.Wout.T @ np.vstack([r_out, esn.normalize_input(u)[rows], esn.bias_out * np.ones((1, 1))])
+    manual = esn.Wout.T @ np.vstack([r_out, esn.normalize_input(u)[rows]]) + esn.intercept[:, None]
     np.testing.assert_allclose(u_out, manual)
     np.testing.assert_allclose(esn.reservoir_to_physical(r_out, u=u), u_out)
     with pytest.raises(ValueError, match='readout_input'):
@@ -364,9 +365,9 @@ def test_seeded_training_is_bit_identical_across_processes(tmp_path):
     assert np.array_equal(outs[0]['Wout'], outs[1]['Wout'])
 
 
-def test_dense_bias_column_and_unregularized_bias_row():
+def test_dense_bias_column_and_unpenalized_intercept():
     # 'sparse_dense_bias': one state column per neuron and the bias column in every neuron;
-    # regularize_bias_out=False leaves the Tikhonov factor off the bias row only.
+    # the Tikhonov factor acts on the rows of Wout and leaves the intercept (the last row of the ridge system) out.
     rng = np.random.default_rng(0)
     data = rng.normal(size=(1, 200, 3))
     esn = EchoStateNetwork(data[0].T, dt=1, N_units=30, upsample=1, t_train=150, t_val=20, t_test=10,
@@ -375,10 +376,15 @@ def test_dense_bias_column_and_unregularized_bias_row():
     Win = esn.Win.toarray()
     assert np.all(Win[:, -1] != 0) and np.all((Win[:, :-1] != 0).sum(1) == 1)
     assert esn.to_arrays()['Win_type'] == 'sparse_dense_bias'
-    LHS = np.eye(esn._n_readout)
-    esn.regularize_bias_out = False
-    assert np.allclose(np.diag(esn._regularized(LHS, 0.5)), [1.5] * (esn._n_readout - 1) + [1.0])
-    assert np.allclose(LHS, np.eye(esn._n_readout))                     # a copy: the input is untouched
+    X, Y = rng.normal(size=(50, 4)) + 3.0, rng.normal(size=(50, 2)) + 5.0
+    X1 = np.hstack([X, np.ones((50, 1))])
+    LHS, RHS = X1.T @ X1, X1.T @ Y
+    solution = EchoStateNetwork(np.zeros((2, 1)), N_units=4)._ridge_solve(LHS, RHS, 0.5)    # no reservoir: no shift
+    Xc, Yc = X - X.mean(0), Y - Y.mean(0)                  # the ridge regression of the centred targets and states
+    W = np.linalg.solve(Xc.T @ Xc + 0.5 * np.eye(4), Xc.T @ Yc)
+    np.testing.assert_allclose(solution[:-1], W, rtol=1e-10)
+    np.testing.assert_allclose(solution[-1], Y.mean(0) - X.mean(0) @ W, rtol=1e-10)
+    assert np.array_equal(LHS, X1.T @ X1)                              # the input is untouched                    # a copy: the input is untouched
 
 
 def test_bho_midpoint_grid_noise_and_stability_gate():
@@ -550,29 +556,36 @@ def _saturated_esn(**kwargs):
 def test_ridge_solve_falls_back_on_least_squares_only_when_singular():
     # a non-singular solve is np.linalg.solve, unchanged; a singular one (two collinear columns) warns and returns the
     # least-squares solution, so that one bad point of a search scores badly instead of stopping it
-    esn, _ = _saturated_esn()
+    esn = EchoStateNetwork(np.zeros((2, 1)), N_units=5)     # no reservoir yet: the sums are not shifted
     rng = np.random.default_rng(1)
-    M = rng.normal(size=(6, 6))
-    LHS, RHS = M @ M.T, rng.normal(size=(6, 2))
-    np.testing.assert_array_equal(esn._ridge_solve(LHS, RHS, 1e-3), np.linalg.solve(esn._regularized(LHS, 1e-3), RHS))
+    ones = np.ones((40, 1))                                # the regressor of the intercept, last
+    X, Y = np.hstack((rng.normal(size=(40, 5)), ones)), rng.normal(size=(40, 2))
+    A, B = esn._centred(X.T @ X, X.T @ Y)[:2]
+    np.testing.assert_array_equal(esn._ridge_solve(X.T @ X, X.T @ Y, 1e-3)[:-1],
+                                  np.linalg.solve(A + 1e-3 * np.eye(5), B))
     X = rng.normal(size=(40, 3))
-    X = np.hstack((X, X[:, :1]))
-    LHS, RHS = X.T @ X, X.T @ np.ones((40, 2))
+    X = np.hstack((X, 0 * X[:, :1] + 1.0, ones))           # a constant state: no centred part
+    esn.N_units = 4
+    LHS, RHS = X.T @ X, X.T @ Y
+    A, B = esn._centred(LHS, RHS)[:2]
     with pytest.raises(np.linalg.LinAlgError):
-        np.linalg.solve(LHS, RHS)
+        np.linalg.solve(A, B)
     with pytest.warns(UserWarning, match=SINGULAR):
         Wout = esn._ridge_solve(LHS, RHS, 0.)
-    np.testing.assert_allclose(Wout, np.linalg.lstsq(LHS, RHS, rcond=None)[0])
+    np.testing.assert_allclose(Wout[:-1], np.linalg.lstsq(A, B, rcond=None)[0])
+    assert np.all(Wout[3] == 0)                            # the constant state takes no weight
 
 
 @pytest.mark.parametrize('strategy', [None, validation.RVC_Noise, validation.SSV])
 def test_training_on_a_saturated_reservoir_completes(strategy):
-    # without a search (None), and with a search over tikh: the singular ridge warns once per call of train
+    # without a search (None), and with a search over tikh: a saturated reservoir with tikh = 0 does not stop train,
+    # and a singular ridge system, if one occurs, warns at most once per call of train
     esn, data = _saturated_esn(hyperparameters_to_optimize=[] if strategy is None else ['tikh'])
-    with pytest.warns(UserWarning, match=SINGULAR) as record:
+    with warnings.catch_warnings(record=True) as record:
+        warnings.simplefilter('always')
         esn.train(data, plot_training=False, validation_strategy=strategy)
-    assert np.isfinite(esn.Wout).all()
-    assert len([w for w in record if SINGULAR in str(w.message)]) == 1
+    assert np.isfinite(esn.Wout).all() and np.isfinite(esn.intercept).all()
+    assert len([w for w in record if SINGULAR in str(w.message)]) <= 1
 
 
 # ---------------------------------------------------------------------- 'tikh' alone in the search (issue #1)
@@ -697,4 +710,65 @@ def test_batched_ridge_sums_equal_one_pass(layout):
     assert np.array_equal(lhs, LHS7) and u_none == r_none == [None, None]
     small = EchoStateNetwork(data[0].T, readout_batch=3, **kw)
     small.train(data, plot_training=False)
-    assert np.allclose(small.Wout, esn.Wout, rtol=1e-9, atol=1e-11)
+    u, r = data[0][3], np.zeros(esn.N_r)                    # the same output; the entries of the readouts agree only
+    assert np.allclose(small.step(u, r)[0], esn.step(u, r)[0], rtol=1e-6, atol=1e-6 * np.ptp(data[0]))   # to the conditioning
+
+
+def test_the_input_bias_follows_the_scale_of_the_normalized_input_unless_given():
+    # not given: train sets bias_in to the mean absolute value of the normalized training input (the rule of the
+    # code of Racca & Magri 2021), again at every training; a given, loaded or searched bias_in is kept
+    data = np.random.default_rng(0).normal(size=(400, 3)).cumsum(axis=0) * 0.1
+    kw = dict(dt=1, N_units=20, upsample=1, t_train=250, t_val=50, t_test=0, N_wash=5, hyperparameters_to_optimize=[])
+    esn = EchoStateNetwork(data.T, **kw)
+    esn.train(data, plot_training=False)
+    U = data[:esn.N_train + esn.N_val - 1]
+    # the training inputs carry the input noise (1e-10 by default)
+    np.testing.assert_allclose(esn.bias_in, np.mean(np.abs((U - esn.shift) / esn.norm)), rtol=1e-8)
+    first = esn.bias_in.copy()
+    esn.train(data[::-1].copy(), plot_training=False, force=True)
+    assert not np.allclose(esn.bias_in, first)
+    given = EchoStateNetwork(data.T, bias_in=np.array([0.3]), **kw)
+    given.train(data, plot_training=False)
+    assert given.bias_in[0] == 0.3
+    loaded = EchoStateNetwork.from_arrays(esn.to_arrays())
+    loaded.train(data, plot_training=False, force=True)
+    np.testing.assert_array_equal(loaded.bias_in, esn.bias_in)
+    local = EchoStateNetwork(data.T, patch_size=1, shared=False, **kw)
+    local.train(data, plot_training=False)
+    assert len({float(net.bias_in[0]) for net in local.patches}) == 3      # every patch from its own window
+
+
+# ---------------------------------------------------------------------- washouts from the rest state
+def test_rest_state_is_the_fixed_point_and_shortens_the_washout():
+    """rest_state() is the state of the reservoir under a zero normalized input; a short washout from it lands near
+    the state of a long washout, while one from r = 0 is still on its way to the offset that the input bias sets."""
+    data = np.random.default_rng(1).normal(size=(400, 3)).cumsum(axis=0) * 0.1
+    esn = EchoStateNetwork(data.T, dt=1, N_units=50, upsample=1, t_train=300, t_val=50, t_test=0, N_wash=5,
+                           hyperparameters_to_optimize=[], sigma_in=1e-3, rho=0.9, seed=0)
+    esn.train(data, plot_training=False)
+    rest = esn.rest_state()
+    assert rest.shape == (esn.N_r, 1) and np.max(np.abs(rest)) > 0.1      # an offset of order one
+    _, r = esn.step(esn.shift.reshape(-1, 1), rest)                        # u = shift: zero normalized input
+    np.testing.assert_allclose(r, rest, atol=1e-10)
+    np.testing.assert_array_equal(esn.rest_state(4), np.repeat(rest, 4, axis=1))
+    _, R_long = esn.open_loop(data[100:300])
+    _, R_rest = esn.open_loop(data[295:300])
+    _, R_zero = esn.open_loop(data[295:300], r0=np.zeros(esn.N_r))
+    err_rest, err_zero = (np.linalg.norm(R[-1] - R_long[-1]) for R in (R_rest, R_zero))
+    assert err_rest < 0.01 * err_zero
+    esn.wash_from_rest = False
+    np.testing.assert_array_equal(esn.rest_state(), 0.0)
+
+
+def test_rest_state_of_the_parallel_layouts():
+    data = np.random.default_rng(2).normal(size=(300, 8)).cumsum(axis=0) * 0.1
+    for shared in (True, False):
+        esn = EchoStateNetwork(data.T, dt=1, N_units=20, upsample=1, t_train=200, t_val=50, t_test=0, N_wash=5,
+                               hyperparameters_to_optimize=[], patch_size=4, halo=1, shared=shared, seed=0)
+        esn.train(data, plot_training=False)
+        rest = esn.rest_state()
+        assert rest.shape == (esn.N_r, 1)
+        if shared:
+            np.testing.assert_array_equal(rest[:20], rest[20:])
+        else:
+            np.testing.assert_allclose(rest[20:, 0], esn.patches[1].rest_state()[:, 0])
