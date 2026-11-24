@@ -19,7 +19,9 @@ $$
 
 where $\tilde{\mathbf{u}} = (\mathbf{u} - \texttt{shift}) / \texttt{norm}$ is
 the shift-and-scale normalized input (set from the training data range by
-default), $b_\mathrm{in}, b_\mathrm{out}$ are symmetry-breaking biases, and
+default; `centre_input=False` keeps the scale and sets the shift to zero, so
+that the input is scaled by its range only),
+$b_\mathrm{in}, b_\mathrm{out}$ are symmetry-breaking biases, and
 $\alpha$ = `leak_rate` (the default $\alpha = 1$ is the plain tanh update; see
 the [leaky-ESN tutorial](tutorials/03_leaky_esn.ipynb)).
 The hyperparameters that matter are the effective spectral radius `rho`, the
