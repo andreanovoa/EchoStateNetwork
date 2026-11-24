@@ -516,6 +516,24 @@ def test_parameter_columns_normalized_like_the_state():
     assert esn.hyperparameters_to_optimize == ['rho']
 
 
+def test_input_scaled_by_its_range_without_the_mean():
+    """centre_input=False: the scale of norm_method, a zero shift, for the state and the parameter columns."""
+    rng = np.random.default_rng(3)
+    data = rng.normal(size=(3, 80, 2)) + 5.0
+    options = dict(dt=1, N_units=20, upsample=1, t_train=50, t_val=10, t_test=10, N_wash=5,
+                   hyperparameters_to_optimize=[], seed=0, input_parameters=np.array([[2.0, 4.0, 8.0]]),
+                   optimize_parameter_normalization='data')
+    centred = EchoStateNetwork(data[0].T, **options)
+    centred.train(data, plot_training=False)
+    ranged = EchoStateNetwork(data[0].T, centre_input=False, **options)
+    ranged.train(data, plot_training=False)
+    np.testing.assert_array_equal(ranged.norm, centred.norm)
+    np.testing.assert_array_equal(ranged.shift, np.zeros_like(centred.shift))
+    assert np.all(centred.shift[:2] > 4.0)
+    u = np.append(data[0, 7], 2.0).reshape(-1, 1)                # state and parameter
+    np.testing.assert_allclose(ranged.normalize_input(u)[:, 0], u[:, 0] / ranged.norm)
+
+
 # ---------------------------------------------------------------------- a singular ridge regression
 SINGULAR = 'ridge matrix is singular'
 
