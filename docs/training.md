@@ -29,10 +29,14 @@ The hyperparameters that matter are the effective spectral radius `rho`, the
 input scaling `sigma_in`, and the Tikhonov regularization `tikh`; by default,
 validation selects all three (below).
 
-When `bias_in` is not given, `train` sets the input bias to the mean absolute
-value of the normalized training input, $b_\mathrm{in} =
-\overline{|\tilde{\mathbf{u}}|}$ (the rule of the code of Racca & Magri 2021), so that the
-bias has the scale of the input. The input bias is
+The input bias is $b_\mathrm{in} = 0.1$ by default (`bias_in`). Keep it
+non-zero: without it the tanh is odd, and the network cannot represent the even
+part of the target. With `bias_in_from_data=True`, `train` sets it to the mean
+absolute value of the normalized training input, $b_\mathrm{in} =
+\overline{|\tilde{\mathbf{u}}|}$ (the rule of the code of Racca & Magri 2021).
+This value follows `norm_method`: on Lorenz-63 it is about 0.2 with `'range'`
+and 0.8 with `'std'`, and with `None` it has the scale of the raw data, which
+saturates the reservoir. The input bias is
 outside the input scaling: $b_\mathrm{in}$ alone sets the
 offset of each unit, whatever $\sigma_\mathrm{in}$ (`scale_bias_in=True`
 multiplies the bias column by $\sigma_\mathrm{in}$, as the versions before 0.7
