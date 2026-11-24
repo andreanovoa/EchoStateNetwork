@@ -260,7 +260,7 @@ def test_independent_patches_fit_one_ridge_regression_per_patch():
     for p, net in enumerate(esn.patches):
         # direct ridge solve on the samples of patch p alone: open loop on its window
         window = esn._patch_record(data, p)[:esn.N_train + esn.N_val]
-        r, R = np.zeros((12, 1)), []
+        r, R = net.rest_state(), []                       # the washout starts at rest
         for u_in in window[:-1]:
             _, r = net.step(u_in, r)
             R.append(r[:, 0])

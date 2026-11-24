@@ -110,7 +110,7 @@ def unstable(case, U_wtv, Y_wtv, Wout_tik):
     try:
         for j, W in enumerate(Wout_tik):
             case.Wout = W
-            r = np.zeros((case.N_r, len(starts)))
+            r = case.rest_state(len(starts))
             for u_in in U_wash:
                 u, r = case.step(u_in, r)
             Z = np.empty((case.stability_steps,) + u.shape)
@@ -229,7 +229,7 @@ def RVC_Noise(x, case, U_wtv, Y_wtv, tikh_opt, hp_names, print_convergence=True)
                 # candidate Wout must start from its own washout -- otherwise
                 # every tikh_ but the first begins from the previous candidate's
                 # final state, and the first from a washout with a stale Wout.
-                r_out = np.zeros((case.N_r, 1))
+                r_out = case.rest_state()
                 u_out = np.zeros((case.N_dim, 1))
                 for u_in in U_wash:
                     u_out, r_out = case.step(u_in, r_out)
@@ -396,7 +396,7 @@ def single_series_validation(x, case, U_wtv, Y_wtv, tikh_opt, hp_names,
         else:
             u_seed = U_l[case.N_wash - 1].reshape(-1, 1)
             if r_washed is None:
-                r_washed = np.zeros((case.N_r, 1))
+                r_washed = case.rest_state()
                 for u_in in U_l[:case.N_wash]:
                     _, r_washed = case.step(u_in, r_washed)
             r_seed = r_washed

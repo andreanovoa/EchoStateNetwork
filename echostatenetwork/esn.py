@@ -370,7 +370,11 @@ class EchoStateNetwork:
     # optional guardrail shared by the closed-loop validation strategies: weight of the
     # saturation penalty (0 = off). See qlroms' segment strategies for the rationale --
     # a saturated reservoir scores well over a short probe and fails over a long forecast.
+    # Measure saturation about rest_state(): the input bias alone already moves every unit off zero.
     saturation_penalty = 0.0
+    # wash_from_rest: every washout of the package (training, validation, run_test, run_open_loop without r0) starts
+    # from rest_state(), the state of the reservoir under a zero normalized input, instead of r = 0
+    wash_from_rest = True
     # stability gate of the recycle validation (RVC_Noise): with stability_steps > 0, every
     # Tikhonov candidate also runs closed loops of that many steps, and its fold-mean score
     # rises by stability_penalty when a loop leaves the attractor (non-finite, or beyond 3x
@@ -1401,17 +1405,50 @@ class EchoStateNetwork:
         small, and sums of the raw states would lose those digits when the regression centres them. Any fixed
         shift gives the same readout in exact arithmetic. Zero before the reservoir is generated."""
         shift = np.zeros(self._n_readout)
+        r = self._rest_units()
+        if r is not None:
+            shift[:self.N_units] = self._readout_states(r[:, None])[:, 0]
+        return shift
+
+    def _rest_units(self):
+        """State ``(N_units,)`` of one reservoir resting on a zero normalized input: the fixed point of the update
+        driven by the input bias alone. None before the reservoir is generated."""
         if not hasattr(self, '_W') or not hasattr(self, '_Win'):
-            return shift
+            return None
         Win = self._Win
-        w_b = np.asarray(Win[:, [-1]].todense() if hasattr(Win, 'todense') else Win[:, [-1]], dtype=float)
+        w_b = np.ravel(np.asarray(Win[:, [-1]].todense() if hasattr(Win, 'todense') else Win[:, [-1]], dtype=float))
         sigma_in, rho, alpha = (float(np.mean(x)) for x in (self.sigma_in, self.rho, self.leak_rate))
         pre = float(np.ravel(self.bias_in)[0]) * (sigma_in if self.scale_bias_in else 1.0) * w_b
         r = np.zeros_like(pre)
-        for _ in range(100):
-            r = (1 - alpha) * r + alpha * np.tanh(pre + rho * (self._W @ r))
-        shift[:self.N_units] = self._readout_states(r)[:, 0]
-        return shift
+        for _ in range(2000):                  # converges as (1 - alpha + alpha rho)^k
+            r_new = (1 - alpha) * r + alpha * np.tanh(pre + rho * (self._W @ r))
+            done = np.max(np.abs(r_new - r)) < 1e-14
+            r = r_new
+            if done:
+                break
+        return r
+
+    def rest_state(self, n_cols=1):
+        """Initial reservoir state of a washout, shape ``(N_r, n_cols)``.
+
+        With `wash_from_rest` (the default), the state on which the reservoir rests under a zero normalized
+        input. The input bias outside `sigma_in` (`scale_bias_in=False`) sets an offset of order one on every
+        unit; a washout from ``r = 0`` spends its first steps reaching it, a transient larger than the signal when
+        `sigma_in` is small and the washout short. Starting at rest leaves only the response to the data. Zero
+        when `wash_from_rest` is False or the reservoir is not generated; with independent patches, each patch
+        network takes its own rest state."""
+        r = np.zeros(self.N_r)
+        if self.wash_from_rest:
+            nets = self.patches if getattr(self, 'patches', None) else None
+            if nets:
+                parts = [net._rest_units() for net in nets]
+                if all(p is not None for p in parts):
+                    r = np.concatenate(parts)
+            else:
+                rest = self._rest_units()
+                if rest is not None:
+                    r = np.tile(rest, self.N_patches)
+        return np.repeat(r[:, None], n_cols, axis=1)
 
     def reservoir_to_physical(self, r, u=None):
         """Convert the reservoir state to the physical state via the output matrix.
@@ -1587,7 +1624,7 @@ class EchoStateNetwork:
         return self.closed_loop_step(u, r)
 
     def open_loop(self, U, r0=None, input_parameters=None):
-        """Drive the network open loop by the data `U`, from the reservoir state `r0` (default zero): a washout,
+        """Drive the network open loop by the data `U`, from the reservoir state `r0` (default `rest_state()`): a washout,
         or a run of one-step-ahead predictions.
 
         Each row of `U` is a physical state (every site); `outputs_to_inputs` selects the observed components and
@@ -1612,7 +1649,7 @@ class EchoStateNetwork:
         """
         U = np.asarray(U)
         n_cols = 1 if U.ndim == 2 else U.shape[-1]
-        r = np.zeros((self.N_r, n_cols)) if r0 is None else np.asarray(r0).reshape(self.N_r, n_cols)
+        r = self.rest_state(n_cols) if r0 is None else np.asarray(r0).reshape(self.N_r, n_cols)
         Y, R = np.empty((len(U), self.N_dim, n_cols)), np.empty((len(U), self.N_r, n_cols))
         with self._parameters_of_columns(input_parameters, n_cols):
             for k, u_in in enumerate(U):
@@ -2437,6 +2474,7 @@ class EchoStateNetwork:
                    **({} if self.sigma_param is None else dict(sigma_param=self.sigma_param)),
                    leak_rate=self.leak_rate, noise=self.noise,
                    Win_type=self.Win_type, norm_method=str(self.norm_method),     # None as 'None': no object array
+                   wash_from_rest=bool(self.wash_from_rest),
                    noise_type=self.noise_type, readout_input=str(self.readout_input),
                    r2_mode=bool(self.r2_mode),
                    param_in_reservoir=bool(self.param_in_reservoir), connect=int(self.connect),
@@ -2509,6 +2547,8 @@ class EchoStateNetwork:
                   **({'param_in_reservoir': bool(np.asarray(arrays['param_in_reservoir']))}
                      if 'param_in_reservoir' in arrays else {}),
                   **({'connect': int(np.asarray(arrays['connect']))} if 'connect' in arrays else {}),
+                  **({'wash_from_rest': bool(np.asarray(arrays['wash_from_rest']))}
+                     if 'wash_from_rest' in arrays else {}),
                   # stores written before the option existed hold networks whose bias is inside the input scaling
                   scale_bias_in=bool(np.asarray(arrays['scale_bias_in'])) if 'scale_bias_in' in arrays else True,
                   **({'optimize_parameter_normalization': {'True': True, 'False': False}.get(
@@ -2695,7 +2735,7 @@ class EchoStateNetwork:
 
             # Washout phase to initialize reservoir state
             N_ens = U_wash_l.shape[-1] if U_wash_l.ndim == 3 else 1
-            r_out = np.zeros((self.N_r, N_ens))
+            r_out = self.rest_state(N_ens)
             for u_in in U_wash_l:
                 _, r_out = self.step(u_in, r_out)
 
@@ -3526,7 +3566,7 @@ class EchoStateNetwork:
         def predict_Y(_input, _target):
 
             # Perform washout (open-loop without extra forecast step)
-            r_out = np.zeros((self.N_r, N_ens))
+            r_out = self.rest_state(N_ens)
             u_out = np.zeros((self.N_dim, N_ens))
             # sized by the washout, not by the target: a short-term test whose window is
             # shorter than N_wash would otherwise overflow this buffer (IndexError)

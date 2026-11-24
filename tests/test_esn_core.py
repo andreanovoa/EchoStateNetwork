@@ -718,3 +718,39 @@ def test_the_input_bias_follows_the_scale_of_the_normalized_input_unless_given()
     local = EchoStateNetwork(data.T, patch_size=1, shared=False, **kw)
     local.train(data, plot_training=False)
     assert len({float(net.bias_in[0]) for net in local.patches}) == 3      # every patch from its own window
+
+
+# ---------------------------------------------------------------------- washouts from the rest state
+def test_rest_state_is_the_fixed_point_and_shortens_the_washout():
+    """rest_state() is the state of the reservoir under a zero normalized input; a short washout from it lands near
+    the state of a long washout, while one from r = 0 is still on its way to the offset that the input bias sets."""
+    data = np.random.default_rng(1).normal(size=(400, 3)).cumsum(axis=0) * 0.1
+    esn = EchoStateNetwork(data.T, dt=1, N_units=50, upsample=1, t_train=300, t_val=50, t_test=0, N_wash=5,
+                           hyperparameters_to_optimize=[], sigma_in=1e-3, rho=0.9, seed=0)
+    esn.train(data, plot_training=False)
+    rest = esn.rest_state()
+    assert rest.shape == (esn.N_r, 1) and np.max(np.abs(rest)) > 0.1      # an offset of order one
+    _, r = esn.step(esn.shift.reshape(-1, 1), rest)                        # u = shift: zero normalized input
+    np.testing.assert_allclose(r, rest, atol=1e-10)
+    np.testing.assert_array_equal(esn.rest_state(4), np.repeat(rest, 4, axis=1))
+    _, R_long = esn.open_loop(data[100:300])
+    _, R_rest = esn.open_loop(data[295:300])
+    _, R_zero = esn.open_loop(data[295:300], r0=np.zeros(esn.N_r))
+    err_rest, err_zero = (np.linalg.norm(R[-1] - R_long[-1]) for R in (R_rest, R_zero))
+    assert err_rest < 0.01 * err_zero
+    esn.wash_from_rest = False
+    np.testing.assert_array_equal(esn.rest_state(), 0.0)
+
+
+def test_rest_state_of_the_parallel_layouts():
+    data = np.random.default_rng(2).normal(size=(300, 8)).cumsum(axis=0) * 0.1
+    for shared in (True, False):
+        esn = EchoStateNetwork(data.T, dt=1, N_units=20, upsample=1, t_train=200, t_val=50, t_test=0, N_wash=5,
+                               hyperparameters_to_optimize=[], patch_size=4, halo=1, shared=shared, seed=0)
+        esn.train(data, plot_training=False)
+        rest = esn.rest_state()
+        assert rest.shape == (esn.N_r, 1)
+        if shared:
+            np.testing.assert_array_equal(rest[:20], rest[20:])
+        else:
+            np.testing.assert_allclose(rest[20:, 0], esn.patches[1].rest_state()[:, 0])

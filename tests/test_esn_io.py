@@ -105,5 +105,6 @@ def test_a_network_without_normalization_survives_npz(tmp_path):
     assert esn.to_arrays()['norm_method'] == 'None'
     back = npz_round_trip(esn, tmp_path)
     assert back.norm_method is None
+    assert back.wash_from_rest is True
     u, r = data[7].reshape(-1, 1), np.random.default_rng(6).normal(size=(esn.N_units, 1))
     np.testing.assert_array_equal(back.step(u, r)[0], esn.step(u, r)[0])

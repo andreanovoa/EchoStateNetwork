@@ -282,15 +282,21 @@ $\hat{\phi}(t_{i+1})$ are one-step-ahead predictions; (b) closed loop: each
 prediction is fed back as the next input and the network runs autonomously.*
 
 - **Open loop**: `step()` is fed observed data; used for
-  training and for *washout* — driving the reservoir from
-  $\mathbf{r}_0 = \mathbf{0}$ through a short window of true history so it
-  synchronizes with the physical state before a forecast.
+  training and for *washout* — driving the reservoir through a short window
+  of true history so it synchronizes with the physical state before a
+  forecast. The washout starts from `rest_state()`, the state on which the
+  reservoir rests under a zero normalized input: the input bias sets an
+  offset of order one on every unit, and a washout from
+  $\mathbf{r}_0 = \mathbf{0}$ would spend its first steps reaching it, a
+  transient larger than the signal when $\sigma_\mathrm{in}$ is small and the
+  washout short. `wash_from_rest=False` starts from zero, as the versions
+  before 0.7 did.
 - **Closed loop**: each prediction is fed back as the next input
   (`outputs_to_inputs` selects the observed components and re-appends the
   parameter columns); the model runs autonomously.
 
 ```python
-Y_wash, R_wash = esn.open_loop(wash)   # open-loop washout on true history, from r = 0
+Y_wash, R_wash = esn.open_loop(wash)   # open-loop washout on true history, from rest_state()
 forecast, u, r = esn.forecast(Y_wash[-1], R_wash[-1], n_steps)   # closed loop
 ```
 
