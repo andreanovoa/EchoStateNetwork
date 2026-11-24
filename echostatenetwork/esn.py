@@ -418,6 +418,10 @@ class EchoStateNetwork:
     upsample = 5
     Win_type = 'sparse_dense_bias'
     norm_method = 'range'
+    # centre_input: True subtracts the training mean from the input (shift); False scales it by norm_method only,
+    # with shift = 0, as Eq. (4.1) of Nóvoa et al. (2024, JFM). It also applies to parameter columns normalized
+    # from the data (optimize_parameter_normalization='data').
+    centre_input = True
 
     # Default hyperparameters and optimization ranges.
     noise = 1e-10
@@ -2475,6 +2479,7 @@ class EchoStateNetwork:
                    leak_rate=self.leak_rate, noise=self.noise,
                    Win_type=self.Win_type, norm_method=str(self.norm_method),     # None as 'None': no object array
                    wash_from_rest=bool(self.wash_from_rest),
+                   centre_input=bool(self.centre_input),
                    noise_type=self.noise_type, readout_input=str(self.readout_input),
                    r2_mode=bool(self.r2_mode),
                    param_in_reservoir=bool(self.param_in_reservoir), connect=int(self.connect),
@@ -2549,6 +2554,8 @@ class EchoStateNetwork:
                   **({'connect': int(np.asarray(arrays['connect']))} if 'connect' in arrays else {}),
                   **({'wash_from_rest': bool(np.asarray(arrays['wash_from_rest']))}
                      if 'wash_from_rest' in arrays else {}),
+                  **({'centre_input': bool(np.asarray(arrays['centre_input']))}
+                     if 'centre_input' in arrays else {}),
                   # stores written before the option existed hold networks whose bias is inside the input scaling
                   scale_bias_in=bool(np.asarray(arrays['scale_bias_in'])) if 'scale_bias_in' in arrays else True,
                   **({'optimize_parameter_normalization': {'True': True, 'False': False}.get(
@@ -3088,6 +3095,8 @@ class EchoStateNetwork:
             pooled = np.reshape(obs_pool if is_ragged else U_wtv[..., :N_obs], (1, -1, 1))
             norm_obs, shift_obs = (np.full(N_obs, np.ravel(v)[0]) for v in
                                    EchoStateNetwork._set_norm(pooled, method=self.norm_method))
+        if not self.centre_input:
+            shift_obs = np.zeros_like(shift_obs)
         if self.input_parameters is not None:
             N_param = self._n_param(self.input_parameters)
             # Identity normalization for the parameter columns, unless the Bayesian
@@ -3102,6 +3111,8 @@ class EchoStateNetwork:
                           else np.asarray(U_wtv)[..., N_obs:N_obs + N_param])
                 norm_param, shift_param = (np.ravel(v) for v in EchoStateNetwork._set_norm(
                     np.reshape(params, (1, -1, N_param)), method=self.norm_method))
+                if not self.centre_input:
+                    shift_param = np.zeros_like(shift_param)
             elif (mode and getattr(self, '_norm', None) is not None
                     and self._norm.size == N_obs + N_param):
                 norm_param, shift_param = self._norm[-N_param:], self._shift[-N_param:]

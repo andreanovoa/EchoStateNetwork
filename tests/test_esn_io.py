@@ -96,6 +96,18 @@ def test_a_network_pickled_before_the_intercept_left_the_readout_unpickles_uncha
     np.testing.assert_array_equal(back.step(u, r)[0], new.step(u, r)[0])
 
 
+def test_centre_input_survives_npz(tmp_path):
+    data = np.random.default_rng(7).normal(size=(200, 3)) + 3.0
+    esn = EchoStateNetwork(data.T, dt=1, N_units=10, upsample=1, t_test=0, N_wash=5, hyperparameters_to_optimize=[],
+                           centre_input=False, wash_from_rest=False, scale_bias_in=True)
+    esn.train(data, plot_training=False)
+    back = npz_round_trip(esn, tmp_path)
+    assert back.centre_input is False
+    assert back.wash_from_rest is False
+    assert back.scale_bias_in is True
+    np.testing.assert_array_equal(back.shift, 0.0)
+
+
 def test_a_network_without_normalization_survives_npz(tmp_path):
     # norm_method=None was stored as an object array, which np.load(allow_pickle=False) refuses
     data = np.random.default_rng(5).normal(size=(200, 3)).cumsum(axis=0) * 0.1
@@ -106,5 +118,6 @@ def test_a_network_without_normalization_survives_npz(tmp_path):
     back = npz_round_trip(esn, tmp_path)
     assert back.norm_method is None
     assert back.wash_from_rest is True
+    assert back.centre_input
     u, r = data[7].reshape(-1, 1), np.random.default_rng(6).normal(size=(esn.N_units, 1))
     np.testing.assert_array_equal(back.step(u, r)[0], esn.step(u, r)[0])

@@ -19,7 +19,8 @@ $$
 
 where $\tilde{\mathbf{u}} = (\mathbf{u} - \texttt{shift}) / \texttt{norm}$ is
 the shift-and-scale normalized input (set from the training data range by
-default), $b_\mathrm{in}$ is the input bias, which enters through the bias
+default; `centre_input=False` keeps the scale and sets the shift to zero, so
+that the input is scaled by its range only), $b_\mathrm{in}$ is the input bias, which enters through the bias
 column, $\mathbf{w}_b$, of `Win` and breaks the symmetry of the tanh,
 $\mathbf{w}_0$ is the intercept of the readout (`intercept`), and
 $\alpha$ = `leak_rate` (the default $\alpha = 1$ is the plain tanh update; see
