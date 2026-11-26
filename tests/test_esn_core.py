@@ -522,6 +522,20 @@ def test_parameter_columns_normalized_like_the_state():
     assert esn.hyperparameters_to_optimize == ['rho']
 
 
+def test_range_common_keeps_the_relative_size_of_the_components():
+    """norm_method='range_common': the shift of 'range', and the largest range of a component for every component."""
+    rng = np.random.default_rng(4)
+    data = rng.normal(size=(3, 80, 3)) * np.array([10.0, 1.0, 0.1]) + 2.0
+    options = dict(dt=1, N_units=20, upsample=1, t_train=50, t_val=10, t_test=10, N_wash=5,
+                   hyperparameters_to_optimize=[], seed=0)
+    ranged = EchoStateNetwork(data[0].T, **options)
+    ranged.train(data, plot_training=False)
+    common = EchoStateNetwork(data[0].T, norm_method='range_common', **options)
+    common.train(data, plot_training=False)
+    np.testing.assert_array_equal(common.shift, ranged.shift)
+    np.testing.assert_allclose(common.norm, np.full(3, ranged.norm.max()))
+
+
 def test_input_scaled_by_its_range_without_the_mean():
     """centre_input=False: the scale of norm_method, a zero shift, for the state and the parameter columns."""
     rng = np.random.default_rng(3)

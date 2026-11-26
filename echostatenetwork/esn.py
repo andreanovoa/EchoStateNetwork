@@ -417,7 +417,7 @@ class EchoStateNetwork:
     t_test = 0.5
     upsample = 5
     Win_type = 'sparse_dense_bias'
-    norm_method = 'range'
+    norm_method = 'range'   # 'range', 'range_common' (the largest range for every component), 'std', 'max', 'mean', None
     # centre_input: True subtracts the training mean from the input (shift); False scales it by norm_method only,
     # with shift = 0, as Eq. (4.1) of Nóvoa et al. (2024, JFM). It also applies to parameter columns normalized
     # from the data (optimize_parameter_normalization='data').
@@ -3406,7 +3406,7 @@ class EchoStateNetwork:
             norm = np.max(shifted_data, axis=1)
         elif method == 'mean':
             norm = np.mean(abs(shifted_data), axis=1)
-        elif method == 'range':
+        elif method in ('range', 'range_common'):
             m = np.min(shifted_data, axis=1)
             M = np.max(shifted_data, axis=1)
             norm = M - m
@@ -3419,6 +3419,10 @@ class EchoStateNetwork:
         if Nens > 1:
             norm = np.mean(norm, axis=-1)
             shift = np.mean(shift, axis=-1)
+        if method == 'range_common':
+            # one scale for every component, the largest range: the components keep their relative sizes (e.g. the
+            # energy ordering of POD coefficients), where 'range' gives each the same weight
+            norm = np.full_like(norm, np.max(norm))
 
         if np.any(abs(norm) < 1e-12):
             norm[abs(norm) < 1e-12] = 1.0  # Prevent division by zero
