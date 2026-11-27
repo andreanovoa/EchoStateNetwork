@@ -787,8 +787,11 @@ class EchoStateNetwork:
             self.dt_ESN = legacy
         if not self.__dict__.pop('_intercept_apart', False):
             # pickled before 0.7: the last row of Wout multiplies the output bias, and the input bias is inside
-            # the input scaling unless the network says otherwise
+            # the input scaling unless the network says otherwise. A network that kept the class defaults of then
+            # did not pickle them: its input bias is 0.1, and its washouts start from r = 0
             self.__dict__.setdefault('scale_bias_in', True)
+            self.__dict__.setdefault('bias_in', np.array([0.1]))
+            self.__dict__.setdefault('wash_from_rest', False)
             bias_out = float(np.ravel(self.__dict__.pop('bias_out', 1.0))[0])
             self.__dict__.pop('regularize_bias_out', None)
             Wout = self.__dict__.get('_Wout')
@@ -2552,8 +2555,8 @@ class EchoStateNetwork:
                   **({'param_in_reservoir': bool(np.asarray(arrays['param_in_reservoir']))}
                      if 'param_in_reservoir' in arrays else {}),
                   **({'connect': int(np.asarray(arrays['connect']))} if 'connect' in arrays else {}),
-                  **({'wash_from_rest': bool(np.asarray(arrays['wash_from_rest']))}
-                     if 'wash_from_rest' in arrays else {}),
+                  # stores written before the option existed hold networks whose washouts start from r = 0
+                  wash_from_rest=bool(np.asarray(arrays['wash_from_rest'])) if 'wash_from_rest' in arrays else False,
                   **({'centre_input': bool(np.asarray(arrays['centre_input']))}
                      if 'centre_input' in arrays else {}),
                   # stores written before the option existed hold networks whose bias is inside the input scaling
