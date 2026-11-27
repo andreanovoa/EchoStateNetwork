@@ -121,3 +121,26 @@ def test_a_network_without_normalization_survives_npz(tmp_path):
     assert back.centre_input
     u, r = data[7].reshape(-1, 1), np.random.default_rng(6).normal(size=(esn.N_units, 1))
     np.testing.assert_array_equal(back.step(u, r)[0], esn.step(u, r)[0])
+
+
+def test_a_network_pickled_with_the_defaults_before_0_7_keeps_them():
+    # before 0.7, a network that kept the class defaults did not pickle them: its input bias was 0.1 and its washouts
+    # started from r = 0. Unpickled, it keeps both, whatever the defaults of this version
+    data = np.random.default_rng(3).normal(size=(200, 3)).cumsum(axis=0) * 0.1
+    esn = EchoStateNetwork(data.T, dt=1, N_units=20, upsample=1, t_train=120, t_val=30, t_test=0, N_wash=5,
+                           hyperparameters_to_optimize=[], scale_bias_in=True, sigma_in=0.3, seed=0,
+                           bias_in=np.array([0.1]), wash_from_rest=False)
+    esn.train(data, plot_training=False)
+    old = EchoStateNetwork.__new__(EchoStateNetwork)
+    drop = ('_intercept', '_intercept_apart', 'scale_bias_in', 'bias_in', '_bias_in_data', 'wash_from_rest')
+    state = {k: v for k, v in esn.__getstate__().items() if k not in drop}
+    state.update(_Wout=np.vstack([esn.Wout, esn.intercept]))
+    old.__setstate__(state)
+    assert np.array_equal(old.bias_in, [0.1]) and old.wash_from_rest is False
+    assert np.array_equal(old.rest_state(), np.zeros((esn.N_r, 1)))
+    U = data[:30]
+    for a, b in zip(old.open_loop(U), esn.open_loop(U)):
+        np.testing.assert_allclose(a, b, rtol=1e-13)
+    # a store written before the option existed washes from r = 0 too
+    arrays = {k: v for k, v in esn.to_arrays().items() if k != 'wash_from_rest'}
+    assert EchoStateNetwork.from_arrays(arrays).wash_from_rest is False
